@@ -5,7 +5,6 @@ import json
 
 slick_path  = '/home/izzy/prog/slick/dist/build/slick/slick'
 log         = open('/home/izzy/slicklog', 'w', 0)
-should_stop = False
 reader      = None
 
 def get_client_state():
@@ -19,11 +18,14 @@ class SlickProcess:
     self.pipe        = None
     self.info_window = None
 
+  # returns a bool. False = stop, True = keep going
   def handle(self, msg):
     if msg[0] == 'Ok':
       pass
+
     elif  msg[0] == 'Error':
       print (msg[1])
+
     elif msg[0] == 'SetInfoWindow':
       log.write('setting info window\n')
       log.write('fo: ' + msg[1] + '\n')
@@ -31,6 +33,11 @@ class SlickProcess:
       del info_window.buffer[:]
       for line in msg[1].splitlines():
         info_window.buffer.append(line)
+
+    elif msg[0] == 'Stop':
+      return False
+
+    return True
 
   def _send_message(self, x):
     s = json.dumps(x) + '\n'
@@ -43,6 +50,9 @@ class SlickProcess:
     except OSError as e:
       print ('hi')
       raise e
+
+  def send_stop(self):
+    self._send_message(['SendStop'])
 
   def get_info_window(self):
     if self.info_window == None or not self.info_window.valid:
@@ -70,14 +80,14 @@ def get_slick_process():
   return slick_process
 
 def wait_for_messages():
-  global should_stop
-  while not should_stop:
+  keep_going = True
+  while keep_going:
     slick = get_slick_process()
 
     s = slick.pipe.stdout.readline()
 
-    log.write('got message: ' + s)
-    slick.handle(json.loads(s))
+    log.write('got message: ' + s + '\n')
+    keep_going = slick.handle(json.loads(s))
 
 def start():
   global reader
@@ -86,11 +96,7 @@ def start():
   log.write('called start\n')
 
 def stop():
-  print ('called stop')
-  global should_stop
-  log.write('called stop\n')
-  log.close()
-  should_stop = True
+  get_slick_process().send_stop()
 
 def load_current_file():
   log.write('called load\n')

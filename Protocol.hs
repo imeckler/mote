@@ -13,6 +13,7 @@ data ToClient
   | SetCursor (Int, Int)
   | Ok
   | Error T.Text
+  | Stop
   deriving (Show)
 
 instance ToJSON ToClient where
@@ -22,6 +23,7 @@ instance ToJSON ToClient where
     SetCursor pos   -> Array $ V.fromList [toJSON (str "SetCursor"), toJSON pos]
     Ok              -> Array $ V.fromList [toJSON (str "Ok")]
     Error t         -> Array $ V.fromList [toJSON (str "Error"), toJSON t]
+    Stop            -> Array $ V.fromList [toJSON (str "Stop")]
     where
     str x = x :: String
 
@@ -45,6 +47,7 @@ data FromClient
   | NextHole ClientState
   | PrevHole ClientState
   | GetEnv ClientState
+  | SendStop
   deriving (Show)
 
 instance FromJSON FromClient where
@@ -56,5 +59,6 @@ instance FromJSON FromClient where
       [String "NextHole", state]         -> NextHole <$> parseJSON state
       [String "PrevHole", state]         -> PrevHole <$> parseJSON state
       [String "GetEnv", state]           -> GetEnv <$> parseJSON state
+      [String "SendStop"]                -> return SendStop
       _                                  -> mzero
 

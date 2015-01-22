@@ -115,6 +115,8 @@ respond stRef = \case
 
       Nothing -> return (Error "nohole")
 
+  SendStop -> return Stop
+
 showM :: (GhcMonad m, Outputable a) => a -> m String
 showM = showSDocM . ppr
 

@@ -20,7 +20,7 @@ function! slick#start()
 endfunction
 
 function! slick#stop()
-  py slick#stop()
+  py slick.stop()
 endfunction
 
 function! slick#loadCurrentFile()
