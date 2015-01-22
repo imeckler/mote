@@ -42,3 +42,7 @@ function! slick#stuff()
   py slick.enter_hole()
   py slick.get_env()
 endfunction
+
+augroup slickGroup
+  autocmd VimLeave * :call slick#stop()
+augroup END
