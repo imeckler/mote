@@ -30,7 +30,8 @@ endfunction
 function! slick#getEnv()
   py slick.enter_hole()
   py slick.get_env()
-  redraw
+  call setpos('.', getpos('.')) " hack to get it to draw right
+  redraw!
 endfunction
 
 function! slick#stuff()
