@@ -96,9 +96,11 @@ localNames = getNamesInScope
 setupContext
   :: (OutputableBndr id, Ord id) =>
      SrcSpan
-     -> [GenLocated SrcSpan (HsDecl id)]
+     -> HsModule id
      -> M ()
-setupContext hole decls = goDecls decls where
+setupContext hole mod = goDecls decls where
+  decls = hsmodDecls mod
+
   collectSigs =
     foldl (\m d -> case d of
       L _ (SigD (TypeSig lnames (L _ t))) ->
@@ -194,8 +196,6 @@ setupContext hole decls = goDecls decls where
   goRecordBinds = undefined
 
   setBinding lhs rhs = runStmt ("let " ++ lhs ++ " = " ++ rhs) RunToCompletion
-
-showSDocM x = getSessionDynFlags >>| \fs -> showSDoc fs x
 
 -- linearity ftw
 zipSplit :: [a] -> [b] -> ([(a,b)], Either [a] [b])

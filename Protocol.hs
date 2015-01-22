@@ -3,7 +3,7 @@ module Protocol where
 
 import qualified Data.Vector as V
 import qualified Data.Text as T
-import Data.Aeson
+import Data.Aeson hiding (Error)
 import Control.Applicative
 import Control.Monad
 
@@ -13,6 +13,7 @@ data ToClient
   | SetCursor (Int, Int)
   | Ok
   | Error T.Text
+  deriving (Show)
 
 instance ToJSON ToClient where
   toJSON = \case
@@ -27,6 +28,7 @@ instance ToJSON ToClient where
 type Var = String
 
 data ClientState = ClientState { path :: FilePath, cursorPos :: (Int, Int) }
+  deriving (Show)
 
 instance FromJSON ClientState where
   parseJSON (Object v) = ClientState <$> v .: "path" <*> v .: "cursorPos"
@@ -42,15 +44,17 @@ data FromClient
   | EnterHole ClientState
   | NextHole ClientState
   | PrevHole ClientState
-  | HoleContaining (Int, Int)
   | GetEnv ClientState
+  deriving (Show)
 
 instance FromJSON FromClient where
   parseJSON = \case
-    Array a -> case V.toList a of
+    Array a                              -> case V.toList a of
       [String "Load", String path]       -> return (Load (T.unpack path))
       [String "CaseFurther", String var] -> return (CaseFurther (T.unpack var))
+      [String "EnterHole", state]        -> EnterHole <$> parseJSON state
       [String "NextHole", state]         -> NextHole <$> parseJSON state
       [String "PrevHole", state]         -> PrevHole <$> parseJSON state
+      [String "GetEnv", state]           -> GetEnv <$> parseJSON state
       _                                  -> mzero
 
