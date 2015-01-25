@@ -34,6 +34,10 @@ class SlickProcess:
       for line in msg[1].splitlines():
         info_window.buffer.append(line)
 
+    elif msg[0] == 'SetCursor':
+      (line, col) = msg[1]
+      vim.current.window.cursor = (line, col - 1)
+
     elif msg[0] == 'Stop':
       return False
 
@@ -68,6 +72,9 @@ class SlickProcess:
 
   def get_env(self):
     self._send_message(['GetEnv', get_client_state()])
+
+  def get_type(self, expr):
+    self._send_message(['GetType', expr])
 
 slick_process = None
 def get_slick_process():
@@ -105,6 +112,14 @@ def load_current_file():
 def get_env():
   get_slick_process().get_env()
 
+def get_type(expr):
+  get_slick_process().get_type(expr)
+
 def enter_hole():
   get_slick_process().enter_hole()
 
+def next_hole():
+  get_slick_process()._send_message(['NextHole', get_client_state()])
+
+def prev_hole():
+  get_slick_process()._send_message(['PrevHole', get_client_state()])

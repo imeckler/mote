@@ -93,6 +93,13 @@ printScope = liftIO . putStrLn =<< showSDocM . ppr =<< getNamesInScope
 
 localNames = getNamesInScope
 
+-- when we step under a binder, record the binding and it's 
+-- purported type from a signature. Always in our map we must
+-- have 
+--
+-- TODO maintain a stack of "arg types". we pop off an arg and
+-- assign it to a variable when we find one, recording this
+-- in out writing
 setupContext
   :: (OutputableBndr id, Ord id) =>
      SrcSpan

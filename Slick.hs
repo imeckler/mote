@@ -4,6 +4,13 @@
              RecordWildCards #-}
 module Main where
 
+import DataCon
+import TyCon
+import Type
+--
+import FastString (fsLit)
+import ParseHoleMessage
+import qualified Data.Map as M
 import Name
 import Data.Maybe
 import Control.Applicative
@@ -27,13 +34,16 @@ import Outputable
 import Util
 import qualified Data.Text as T
 import System.IO
+import Case
+import Data.List (isInfixOf)
 
 type Hole = SrcSpan
 
 data SlickState = SlickState
-  { holes       :: [Hole]
-  , fileData    :: Maybe (FilePath, HsModule RdrName)
+  { fileData    :: Maybe (FilePath, HsModule RdrName)
   , currentHole :: Maybe Hole
+  , holesInfo   :: M.Map SrcSpan HoleInfo
+  , logFile     :: Handle
   }
 
 readModule p = fmap (unLoc . parsedSource) $
@@ -41,21 +51,33 @@ readModule p = fmap (unLoc . parsedSource) $
 
 type M = Ghc
 
-ghcInit :: GhcMonad m => m ()
-ghcInit = do
+
+
+ghcInit :: GhcMonad m => IORef SlickState -> m ()
+ghcInit stRef = do
   dfs <- getSessionDynFlags
   void . setSessionDynFlags . withFlags [DynFlags.Opt_DeferTypeErrors] $ dfs
     { hscTarget  = HscInterpreted
     , ghcLink    = LinkInMemory
     , ghcMode    = CompManager
-    , log_action = \_ _ _ _ _ -> return ()
+    , log_action = \fs sev span sty msg -> do
+        -- Here be hacks
+        let s = showSDoc fs (withPprStyle sty msg)
+        liftIO $ flip hPutStrLn s . logFile =<< readIORef stRef
+        case ParseHoleMessage.parseHoleInfo s of
+          Nothing -> return ()
+          Just info -> gModifyIORef stRef (\s ->
+            s { holesInfo = M.insert span info (holesInfo s) })
     }
   where
   withFlags fs dynFs = foldl DynFlags.gopt_set dynFs fs
 
+-- tcl_lie should contain the CHoleCan's
+
 findEnclosingHole :: (Int, Int) -> [Hole] -> Maybe Hole
 findEnclosingHole pos = find (`spans` pos)
 
+-- reportModuleCompilationResult
 loadModuleAt p = do
   -- TODO: Clear old names and stuff
   -- TODO: I think we can actually do all the parsing and stuff ourselves
@@ -71,7 +93,6 @@ loadFile stRef p = loadModuleAt p >>= setStateForData stRef p
 setStateForData :: GhcMonad m => IORef SlickState -> FilePath -> HsModule RdrName -> m ()
 setStateForData stRef p mod = gModifyIORef stRef (\st -> st 
   { fileData    = Just (p, mod)
-  , holes       = Holes.holes mod
   , currentHole = Nothing
   })
 
@@ -83,9 +104,28 @@ loadModuleAndSetupState stRef p = do
   mod <- loadModuleAt p
   mod <$ setStateForData stRef p mod
 
+getHoles :: IORef SlickState -> M [Hole]
+getHoles = fmap (M.keys . holesInfo) . gReadIORef 
+
+srcLocPos (RealSrcLoc l) = (srcLocLine l, srcLocCol l)
+
 respond :: IORef SlickState -> FromClient -> M ToClient
 respond stRef = \case
   Load p -> Ok <$ loadFile stRef p
+
+  NextHole (ClientState {path, cursorPos=(line,col)}) -> do
+    getHoles stRef >>| \holes -> case dropWhile ((currPosLoc >=) . srcSpanStart) holes of
+      [] -> Ok
+      (h:_) -> SetCursor . srcLocPos $ srcSpanStart h
+    where
+    currPosLoc = mkSrcLoc (fsLit path) line col
+
+  PrevHole (ClientState {path, cursorPos=(line, col)}) -> do
+    getHoles stRef >>| \holes -> case takeWhile (< currPosSpan) holes of
+      [] -> Ok
+      xs -> SetCursor . srcLocPos . srcSpanStart $ last xs
+    where
+    currPosSpan = srcLocSpan (mkSrcLoc (fsLit path) line col)
 
   EnterHole (ClientState {..}) -> do
     mod <- gReadIORef stRef >>= \st -> case fileData st of
@@ -95,50 +135,81 @@ respond stRef = \case
         then return mod
         else loadModuleAndSetupState stRef path -- maybe shouldn't autoload
 
-    SlickState {holes} <- gReadIORef stRef
+    SlickState {holesInfo} <- gReadIORef stRef
 
-    let mh = findEnclosingHole cursorPos holes
+    let mh = findEnclosingHole cursorPos (M.keys holesInfo)
     gModifyIORef stRef (\st -> st { currentHole = mh })
     case mh of
-      Nothing -> return (Error "No Hole found")
+      Nothing -> return (SetInfoWindow "No Hole found")
       Just h  -> runErrorT (Holes.setupContext h mod) >>| \case
-        Left err -> Error (T.pack err)
+        Left err -> Error err
         Right () -> Ok
 
   GetEnv (ClientState {..}) -> do
     fmap currentHole (gReadIORef stRef) >>= \case
       Just h  -> do
         names <-  filter (isNothing . nameModule_maybe) <$> getNamesInScope
-        fmap (SetInfoWindow . T.pack . unlines) . forM names $ \name -> do
-          x <- showM name
-          fmap (\t -> x ++ " :: " ++ t) (showM =<< exprType x)
+        (HoleInfo {..}) <- ((M.! h) . holesInfo) <$> gReadIORef stRef
+        let goalStr = "Goal: " ++ holeName ++ " :: " ++ holeTypeStr ++ "\n" ++ replicate 40 '-'
+            envVarTypes = map (\(x,t) -> x ++ " :: " ++ t) holeEnv
+
+        return (SetInfoWindow $ unlines (goalStr : envVarTypes))
 
       Nothing -> return (Error "nohole")
 
   SendStop -> return Stop
 
+  -- every message should really send current file name (ClientState) and
+  -- check if it matches the currently loaded file
+  GetType e -> do
+    fs <- getSessionDynFlags
+    SetInfoWindow . showSDocForUser fs neverQualify . ppr <$> exprType e
+
 showM :: (GhcMonad m, Outputable a) => a -> m String
 showM = showSDocM . ppr
 
 main = do
-  stRef <- newIORef (SlickState {holes=[], fileData=Nothing, currentHole=Nothing})
-  withFile "/home/izzy/slickserverlog" WriteMode $ \handle -> do
-    hSetBuffering handle NoBuffering
+  withFile "/home/izzy/slickserverlog" WriteMode $ \logFile -> do
+    stRef <- newIORef (initialState logFile)
+    hSetBuffering logFile NoBuffering
     hSetBuffering stdout NoBuffering
-    hPutStrLn handle "Testing, testing"
+    hPutStrLn logFile "Testing, testing"
     runGhc (Just libdir) $ do
-      ghcInit
+      ghcInit stRef
       forever $ do
         ln <- liftIO B.getLine
         case decodeStrict ln of
           Nothing  -> do
             return ()
           Just msg -> do
-            liftIO $ hPutStrLn handle (show msg)
+            liftIO $ hPutStrLn logFile ("Got: " ++ show msg)
             resp <- respond stRef msg
-            liftIO $ hPutStrLn handle (show resp)
+            liftIO $ hPutStrLn logFile ("Giving: " ++ show resp)
             liftIO $ LB8.putStrLn (encode resp)
 
+  where
+  initialState logFile = SlickState
+    { fileData = Nothing
+    , currentHole = Nothing
+    , holesInfo = M.empty
+    , logFile
+    }
+
+
+run = runGhc (Just libdir)
+
+{-
+test :: GhcMonad m => m ()
+test = do
+  ghcInit
+  loadModuleAt "TyTest.hs"
+  t <- normaliseType =<< exprType "x"
+  int <- exprType "1 :: Int"
+  let Just (tc, _) = splitTyConApp_maybe t
+  let (foo:_) = tyConDataCons tc
+  Holes.output $ dataConName foo
+  Holes.output $ dataConInstArgTys foo [undefined, int]
+-}
 {-
 test = do
   ghcInit

@@ -8,11 +8,12 @@ import Control.Applicative
 import Control.Monad
 
 data ToClient
-  = Insert T.Text
-  | SetInfoWindow T.Text
+  = Insert String
+  | SetInfoWindow String
   | SetCursor (Int, Int)
+  | Print String
   | Ok
-  | Error T.Text
+  | Error String
   | Stop
   deriving (Show)
 
@@ -39,14 +40,22 @@ instance FromJSON ClientState where
 -- Things could be a bit more efficient if the client held on to which hole
 -- they're in. Probably not necessary, but if things are slow, consider
 -- it.
+
+-- next big thing: in hole suggestions.
+-- let's say my goal type is SrcLoc.
+-- Functions are suggested whose target type is SrcLoc
+-- and whose arguments are in the environment. Perhaps
+-- do something linear. Also maybe use hoogle
+-- 
 data FromClient
   = Load FilePath
-  | CaseFurther Var
-  | CaseOn Var
   | EnterHole ClientState
   | NextHole ClientState
   | PrevHole ClientState
   | GetEnv ClientState
+  | GetType String
+  | CaseFurther Var
+  | CaseOn String
   | SendStop
   deriving (Show)
 
@@ -59,6 +68,7 @@ instance FromJSON FromClient where
       [String "NextHole", state]         -> NextHole <$> parseJSON state
       [String "PrevHole", state]         -> PrevHole <$> parseJSON state
       [String "GetEnv", state]           -> GetEnv <$> parseJSON state
+      [String "GetType", String e]       -> return . GetType $ T.unpack e
       [String "SendStop"]                -> return SendStop
       _                                  -> mzero
 
