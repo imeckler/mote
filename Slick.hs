@@ -36,23 +36,15 @@ import qualified Data.Text as T
 import System.IO
 import Case
 import Data.List (isInfixOf)
-
-type Hole = SrcSpan
-
-data SlickState = SlickState
-  { fileData    :: Maybe (FilePath, HsModule RdrName)
-  , currentHole :: Maybe Hole
-  , holesInfo   :: M.Map SrcSpan HoleInfo
-  , logFile     :: Handle
-  }
+import Types
+import qualified Init
 
 readModule p = fmap (unLoc . parsedSource) $
   parseModule =<< (getModSummary . mkModuleName $ takeBaseName p)
 
 type M = Ghc
 
-
-
+{-
 ghcInit :: GhcMonad m => IORef SlickState -> m ()
 ghcInit stRef = do
   dfs <- getSessionDynFlags
@@ -63,7 +55,7 @@ ghcInit stRef = do
     , log_action = \fs sev span sty msg -> do
         -- Here be hacks
         let s = showSDoc fs (withPprStyle sty msg)
-        liftIO $ flip hPutStrLn s . logFile =<< readIORef stRef
+        logS stRef s
         case ParseHoleMessage.parseHoleInfo s of
           Nothing -> return ()
           Just info -> gModifyIORef stRef (\s ->
@@ -71,14 +63,17 @@ ghcInit stRef = do
     }
   where
   withFlags fs dynFs = foldl DynFlags.gopt_set dynFs fs
-
+-}
 -- tcl_lie should contain the CHoleCan's
 
 findEnclosingHole :: (Int, Int) -> [Hole] -> Maybe Hole
 findEnclosingHole pos = find (`spans` pos)
 
+-- TODO: access ghci cmomands from inside vim too. e.g., kind
+
 -- reportModuleCompilationResult
-loadModuleAt p = do
+-- loadModuleAt :: GhcMonad m => FilePath -> Either String (HsModule RdrName)
+loadModuleAt p = do -- handleSourceError (return . srcErrorMessages) . fmap Right $ do
   -- TODO: Clear old names and stuff
   -- TODO: I think we can actually do all the parsing and stuff ourselves
   -- and then call GHC.loadMoudle to avoid duplicating work
@@ -96,9 +91,6 @@ setStateForData stRef p mod = gModifyIORef stRef (\st -> st
   , currentHole = Nothing
   })
 
-gReadIORef     = liftIO . readIORef
-gModifyIORef x = liftIO . modifyIORef x
-
 loadModuleAndSetupState :: GhcMonad m => IORef SlickState -> FilePath -> m (HsModule RdrName)
 loadModuleAndSetupState stRef p = do
   mod <- loadModuleAt p
@@ -113,14 +105,14 @@ respond :: IORef SlickState -> FromClient -> M ToClient
 respond stRef = \case
   Load p -> Ok <$ loadFile stRef p
 
-  NextHole (ClientState {path, cursorPos=(line,col)}) -> do
+  NextHole (ClientState {path, cursorPos=(line,col)}) ->
     getHoles stRef >>| \holes -> case dropWhile ((currPosLoc >=) . srcSpanStart) holes of
       [] -> Ok
       (h:_) -> SetCursor . srcLocPos $ srcSpanStart h
     where
     currPosLoc = mkSrcLoc (fsLit path) line col
 
-  PrevHole (ClientState {path, cursorPos=(line, col)}) -> do
+  PrevHole (ClientState {path, cursorPos=(line, col)}) ->
     getHoles stRef >>| \holes -> case takeWhile (< currPosSpan) holes of
       [] -> Ok
       xs -> SetCursor . srcLocPos . srcSpanStart $ last xs
@@ -145,7 +137,7 @@ respond stRef = \case
         Left err -> Error err
         Right () -> Ok
 
-  GetEnv (ClientState {..}) -> do
+  GetEnv (ClientState {..}) ->
     fmap currentHole (gReadIORef stRef) >>= \case
       Just h  -> do
         names <-  filter (isNothing . nameModule_maybe) <$> getNamesInScope
@@ -168,18 +160,19 @@ respond stRef = \case
 showM :: (GhcMonad m, Outputable a) => a -> m String
 showM = showSDocM . ppr
 
-main = do
+main =
   withFile "/home/izzy/slickserverlog" WriteMode $ \logFile -> do
     stRef <- newIORef (initialState logFile)
     hSetBuffering logFile NoBuffering
     hSetBuffering stdout NoBuffering
     hPutStrLn logFile "Testing, testing"
     runGhc (Just libdir) $ do
-      ghcInit stRef
+      Init.init stRef
+      logS stRef "init'd"
       forever $ do
         ln <- liftIO B.getLine
         case decodeStrict ln of
-          Nothing  -> do
+          Nothing  ->
             return ()
           Just msg -> do
             liftIO $ hPutStrLn logFile ("Got: " ++ show msg)
@@ -198,22 +191,3 @@ main = do
 
 run = runGhc (Just libdir)
 
-{-
-test :: GhcMonad m => m ()
-test = do
-  ghcInit
-  loadModuleAt "TyTest.hs"
-  t <- normaliseType =<< exprType "x"
-  int <- exprType "1 :: Int"
-  let Just (tc, _) = splitTyConApp_maybe t
-  let (foo:_) = tyConDataCons tc
-  Holes.output $ dataConName foo
-  Holes.output $ dataConInstArgTys foo [undefined, int]
--}
-{-
-test = do
-  ghcInit
-  loadFile "Foo.hs"
-  runStmt "let g = f" RunToCompletion
-  showSDocM . ppr =<< exprType "g"
--}

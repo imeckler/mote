@@ -1,6 +1,6 @@
 function! slick#CreateInfoWindow()
   let l:currwin = winnr()
-  rightbelow new HoleInfo
+  rightbelow 50vnew HoleInfo
     let l:infowin = winnr()
     setlocal buftype=nofile
     setlocal noswapfile

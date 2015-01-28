@@ -6,13 +6,7 @@ import Text.Parsec.String
 import Control.Applicative hiding (many)
 import Data.Maybe
 import Data.List.Split
-
-data HoleInfo = HoleInfo
-  { holeName    :: String
-  , holeTypeStr :: String
-  , holeEnv     :: [(String, String)] -- (ident, type)
-  }
-  deriving (Show)
+import Types
 
 -- Soooo brittle
 identAndType :: Parser (String, String)
