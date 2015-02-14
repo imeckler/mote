@@ -185,18 +185,20 @@ respond stRef = \case
                 fs <- getSessionDynFlags
                 let span        = toSpan sp
                     indentLevel = subtract 1 . snd . fst $ span
+                    indentTail (s:ss) = s : map (replicate indentLevel ' ' ++) ss
                     showForUser :: Outputable a => a -> String
                     showForUser = showSDocForUser fs neverQualify . ppr
                 return $ case mi of
                   Equation (L l name) ->
-                    Replace (toSpan sp) path 
+                    let funName = showForUser name in
+                    Replace (toSpan sp) path . unlines . indentTail $
+                      map (\p -> funName ++ " " ++ showForUser p) pats
                     "" -- $ showPat mg
 
                   CaseBranch ->
                     -- TODO shouldn't always unlines. sometimes should be ; and {}
-                    let (pS:patStrs) = map ((++ " -> _") . showForUser) pats in
-                    Replace (toSpan sp) path . unlines $
-                      pS : map (replicate indentLevel ' ' ++) patStrs
+                    Replace (toSpan sp) path . unlines . indentTail $
+                      map ((++ " -> _") . showForUser) pats
 
     where
     maybeThrow s = maybe (throwError s) return
