@@ -40,6 +40,13 @@ class SlickProcess:
     self.info_window = None
 
   # returns a bool. False = stop, True = keep going
+
+  def set_info_window(self, s):
+    info_window = self.get_info_window()
+    del info_window.buffer[:]
+    for line in s.splitlines():
+      info_window.buffer.append(line)
+
   def handle(self, s):
     try:
       msg = json.loads(s)
@@ -54,15 +61,12 @@ class SlickProcess:
       pass
 
     elif  msg[0] == 'Error':
-      print (msg[1])
+      self.set_info_window(msg[1])
 
     elif msg[0] == 'SetInfoWindow':
       log.write('setting info window\n')
       log.write('fo: ' + msg[1] + '\n')
-      info_window = self.get_info_window()
-      del info_window.buffer[:]
-      for line in msg[1].splitlines():
-        info_window.buffer.append(line)
+      self.set_info_window(msg[1])
 
     elif msg[0] == 'SetCursor':
       (line, col) = msg[1]

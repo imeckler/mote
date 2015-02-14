@@ -32,6 +32,7 @@ executable slick
                        ghc,
                        ghc-mod >= 5.2,
                        Cabal >= 1.18,
+                       pcre-heavy >= 0.2,
                        -- debug
                        syb
 

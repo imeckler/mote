@@ -1,4 +1,4 @@
-{-# LANGUAGE NamedFieldPuns, PatternGuards #-}
+{-# LANGUAGE NamedFieldPuns, PatternGuards, QuasiQuotes #-}
 module ParseHoleMessage where
 
 import Text.Parsec
@@ -8,6 +8,7 @@ import Data.Maybe
 import Data.List.Split
 import Types
 import Data.Char
+import Text.Regex.PCRE.Heavy
 
 -- Soooo brittle
 identAndType :: Parser (String, String)
@@ -32,12 +33,10 @@ parseHoleInfo msg =
   extractBinding line
     | (' ':' ':s) <- line
     , [var, ty]   <- splitOn " :: " s
-    , isIdent var
-      = case (reverse . drop 2 . dropWhile (/= '(') . reverse $ ty) of
-          ""  -> Just (var, ty)
-          ty' -> Just (var, ty')
-
+    , isSymbol var
+      = Just (var, gsub [re|\(bound at.*?\)|] "" ty)
     | otherwise = Nothing
 
   isIdent (c:s) = isAlpha c && all isAlphaNum s
+  isSymbol = all (not . isSpace)
 

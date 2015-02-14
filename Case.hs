@@ -14,6 +14,7 @@ import Util
 import Type
 import Control.Applicative
 import GHC
+import Bag (bagToList)
 import TcRnMonad(setXOptM)
 import DynFlags(ExtensionFlag(Opt_PolyKinds))
 import FamInst (tcGetFamInstEnvs)
@@ -41,6 +42,7 @@ normaliseType t = do
       return (snd (FamInstEnv.normaliseType fam_envs Nominal t))
 
 -- TODO: It's probably unnecessary to normalise here
+
 unpeel :: GhcMonad m => Type -> m (Maybe DataType)
 unpeel t =
   fmap (splitTyConApp_maybe . dropForAlls) (normaliseType t) >>| \case
@@ -100,7 +102,8 @@ data MatchInfo id
   | SingleLambda SrcSpan -- the srcspan of the whole lambda
   | CaseBranch
 
-namesBound = concatMap (goPat . unLoc) . hsLMatchPats where
+namesBound (L _ (Match pats t rhs)) = listyPat (\pats' -> Match pats' t rhs) pats where
+
   goPat = \case
     WildPat _        -> []
     VarPat x         -> [(x, id)]
@@ -108,12 +111,12 @@ namesBound = concatMap (goPat . unLoc) . hsLMatchPats where
     AsPat x p        -> wrapWith (AsPat x) (goLPat p)
     ParPat p         -> wrapWith ParPat (goLPat p)
     BangPat p        -> wrapWith BangPat (goLPat p)
-    TuplePat ps b ts -> listyPat ps (\ps' -> TuplePat ps' b ts)
-    ListPat ps t e   -> listyPat ps (\ps' -> ListPat ps' t e)
-    PArrPat ps t     -> listyPat ps (\ps' -> PArrPat ps' t)
+    TuplePat ps b ts -> listyPat (\ps' -> TuplePat ps' b ts) ps
+    ListPat ps t e   -> listyPat (\ps' -> ListPat ps' t e) ps
+    PArrPat ps t     -> listyPat (\ps' -> PArrPat ps' t) ps
     ConPatIn c deets -> case deets of
-      InfixCon a1 a2 -> listyPat [a1,a2] (\[a1', a2'] -> ConPatIn c (InfixCon a1' a2'))
-      PrefixCon args -> listyPat args (ConPatIn c . PrefixCon)
+      InfixCon a1 a2 -> listyPat (\[a1', a2'] -> ConPatIn c (InfixCon a1' a2')) [a1, a2]
+      PrefixCon args -> listyPat (ConPatIn c . PrefixCon) args
       RecCon {}      -> error "TODO: Record field namesBound"
 
     ConPatOut {}     -> error "TODO: ConPatOut"
@@ -128,7 +131,9 @@ namesBound = concatMap (goPat . unLoc) . hsLMatchPats where
     CoPat co p t     -> wrapWith (\p' -> CoPat co p' t) (goPat p)
 
   wrapWith k = map (second (k.))
-  listyPat ps k = concatMap (\(l, p, r) -> wrapWith (\p' -> k (l ++ p' : r)) (goLPat p)) (listViews ps)
+
+  listyPat :: ([LPat id] -> a) -> [LPat id] -> [(id, Pat id -> a)]
+  listyPat k ps = concatMap (\(l, p, r) -> wrapWith (\p' -> k (l ++ p' : r)) (goLPat p)) (listViews ps)
 
   goLPat (L l p) = map (second (L l .)) (goPat p)
 
@@ -139,6 +144,17 @@ namesBound = concatMap (goPat . unLoc) . hsLMatchPats where
 
 -- expansions :: (VarName, loc) -> Module -> Maybe ((MatchInfo, [Pat]), UniqSupply)
 -- TODO: Change to ErrorT
+
+expansions
+  :: GhcMonad m =>
+     String
+     -> Type
+     -> SrcSpan
+     -> HsModule RdrName
+     -> m (Maybe
+             ((LMatch RdrName (LHsExpr RdrName),
+               MatchInfo RdrName),
+              [Match RdrName (LHsExpr RdrName)]))
 expansions var ty loc mod =
   case findMap (\mgi@(lm,_) -> fmap (mgi,) . aListLookup varName . namesBound $ lm) mgs of
     Just (mgi, patPosn) -> do
@@ -160,8 +176,9 @@ containingMatchGroups loc = goDecls [] . hsmodDecls where
   goDecls acc = goDecl acc . nextSubexpr loc
 
   goDecl acc = \case
-    ValD bd -> goBind acc bd
-    _       -> acc
+    ValD bd                                   -> goBind acc bd
+    InstD (ClsInstD (ClsInstDecl{cid_binds})) -> goBind acc . nextSubexpr loc $ bagToList cid_binds
+    _                                         -> acc
 
   goBind acc = \case
     FunBind {..} -> goMatchGroup (Equation fun_id) acc $ fun_matches

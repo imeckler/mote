@@ -1,13 +1,8 @@
 {-# LANGUAGE LambdaCase #-}
 module ReadType where
 
-import FastString (fsLit)
-import SrcLoc
 import GHC
 import GhcMonad
-import Parser
-import Lexer
-import StringBuffer (stringToStringBuffer)
 import TcRnMonad(setXOptM)
 import TcType (UserTypeCtxt(GhciCtxt))
 import DynFlags(ExtensionFlag(Opt_PolyKinds))
@@ -24,15 +19,6 @@ import Var (mkTyVar)
 import Kind (anyKind)
 import HsTypes
 import Util
-
-runParserM parser str = do
-  fs <- getSessionDynFlags
-  let buf = stringToStringBuffer str
-      loc = mkRealSrcLoc (fsLit "<slick>") 1 1
-  return $ case unP parser (mkPState fs buf loc) of
-    PFailed span err -> Left err
-    POk _pst x       -> Right x
-
 
 -- c/f TcRnDriver.hs/tcRnType. I just removed the failIfErrsM.
 tcGetType rdr_type = do
