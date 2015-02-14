@@ -2,10 +2,10 @@ import vim
 import threading
 import subprocess
 import json
+import os.path
 
-slick_path  = '/home/izzy/prog/slick/dist/build/slick/slick'
-log         = open('/home/izzy/slicklog', 'w', 0)
-reader      = None
+log    = open(os.path.join(os.path.expanduser('~'), 'slicklog'), 'w', 0)
+reader = None
 
 def get_client_state():
   (l, c)      = vim.current.window.cursor
@@ -91,7 +91,7 @@ class SlickProcess:
 
   def start(self):
     try:
-      self.pipe = subprocess.Popen([slick_path], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log) #TODO:debug
+      self.pipe = subprocess.Popen(['slick'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log) #TODO:debug
     except OSError as e:
       raise e
 
