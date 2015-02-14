@@ -8,6 +8,7 @@ import DataCon
 import TyCon
 import Type
 --
+import System.Directory (getHomeDirectory)
 import SrcLoc
 import FastString (fsLit)
 import ParseHoleMessage
@@ -236,8 +237,9 @@ respond stRef = \case
 showM :: (GhcMonad m, Outputable a) => a -> m String
 showM = showSDocM . ppr
 
-main =
-  withFile "/home/izzy/slickserverlog" WriteMode $ \logFile -> do
+main = do
+  home <- getHomeDirectory
+  withFile (home </> "slickserverlog") WriteMode $ \logFile -> do
     stRef <- newIORef =<< initialState logFile
     hSetBuffering logFile NoBuffering
     hSetBuffering stdout NoBuffering
@@ -269,8 +271,9 @@ testStateRef = do
   h <- openFile "testlog" WriteMode
   newIORef =<< initialState h
 
-runWithTestRef x =
-  withFile "/home/izzy/prog/slick/testlog" WriteMode $ \logFile -> do
+runWithTestRef x = do
+  home <- getHomeDirectory
+  withFile (home </> "prog/slick/testlog") WriteMode $ \logFile -> do
     r <- newIORef =<< initialState logFile
     run $ do { ghcInit r; x r }
 
