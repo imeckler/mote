@@ -13,13 +13,43 @@ def get_client_state():
   info_window = None
   return {'path': path, 'cursorPos' : [l, c + 1]}
 
+def find(p, xs):
+  for x in xs:
+    if p(x):
+      return x
+  return None
+
+def replace(span, path, s):
+  b = find(lambda b: b.name == path, vim.buffers)
+  if b is None: return
+  ((l0,c0), (l1,c1)) = span
+
+  lines     = s.splitlines()
+  log.write('lines: ' + repr(lines) + '\n')
+  log.write('span: ' + repr(span) + '\n')
+  tail      = b[l1 - 1][c1:]
+  lines[-1] = lines[-1] + tail
+
+  b[l0 - 1] = b[l0 - 1][:c0 - 1] + lines[0]
+  b[l0:l1] = lines[1:]
+
+
 class SlickProcess:
   def __init__(self):
     self.pipe        = None
     self.info_window = None
 
   # returns a bool. False = stop, True = keep going
-  def handle(self, msg):
+  def handle(self, s):
+    try:
+      msg = json.loads(s)
+    except:
+      return False
+
+    # except:
+    #   print ("No bueno")
+    #   return True
+
     if msg[0] == 'Ok':
       pass
 
@@ -38,6 +68,9 @@ class SlickProcess:
       (line, col) = msg[1]
       vim.current.window.cursor = (line, col - 1)
 
+    elif msg[0] == 'Replace':
+      replace(msg[1], msg[2], msg[3])
+
     elif msg[0] == 'Stop':
       return False
 
@@ -45,14 +78,17 @@ class SlickProcess:
 
   def _send_message(self, x):
     s = json.dumps(x) + '\n'
-    self.pipe.stdin.write(s)
     log.write('_send_message: ' + s)
+    if self.pipe.returncode == None:
+      self.pipe.stdin.write(s)
+    else:
+      log.write('send message: return code not none. heres stderr\n')
+
 
   def start(self):
     try:
-      self.pipe = subprocess.Popen([slick_path], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+      self.pipe = subprocess.Popen([slick_path], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log) #TODO:debug
     except OSError as e:
-      print ('hi')
       raise e
 
   def send_stop(self):
@@ -88,13 +124,18 @@ def get_slick_process():
 
 def wait_for_messages():
   keep_going = True
+
   while keep_going:
     slick = get_slick_process()
+    if slick.pipe.returncode == None:
+      log.write('returncode was none\n')
+      s = slick.pipe.stdout.readline()
 
-    s = slick.pipe.stdout.readline()
-
-    log.write('got message: ' + s + '\n')
-    keep_going = slick.handle(json.loads(s))
+      log.write('got message: ' + s + '\n')
+      keep_going = slick.handle(s)
+    else:
+      log.write('returncode was not none\n')
+      break
 
 def start():
   global reader
@@ -123,3 +164,7 @@ def next_hole():
 
 def prev_hole():
   get_slick_process()._send_message(['PrevHole', get_client_state()])
+
+def case_further(var):
+  get_slick_process()._send_message(['CaseFurther', var, get_client_state()])
+

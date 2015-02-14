@@ -8,6 +8,7 @@ import DataCon
 import TyCon
 import Type
 --
+import SrcLoc
 import FastString (fsLit)
 import ParseHoleMessage
 import qualified Data.Map as M
@@ -36,15 +37,16 @@ import qualified Data.Text as T
 import System.IO
 import Case
 import Data.List (isInfixOf)
+import qualified Data.List as List
 import Types
-import qualified Init
+import UniqSupply (mkSplitUniqSupply)
+import ReadType
 
 readModule p = fmap (unLoc . parsedSource) $
-  parseModule =<< (getModSummary . mkModuleName $ takeBaseName p)
+  GHC.parseModule =<< (getModSummary . mkModuleName $ takeBaseName p)
 
 type M = Ghc
 
-{-
 ghcInit :: GhcMonad m => IORef SlickState -> m ()
 ghcInit stRef = do
   dfs <- getSessionDynFlags
@@ -63,7 +65,7 @@ ghcInit stRef = do
     }
   where
   withFlags fs dynFs = foldl DynFlags.gopt_set dynFs fs
--}
+
 -- tcl_lie should contain the CHoleCan's
 
 findEnclosingHole :: (Int, Int) -> [Hole] -> Maybe Hole
@@ -83,7 +85,12 @@ loadModuleAt p = do -- handleSourceError (return . srcErrorMessages) . fmap Righ
   readModule p
 
 loadFile :: GhcMonad m => IORef SlickState -> FilePath -> m ()
-loadFile stRef p = loadModuleAt p >>= setStateForData stRef p
+loadFile stRef p = do
+  resetHolesInfo stRef
+  loadModuleAt p >>= setStateForData stRef p
+  where
+  resetHolesInfo stRef =
+    gModifyIORef stRef (\s -> s { holesInfo = M.empty })
 
 setStateForData :: GhcMonad m => IORef SlickState -> FilePath -> HsModule RdrName -> m ()
 setStateForData stRef p mod = gModifyIORef stRef (\st -> st 
@@ -101,6 +108,7 @@ getHoles = fmap (M.keys . holesInfo) . gReadIORef
 
 srcLocPos (RealSrcLoc l) = (srcLocLine l, srcLocCol l)
 
+-- need to invalidate fileData on file write if necessary
 respond :: IORef SlickState -> FromClient -> M ToClient
 respond stRef = \case
   Load p -> Ok <$ loadFile stRef p
@@ -133,9 +141,12 @@ respond stRef = \case
     gModifyIORef stRef (\st -> st { currentHole = mh })
     case mh of
       Nothing -> return (SetInfoWindow "No Hole found")
+      Just _  -> return Ok
+
+      {-
       Just h  -> runErrorT (Holes.setupContext h mod) >>| \case
         Left err -> Error err
-        Right () -> Ok
+        Right () -> Ok -}
 
   GetEnv (ClientState {..}) ->
     fmap currentHole (gReadIORef stRef) >>= \case
@@ -151,6 +162,50 @@ respond stRef = \case
 
   SendStop -> return Stop
 
+  -- Precondition here: Hole has already been entered
+  CaseFurther var (ClientState {path, cursorPos=(line,col)}) -> do
+    SlickState {..} <- gReadIORef stRef
+    let info = do
+          (path, mod)        <- maybeThrow "Filedata not found" fileData
+          curr               <- maybeThrow "Current hole not found" currentHole
+          HoleInfo {holeEnv} <- maybeThrow "Hole info not found" $
+            M.lookup curr holesInfo
+          (_, tyStr)         <- maybeThrow "Variable not found" $
+            List.find ((== var) . fst) holeEnv
+          return (mod, path, tyStr, curr)
+    case info of
+      Left err                     -> return (Error err)
+      Right (mod, path, tyStr, currHole) ->
+        readType tyStr >>= \case
+          Nothing -> return (Error "Could not read type for casing")
+          Just ty -> 
+            expansions var ty currHole mod >>= \case
+              Nothing                    -> return (Error "Variable not found")
+              Just ((L sp mg, mi), pats) -> do
+                fs <- getSessionDynFlags
+                let span        = toSpan sp
+                    indentLevel = subtract 1 . snd . fst $ span
+                    showForUser :: Outputable a => a -> String
+                    showForUser = showSDocForUser fs neverQualify . ppr
+                return $ case mi of
+                  Equation (L l name) ->
+                    Replace (toSpan sp) path 
+                    "" -- $ showPat mg
+
+                  CaseBranch ->
+                    -- TODO shouldn't always unlines. sometimes should be ; and {}
+                    let (pS:patStrs) = map ((++ " -> _") . showForUser) pats in
+                    Replace (toSpan sp) path . unlines $
+                      pS : map (replicate indentLevel ' ' ++) patStrs
+
+    where
+    maybeThrow s = maybe (throwError s) return
+    currPosSpan  = mkSrcLoc (fsLit path) line col
+    toSpan (RealSrcSpan rss) =
+      (toPos (realSrcSpanStart rss), toPos (realSrcSpanEnd rss))
+    toPos rsl = (srcLocLine rsl, srcLocCol rsl)
+
+
   -- every message should really send current file name (ClientState) and
   -- check if it matches the currently loaded file
   GetType e -> do
@@ -162,12 +217,13 @@ showM = showSDocM . ppr
 
 main =
   withFile "/home/izzy/slickserverlog" WriteMode $ \logFile -> do
-    stRef <- newIORef (initialState logFile)
+    stRef <- newIORef =<< initialState logFile
     hSetBuffering logFile NoBuffering
     hSetBuffering stdout NoBuffering
     hPutStrLn logFile "Testing, testing"
     runGhc (Just libdir) $ do
-      Init.init stRef
+      ghcInit stRef
+      -- Init.init stRef
       logS stRef "init'd"
       forever $ do
         ln <- liftIO B.getLine
@@ -180,13 +236,22 @@ main =
             liftIO $ hPutStrLn logFile ("Giving: " ++ show resp)
             liftIO $ LB8.putStrLn (encode resp)
 
-  where
-  initialState logFile = SlickState
-    { fileData = Nothing
-    , currentHole = Nothing
-    , holesInfo = M.empty
-    , logFile
-    }
+initialState logFile = mkSplitUniqSupply 'x' >>| \uniq -> SlickState
+  { fileData = Nothing
+  , currentHole = Nothing
+  , holesInfo = M.empty
+  , logFile
+  , uniq
+  }
+
+testStateRef = do
+  h <- openFile "testlog" WriteMode
+  newIORef =<< initialState h
+
+runWithTestRef x =
+  withFile "/home/izzy/prog/slick/testlog" WriteMode $ \logFile -> do
+    r <- newIORef =<< initialState logFile
+    run $ do { ghcInit r; x r }
 
 
 run = runGhc (Just libdir)

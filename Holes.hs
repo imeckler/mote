@@ -20,6 +20,14 @@ import qualified DynFlags
 import qualified OccName
 import qualified Bag
 
+-- TODO: In the future, I think it should be possible to actually get the
+-- CHoleCan datastructure via runTcInteractive. Call getConstraintVar to
+-- find the bag of constraints. CHoleCan's will be among them.
+-- Getting "relevant bindings" seems to be a bit harder and it ends up
+-- forcing ugly things like GetType (i.e., parsing types from strings)
+-- since I can't get at the Type's any other way. Check relevantBindings
+-- in TcErrors.hs to see how to get at the environment
+
 type M = ErrorT String Ghc
 
 -- Be careful with guessTarget. It might grab a compiled version
@@ -87,8 +95,6 @@ runM = runGhc (Just libdir) . runErrorT
 
 setupImports = undefined
 
-output = liftIO . putStrLn <=< showSDocM . ppr
-
 printScope = liftIO . putStrLn =<< showSDocM . ppr =<< getNamesInScope
 
 localNames = getNamesInScope
@@ -118,7 +124,7 @@ setupContext hole mod = goDecls decls where
 
   sigs = collectSigs decls
 
-  goDecls = goDecl . nextSubexpr
+  goDecls = goDecl . nextSubexpr hole
 
   goDecl (ValD b) = goBind b
   goDecl _        = throwError "Hole not in a value expression"
@@ -141,11 +147,19 @@ setupContext hole mod = goDecls decls where
     foldr (\(L l m) r -> if hole `isSubspanOf` l then goMatch m else r)
       (error "Where the hole?") mg_alts
 
+  goStmt = \case
+    LastStmt e _synE           -> error "goStmt:todo"
+    BindStmt _lhs rhs _se _se' -> error "goStmt:todo"
+    BodyStmt e _se _se' _      -> error "goStmt:todo"
+    LetStmt bs                 -> error "goStmt:todo"
+    _                          -> error "goStmt:todo"
+
+ 
+  goGRHS (GRHS gs (L _ rhs)) = maybe (goExpr rhs) goStmt (nextSubexpr' hole gs)
+
   goGRHSs :: OutputableBndr id => GRHSs id (LHsExpr id) -> StateT [HsType id] M ()
-  goGRHSs grhss = 
-    foldr (\(L _ (GRHS gs (L l rhs))) r -> if hole `isSubspanOf` l then goExpr rhs else r)
-      (error "Where the hole?") (grhssGRHSs grhss)
-      -- TODO: use grhssLocalBinds ("the where clause")
+  goGRHSs grhss = goGRHS $ nextSubexpr hole (grhssGRHSs grhss)
+    -- TODO: use grhssLocalBinds ("the where clause")
 
   goMatch :: (OutputableBndr id) => Match id (LHsExpr id) -> StateT [HsType id] M ()
   goMatch (Match pats _ grhss) = do
@@ -165,8 +179,6 @@ setupContext hole mod = goDecls decls where
 
     goGRHSs grhss
 
-  nextSubexpr = foldr (\(L l x) r -> if hole `isSubspanOf` l then x else r) (error "where")
-
   goExpr = \case
     HsLam mg              -> goMatchGroup mg
     HsLamCase _ty mg      -> goMatchGroup mg
@@ -174,7 +186,7 @@ setupContext hole mod = goDecls decls where
       if hole `isSubspanOf` l
       then goExpr scrut
       else do
-        let Match [L l pat] _ grhss = nextSubexpr mg_alts
+        let Match [L l pat] _ grhss = nextSubexpr hole mg_alts
         lift . lift $ do
           scrutStr <- showSDocM (ppr scrut)
           patStr   <- showSDocM (ppr pat)
@@ -183,19 +195,19 @@ setupContext hole mod = goDecls decls where
 
     HsLet bs e        -> error "todo: let"
     HsDo {}           -> error "todo: do"
-    OpApp {}          -> error "lookup arg order OpApp"
-    SectionL {}       -> error "lookup arg order SectionL"
-    SectionR {}       -> error "lookup arg order SectionR"
+    OpApp l op _fix r -> goExpr $ nextSubexpr hole [l, op, r]
+    SectionL o x      -> goExpr $ nextSubexpr hole [o, x]
+    SectionR o x      -> goExpr $ nextSubexpr hole [o, x]
     HsMultiIf _ grhss -> error "multiif"
-    RecordUpd {} -> error "todo: RecordUpd"
+    RecordUpd {}      -> error "todo: RecordUpd"
 
-    HsApp e1 e2         -> goExpr $ nextSubexpr [e1, e2]
+    HsApp e1 e2         -> goExpr $ nextSubexpr hole [e1, e2]
     NegApp (L _ e) _    -> goExpr e
     HsPar (L _ e)       -> goExpr e
-    ExplicitTuple ts _  -> goExpr . nextSubexpr $ mapMaybe (\case {Present e -> Just e; _ -> Nothing}) ts
-    HsIf _ i t e        -> goExpr $ nextSubexpr [i, t, e]
-    ExplicitList _ _ es -> goExpr $ nextSubexpr es
-    ExplicitPArr _ es   -> goExpr $ nextSubexpr es
+    ExplicitTuple ts _  -> goExpr . nextSubexpr hole $ mapMaybe (\case {Present e -> Just e; _ -> Nothing}) ts
+    HsIf _ i t e        -> goExpr $ nextSubexpr hole [i, t, e]
+    ExplicitList _ _ es -> goExpr $ nextSubexpr hole es
+    ExplicitPArr _ es   -> goExpr $ nextSubexpr hole es
     RecordCon _ _ bs    -> goRecordBinds bs
     
     _ -> return ()

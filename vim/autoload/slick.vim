@@ -1,6 +1,6 @@
 function! slick#CreateInfoWindow()
   let l:currwin = winnr()
-  rightbelow 50vnew HoleInfo
+  rightbelow 10new HoleInfo
     let l:infowin = winnr()
     setlocal buftype=nofile
     setlocal noswapfile
@@ -49,6 +49,11 @@ endfunction
 
 function! slick#prevHole()
   py slick.prev_hole()
+  redraw!
+endfunction
+
+function! slick#caseFurther(x)
+  py slick.case_further(vim.eval('a:x'))
   redraw!
 endfunction
 

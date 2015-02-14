@@ -7,6 +7,7 @@ import Control.Applicative hiding (many)
 import Data.Maybe
 import Data.List.Split
 import Types
+import Data.Char
 
 -- Soooo brittle
 identAndType :: Parser (String, String)
@@ -28,13 +29,15 @@ parseHoleInfo msg =
   $ parse identAndType "" msg
   where
   holeEnv = mapMaybe extractBinding . dropWhile (/= "Relevant bindings include") $ lines msg
-  extractBinding (' ':' ':s) = case splitOn " :: " s of
-    [var, ty] -> 
-      case (reverse . drop 2 . dropWhile (/= '(') . reverse $ ty) of
-        ""  -> Just (var, ty)
-        ty' -> Just (var, ty')
+  extractBinding line
+    | (' ':' ':s) <- line
+    , [var, ty]   <- splitOn " :: " s
+    , isIdent var
+      = case (reverse . drop 2 . dropWhile (/= '(') . reverse $ ty) of
+          ""  -> Just (var, ty)
+          ty' -> Just (var, ty')
 
-    _         -> Nothing
+    | otherwise = Nothing
 
-  extractBinding _ = Nothing
+  isIdent (c:s) = isAlpha c && all isAlphaNum s
 

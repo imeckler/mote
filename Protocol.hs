@@ -7,10 +7,12 @@ import Data.Aeson hiding (Error)
 import Control.Applicative
 import Control.Monad
 
+type Pos  = (Int, Int)
+type Span = (Pos, Pos)
 data ToClient
-  = Insert String
+  = Replace Span FilePath String
   | SetInfoWindow String
-  | SetCursor (Int, Int)
+  | SetCursor Pos
   | Print String
   | Ok
   | Error String
@@ -19,7 +21,7 @@ data ToClient
 
 instance ToJSON ToClient where
   toJSON = \case
-    Insert t        -> Array $ V.fromList [toJSON (str "Insert"), toJSON t]
+    Replace sp p t  -> Array $ V.fromList [toJSON (str "Replace"), toJSON sp, toJSON p, toJSON t]
     SetInfoWindow t -> Array $ V.fromList [toJSON (str "SetInfoWindow"), toJSON t]
     SetCursor pos   -> Array $ V.fromList [toJSON (str "SetCursor"), toJSON pos]
     Ok              -> Array $ V.fromList [toJSON (str "Ok")]
@@ -54,21 +56,21 @@ data FromClient
   | PrevHole ClientState
   | GetEnv ClientState
   | GetType String
-  | CaseFurther Var
+  | CaseFurther Var ClientState 
   | CaseOn String
   | SendStop
   deriving (Show)
 
 instance FromJSON FromClient where
   parseJSON = \case
-    Array a                              -> case V.toList a of
-      [String "Load", String path]       -> return (Load (T.unpack path))
-      [String "CaseFurther", String var] -> return (CaseFurther (T.unpack var))
-      [String "EnterHole", state]        -> EnterHole <$> parseJSON state
-      [String "NextHole", state]         -> NextHole <$> parseJSON state
-      [String "PrevHole", state]         -> PrevHole <$> parseJSON state
-      [String "GetEnv", state]           -> GetEnv <$> parseJSON state
-      [String "GetType", String e]       -> return . GetType $ T.unpack e
-      [String "SendStop"]                -> return SendStop
-      _                                  -> mzero
+    Array a                                     -> case V.toList a of
+      [String "Load", String path]              -> return (Load (T.unpack path))
+      [String "CaseFurther", String var, state] -> CaseFurther (T.unpack var) <$> parseJSON state
+      [String "EnterHole", state]               -> EnterHole <$> parseJSON state
+      [String "NextHole", state]                -> NextHole <$> parseJSON state
+      [String "PrevHole", state]                -> PrevHole <$> parseJSON state
+      [String "GetEnv", state]                  -> GetEnv <$> parseJSON state
+      [String "GetType", String e]              -> return . GetType $ T.unpack e
+      [String "SendStop"]                       -> return SendStop
+      _                                         -> mzero
 
