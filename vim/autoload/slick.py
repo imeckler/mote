@@ -4,6 +4,9 @@ import subprocess
 import json
 import os.path
 
+# This doesn't work in vim 7.3. Window doesn't have a "valid" attribute,
+# among other things
+
 log    = open(os.path.join(os.path.expanduser('~'), 'slicklog'), 'w', 0)
 reader = None
 
@@ -20,6 +23,7 @@ def find(p, xs):
   return None
 
 def replace(span, path, s):
+  s = str(s)
   b = find(lambda b: b.name == path, vim.buffers)
   if b is None: return
   ((l0,c0), (l1,c1)) = span
@@ -43,9 +47,16 @@ class SlickProcess:
 
   def set_info_window(self, s):
     info_window = self.get_info_window()
-    del info_window.buffer[:]
-    for line in s.splitlines():
-      info_window.buffer.append(line)
+    log.write('in set info window\n')
+    #del info_window.buffer[:]
+    log.write('set buffer\n')
+    info_window.buffer[:] = str(s).splitlines()
+
+    #for line in s.splitlines():
+    #  log.write('settin dat info window\n')
+    #  log.write(str(type(line)) + '\n')
+    #  info_window.buffer.append(str(line))
+      #log.write('set dat info window\n')
 
   def handle(self, s):
     try:
@@ -99,7 +110,8 @@ class SlickProcess:
     self._send_message(['SendStop'])
 
   def get_info_window(self):
-    if self.info_window == None or not self.info_window.valid:
+    if self.info_window == None or not window_is_valid(self.info_window):
+      # why did I get invalid expression on this?
       self.info_window = vim.windows[int(vim.eval('slick#CreateInfoWindow()')) - 1]
     return self.info_window
 
@@ -115,6 +127,13 @@ class SlickProcess:
 
   def get_type(self, expr):
     self._send_message(['GetType', expr])
+
+def window_is_valid(w):
+  try:
+    _ = w.buffer
+    return True
+  except:
+    return False
 
 slick_process = None
 def get_slick_process():
