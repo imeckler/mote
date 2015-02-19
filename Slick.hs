@@ -8,7 +8,7 @@ import DataCon
 import TyCon
 import Type
 --
-import System.Directory (getHomeDirectory)
+import System.Directory (getHomeDirectory, getModificationTime)
 import SrcLoc
 import FastString (fsLit)
 import ParseHoleMessage
@@ -46,6 +46,7 @@ import Refine
 import HscTypes (srcErrorMessages)
 import ErrUtils (pprErrMsgBag)
 
+-- Get module name from file text
 readModule p = fmap (unLoc . parsedSource) $
   GHC.parseModule =<< (getModSummary . mkModuleName $ takeBaseName p)
 
@@ -89,7 +90,12 @@ loadModuleAt p = handleSourceError (return . Left) . fmap Right $ do
 
 loadFile :: GhcMonad m => IORef SlickState -> FilePath -> m (Either String (HsModule RdrName))
 loadFile stRef p = do
-  resetHolesInfo stRef
+  liftIO $ readIORef stRef >>= \s -> case fileData s of
+    Nothing                          -> return ()
+    Just (FileData {path, modified}) -> do
+      t <- getModificationTime path
+      when (t /= modified) (resetHolesInfo stRef)
+
   fs <- getSessionDynFlags
   loadModuleAt p >>= \case
     Left err  -> do
@@ -103,10 +109,12 @@ loadFile stRef p = do
     gModifyIORef stRef (\s -> s { holesInfo = M.empty })
 
 setStateForData :: GhcMonad m => IORef SlickState -> FilePath -> HsModule RdrName -> m ()
-setStateForData stRef p mod = gModifyIORef stRef (\st -> st 
-  { fileData    = Just (p, mod)
-  , currentHole = Nothing
-  })
+setStateForData stRef path hsModule = do
+  modified <- liftIO $ getModificationTime path
+  gModifyIORef stRef (\st -> st 
+    { fileData    = Just (FileData {path, hsModule, modified})
+    , currentHole = Nothing
+    })
 
 getHoles :: IORef SlickState -> M [Hole]
 getHoles = fmap (M.keys . holesInfo) . gReadIORef 
@@ -145,9 +153,9 @@ respond stRef = \case
   EnterHole (ClientState {..}) -> fmap (either Error id) . runErrorT $ do
     mod <- lift (gReadIORef stRef) >>= \st -> case fileData st of
       Nothing       -> throwEither . lift $ loadFile stRef path
-      Just (p, mod) ->
+      Just (FileData {path=p, hsModule}) ->
         if p == path
-        then return mod
+        then return hsModule
         else throwEither . lift $ loadFile stRef path -- maybe shouldn't autoload
 
     SlickState {holesInfo} <- gReadIORef stRef
@@ -178,13 +186,13 @@ respond stRef = \case
   CaseFurther var (ClientState {path, cursorPos=(line,col)}) -> do
     SlickState {..} <- gReadIORef stRef
     let info = do
-          (path, mod)        <- maybeThrow "Filedata not found" fileData
-          curr               <- maybeThrow "Current hole not found" currentHole
-          HoleInfo {holeEnv} <- maybeThrow "Hole info not found" $
+          FileData {path, hsModule} <- maybeThrow "Filedata not found" fileData
+          curr                      <- maybeThrow "Current hole not found" currentHole
+          HoleInfo {holeEnv}        <- maybeThrow "Hole info not found" $
             M.lookup curr holesInfo
-          (_, tyStr)         <- maybeThrow "Variable not found in env" $
+          (_, tyStr)                <- maybeThrow "Variable not found in env" $
             List.find ((== var) . fst) holeEnv
-          return (mod, path, tyStr, curr)
+          return (hsModule, path, tyStr, curr)
     case info of
       Left err                     -> return (Error err)
       Right (mod, path, tyStr, currHole) ->

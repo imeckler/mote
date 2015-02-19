@@ -4,11 +4,18 @@ import qualified Data.Map as M
 import GHC
 import System.IO
 import UniqSupply
+import Data.Time.Clock
 
 type Hole = SrcSpan
 
+data FileData = FileData
+  { path     :: FilePath
+  , modified :: UTCTime
+  , hsModule :: HsModule RdrName
+  }
+
 data SlickState = SlickState
-  { fileData    :: Maybe (FilePath, HsModule RdrName)
+  { fileData    :: Maybe FileData
   , currentHole :: Maybe Hole
   , holesInfo   :: M.Map SrcSpan HoleInfo
   , logFile     :: Handle

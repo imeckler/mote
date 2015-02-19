@@ -34,6 +34,7 @@ executable slick
                        Cabal >= 1.18,
                        pcre-heavy >= 0.2,
                        directory >= 1.2,
+                       time >= 1.4,
                        -- debug
                        syb
 
