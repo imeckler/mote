@@ -22,6 +22,7 @@ data SlickState = SlickState
   , uniq        :: UniqSupply
   }
 
+-- TODO: Maybe just comute all the types up front
 data HoleInfo = HoleInfo
   { holeName    :: String
   , holeTypeStr :: String

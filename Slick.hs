@@ -21,6 +21,7 @@ import Control.Monad.Error
 import Protocol
 import GhcMonad
 import GHC hiding (exprType)
+import GhcUtil
 import GHC.Paths
 import Data.List (find)
 import qualified Holes
