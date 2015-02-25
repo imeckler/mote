@@ -51,8 +51,6 @@ import ErrUtils (pprErrMsgBag)
 readModule p = fmap (unLoc . parsedSource) $
   GHC.parseModule =<< (getModSummary . mkModuleName $ takeBaseName p)
 
-type M = Ghc
-
 ghcInit :: GhcMonad m => IORef SlickState -> m ()
 ghcInit stRef = do
   dfs <- getSessionDynFlags
@@ -89,20 +87,20 @@ loadModuleAt p = handleSourceError (return . Left) . fmap Right $ do
   setContext [IIModule $ mkModuleName (takeBaseName p)]
   readModule p
 
-loadFile :: GhcMonad m => IORef SlickState -> FilePath -> m (Either String (HsModule RdrName))
+loadFile :: IORef SlickState -> FilePath -> M (HsModule RdrName)
 loadFile stRef p = do
   liftIO $ readIORef stRef >>= \s -> case fileData s of
-    Nothing                          -> return ()
-    Just (FileData {path, modified}) -> do
+    Nothing                                         -> return ()
+    Just fd@(FileData {path, modifyTimeAtLastLoad}) -> do
       t <- getModificationTime path
-      when (t /= modified) (resetHolesInfo stRef)
+      when (t /= modifyTimeAtLastLoad) (resetHolesInfo stRef)
 
-  fs <- getSessionDynFlags
-  loadModuleAt p >>= \case
+  fs <- lift getSessionDynFlags
+  lift (loadModuleAt p) >>= \case
     Left err  -> do
       clearState stRef
-      return . Left . showErr fs $ srcErrorMessages err
-    Right mod -> Right mod <$ setStateForData stRef p mod
+      throwError . showErr fs $ srcErrorMessages err
+    Right mod -> mod <$ lift (setStateForData stRef p mod)
   where
   clearState stRef     = gModifyIORef stRef (\s -> s {fileData = Nothing, currentHole = Nothing})
   showErr fs           = showSDocForUser fs neverQualify . vcat . pprErrMsgBag
@@ -111,21 +109,29 @@ loadFile stRef p = do
 
 setStateForData :: GhcMonad m => IORef SlickState -> FilePath -> HsModule RdrName -> m ()
 setStateForData stRef path hsModule = do
-  modified <- liftIO $ getModificationTime path
+  modifyTimeAtLastLoad <- liftIO $ getModificationTime path
   gModifyIORef stRef (\st -> st 
-    { fileData    = Just (FileData {path, hsModule, modified})
+    { fileData    = Just (FileData {path, hsModule, modifyTimeAtLastLoad})
     , currentHole = Nothing
     })
+
+getCurrentHoleErr :: IORef SlickState -> M Hole
+getCurrentHoleErr r = maybe (throwError "Not currently in a hole") return . currentHole =<< gReadIORef r
+
+getFileDataErr :: IORef SlickState -> M FileData
+getFileDataErr = maybe (throwError "File not loaded") return . fileData <=< gReadIORef
 
 getHoles :: IORef SlickState -> M [Hole]
 getHoles = fmap (M.keys . holesInfo) . gReadIORef 
 
 srcLocPos (RealSrcLoc l) = (srcLocLine l, srcLocCol l)
 
--- need to invalidate fileData on file write if necessary
-respond :: IORef SlickState -> FromClient -> M ToClient
-respond stRef = \case
-  Load p -> fmap (either Error (const Ok)) $ loadFile stRef p
+respond :: IORef SlickState -> FromClient -> Ghc ToClient
+respond stRef msg = either Error id <$> runErrorT (respond' stRef msg)
+
+respond' :: IORef SlickState -> FromClient -> M ToClient
+respond' stRef = \case
+  Load p -> const Ok <$> loadFile stRef p
 
   NextHole (ClientState {path, cursorPos=(line,col)}) ->
     getHoles stRef >>| \holes -> 
@@ -151,97 +157,85 @@ respond stRef = \case
     where
     currPosSpan = srcLocSpan (mkSrcLoc (fsLit path) line col)
 
-  EnterHole (ClientState {..}) -> fmap (either Error id) . runErrorT $ do
-    mod <- lift (gReadIORef stRef) >>= \st -> case fileData st of
-      Nothing       -> throwEither . lift $ loadFile stRef path
-      Just (FileData {path=p, hsModule}) ->
-        if p == path
-        then return hsModule
-        else throwEither . lift $ loadFile stRef path -- maybe shouldn't autoload
+  EnterHole (ClientState {..}) -> do
+    FileData {path=p, hsModule} <- getFileDataErr stRef
+    -- maybe shouldn't autoload
+    when (p /= path) (void $ loadFile stRef path)
 
-    SlickState {holesInfo} <- gReadIORef stRef
-
-    let mh = findEnclosingHole cursorPos (M.keys holesInfo)
+    mh <- findEnclosingHole cursorPos . M.keys . holesInfo <$> gReadIORef stRef
     gModifyIORef stRef (\st -> st { currentHole = mh })
-    case mh of
-      Nothing -> return (SetInfoWindow "No Hole found")
-      Just _  -> return Ok
-    where
-    throwEither = (>>= either throwError return)
+    return $ case mh of
+      Nothing -> SetInfoWindow "No Hole found"
+      Just _  -> Ok
 
-  GetEnv (ClientState {..}) ->
-    fmap currentHole (gReadIORef stRef) >>= \case
-      Just h  -> do
-        names <-  filter (isNothing . nameModule_maybe) <$> getNamesInScope
-        (HoleInfo {..}) <- ((M.! h) . holesInfo) <$> gReadIORef stRef
-        let goalStr = "Goal: " ++ holeName ++ " :: " ++ holeTypeStr ++ "\n" ++ replicate 40 '-'
-            envVarTypes = map (\(x,t) -> x ++ " :: " ++ t) holeEnv
+  GetEnv (ClientState {..}) -> do
+    h               <- getCurrentHoleErr stRef
+    names           <-  filter (isNothing . nameModule_maybe) <$> lift getNamesInScope
+    (HoleInfo {..}) <- ((M.! h) . holesInfo) <$> gReadIORef stRef
+    let goalStr = "Goal: " ++ holeName ++ " :: " ++ holeTypeStr ++ "\n" ++ replicate 40 '-'
+        envVarTypes = map (\(x,t) -> x ++ " :: " ++ t) holeEnv
 
-        return (SetInfoWindow $ unlines (goalStr : envVarTypes))
+    return (SetInfoWindow $ unlines (goalStr : envVarTypes))
 
-      Nothing -> return (Error "nohole")
+  -- TODO: Switch everything to use error monad
+  Refine exprStr (ClientState {..}) -> do
+    h <- getCurrentHoleErr stRef
+    (HoleInfo {..}) <- ((M.! h) . holesInfo) <$> gReadIORef stRef
+    goalTy <- readType holeTypeStr
+    expr'  <- refine goalTy exprStr
+    fs     <- lift getSessionDynFlags
+    return $
+      Replace (toSpan h) path
+        (showSDocForUser fs neverQualify (ppr expr'))
+
 
   SendStop -> return Stop
 
   -- Precondition here: Hole has already been entered
   CaseFurther var (ClientState {path, cursorPos=(line,col)}) -> do
     SlickState {..} <- gReadIORef stRef
-    let info = do
-          FileData {path, hsModule} <- maybeThrow "Filedata not found" fileData
-          curr                      <- maybeThrow "Current hole not found" currentHole
-          HoleInfo {holeEnv}        <- maybeThrow "Hole info not found" $
-            M.lookup curr holesInfo
-          (_, tyStr)                <- maybeThrow "Variable not found in env" $
-            List.find ((== var) . fst) holeEnv
-          return (hsModule, path, tyStr, curr)
-    case info of
-      Left err                     -> return (Error err)
-      Right (mod, path, tyStr, currHole) ->
-        readType tyStr >>= \case
-          Nothing -> return (Error "Could not read type for casing")
-          Just ty -> 
-            expansions var ty currHole mod >>= \case
-              Nothing                    -> return (Error "Variable not found")
-              Just ((L sp mg, mi), matches) -> do
-                fs <- getSessionDynFlags
-                let span              = toSpan sp
-                    indentLevel       = subtract 1 . snd . fst $ span
-                    indentTail (s:ss) = s : map (replicate indentLevel ' ' ++) ss
+    FileData {path, hsModule} <- getFileDataErr stRef
+    currHole           <- getCurrentHoleErr stRef
+    HoleInfo {holeEnv} <- maybeThrow "Hole info not found" $ M.lookup currHole holesInfo
+    (_, tyStr)         <- maybeThrow "Variable not found in env" $
+                            List.find ((== var) . fst) holeEnv
 
-                    showMatch :: HsMatchContext RdrName -> Match RdrName (LHsExpr RdrName) -> String
-                    showMatch ctx = showSDocForUser fs neverQualify . pprMatch ctx
+    ty <- readType tyStr
+    expansions var ty currHole hsModule >>= \case
+      Nothing                       -> return Ok
+      Just ((L sp mg, mi), matches) -> do
+        fs <- lift getSessionDynFlags
+        let span              = toSpan sp
+            indentLevel       = subtract 1 . snd . fst $ span
+            indentTail (s:ss) = s : map (replicate indentLevel ' ' ++) ss
 
-                    showForUser :: Outputable a => a -> String
-                    showForUser = showSDocForUser fs neverQualify . ppr
-                return $ case mi of
-                  Equation (L l name) ->
-                    Replace (toSpan sp) path . unlines . indentTail $
-                      map (showMatch (FunRhs name False)) matches
+            showMatch :: HsMatchContext RdrName -> Match RdrName (LHsExpr RdrName) -> String
+            showMatch ctx = showSDocForUser fs neverQualify . pprMatch ctx
 
-                  CaseBranch ->
-                    -- TODO shouldn't always unlines. sometimes should be ; and {}
-                    Replace (toSpan sp) path . unlines . indentTail $
-                      map (showMatch CaseAlt) matches
+            showForUser :: Outputable a => a -> String
+            showForUser = showSDocForUser fs neverQualify . ppr
+        return $ case mi of
+          Equation (L l name) ->
+            Replace (toSpan sp) path . unlines . indentTail $
+              map (showMatch (FunRhs name False)) matches
 
-                  SingleLambda loc ->
-                    Error "TODO: SingleLambda"
+          CaseBranch ->
+            -- TODO shouldn't always unlines. sometimes should be ; and {}
+            Replace (toSpan sp) path . unlines . indentTail $
+              map (showMatch CaseAlt) matches
 
+          SingleLambda loc ->
+            Error "TODO: SingleLambda"
     where
     maybeThrow s = maybe (throwError s) return
     currPosSpan  = mkSrcLoc (fsLit path) line col
-    toSpan (RealSrcSpan rss) =
-      (toPos (realSrcSpanStart rss), toPos (realSrcSpanEnd rss))
-    toPos rsl = (srcLocLine rsl, srcLocCol rsl)
-
 
   -- every message should really send current file name (ClientState) and
   -- check if it matches the currently loaded file
   GetType e -> do
-    fs <- getSessionDynFlags
-    logS stRef "gonna get type now"
-    x <- exprType e >>| either Error (SetInfoWindow . showSDocForUser fs neverQualify . ppr)
-    logS stRef "It worked!"
-    return x
+    fs <- lift getSessionDynFlags
+    x  <- exprType e
+    return . SetInfoWindow . showSDocForUser fs neverQualify $ ppr x
 
 showM :: (GhcMonad m, Outputable a) => a -> m String
 showM = showSDocM . ppr

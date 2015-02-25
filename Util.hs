@@ -15,6 +15,7 @@ import StringBuffer (stringToStringBuffer)
 import FastString (fsLit)
 import SrcLoc
 import GhcMonad
+import Control.Monad.Error
 
 runParserM parser str = do
   fs <- getSessionDynFlags
@@ -49,3 +50,10 @@ nextLocatedSubexpr hole = foldr (\(L l x) r -> if hole `isSubspanOf` l then x el
 nextSubexpr' hole       = foldr (\(L l x) r -> if hole `isSubspanOf` l then Just x else r) Nothing
 
 -- foldExprs :: ([s] -> s) -> (LHsExpr id -> s -> Maybe s) -> HsModule id -> 
+
+eitherThrow :: MonadError e m => Either e a -> m a
+eitherThrow = either throwError return
+
+maybeThrow :: MonadError e m => e -> Maybe a -> m a
+maybeThrow err = maybe (throwError err) return
+

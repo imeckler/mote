@@ -27,6 +27,8 @@ import UniqSupply
 import Name (mkInternalName, mkVarOcc, nameOccName)
 import Control.Arrow
 import qualified Data.List as List
+import Types
+import Control.Monad.Error
 
 type SatDataConRep = (Name, [Type])
 
@@ -146,24 +148,23 @@ namesBound (L _ (Match pats t rhs)) = listyPat (\pats' -> Match pats' t rhs) pat
 -- TODO: Change to ErrorT
 
 expansions
-  :: GhcMonad m =>
-     String
+  :: String
      -> Type
      -> SrcSpan
      -> HsModule RdrName
-     -> m (Maybe
+     -> M (Maybe
              ((LMatch RdrName (LHsExpr RdrName),
                MatchInfo RdrName),
               [Match RdrName (LHsExpr RdrName)]))
 expansions var ty loc mod =
   case findMap (\mgi@(lm,_) -> fmap (mgi,) . aListLookup varName . namesBound $ lm) mgs of
     Just (mgi, patPosn) -> do
-      dcsMay <- unpeel ty
+      dcsMay <- lift $ unpeel ty
       return $ case dcsMay of
         Nothing  -> Nothing
         Just dcs -> Just (mgi, map (patPosn . conPattern) dcs)
 
-    Nothing -> return Nothing
+    Nothing -> throwError "Variable not found"
   where
   varName       = mkVarUnqual $ fsLit var
   mgs           = containingMatchGroups loc mod

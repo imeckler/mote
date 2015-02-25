@@ -9,12 +9,14 @@ import GHC hiding (exprType)
 import Outputable (vcat, showSDoc)
 import ErrUtils (pprErrMsgBag)
 import TcRnDriver (tcRnExpr)
-import TcUnify (tcSubType)
 import Data.Traversable
 import TcRnTypes
 import TcType (UserTypeCtxt(GhciCtxt))
 import Type
 import GhcUtil
+import OccName
+import Control.Monad.Error
+import Types
 
 import Panic
 
@@ -24,17 +26,27 @@ import Panic
 
 -- exprType :: GhcMonad m => String -> Either String Type
 
+refineExpr :: Type -> LHsExpr RdrName -> M Int
 refineExpr goalTy e = do
-  ty_orerr <- exprType e
-  fmap (\case {Just x -> Right x; _ -> Left "Couldn't refine"} =<<)
-    (traverse (refineType goalTy) ty_orerr)
+  ty <- hsExprType e
+  refineType goalTy ty
 
+refineType :: Type -> Type -> M Int
 refineType goalTy = go 0
   where
-  go :: GhcMonad m => Int -> Type -> m (Maybe Int)
-  go acc t = subType goalTy t >>= \case
-    True  -> return (Just acc)
+  go acc t = lift (subType goalTy t) >>= \case
+    True  -> return acc
     False -> case splitFunTy_maybe t of
-      Nothing      -> return Nothing
+      Nothing      -> throwError "Couldn't refine"
       Just (_, t') -> go (1 + acc) t'
+
+refine :: Type -> String -> M (LHsExpr RdrName)
+refine goalTy eStr = refineToExpr goalTy =<< parseExpr eStr
+
+refineToExpr goalTy e =
+  refineExpr goalTy e >>| \argsNum -> withNHoles argsNum e
+
+withNHoles n e = app e $ replicate n hole where
+  app f args = foldl (\f' x -> noLoc $ HsApp f' x) f args
+  hole       = noLoc $ HsVar (Unqual (mkVarOcc "_"))
 

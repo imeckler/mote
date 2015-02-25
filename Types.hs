@@ -5,13 +5,14 @@ import GHC
 import System.IO
 import UniqSupply
 import Data.Time.Clock
+import Control.Monad.Error
 
 type Hole = SrcSpan
 
 data FileData = FileData
-  { path     :: FilePath
-  , modified :: UTCTime
-  , hsModule :: HsModule RdrName
+  { path                 :: FilePath
+  , modifyTimeAtLastLoad :: UTCTime
+  , hsModule             :: HsModule RdrName
   }
 
 data SlickState = SlickState
@@ -30,3 +31,4 @@ data HoleInfo = HoleInfo
   }
   deriving (Show)
 
+type M = ErrorT String Ghc
