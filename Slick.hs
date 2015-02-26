@@ -1,6 +1,7 @@
 {-# LANGUAGE LambdaCase,
              OverloadedStrings,
              NamedFieldPuns,
+             TupleSections,
              RecordWildCards #-}
 module Main where
 
@@ -13,6 +14,7 @@ import SrcLoc
 import FastString (fsLit)
 import ParseHoleMessage
 import qualified Data.Map as M
+import qualified Data.Set as S
 import Name
 import Data.Maybe
 import Control.Applicative
@@ -48,7 +50,7 @@ import HscTypes (srcErrorMessages)
 import ErrUtils (pprErrMsgBag)
 
 -- Get module name from file text
-readModule p = fmap (unLoc . parsedSource) $
+parseModuleAt p =
   GHC.parseModule =<< (getModSummary . mkModuleName $ takeBaseName p)
 
 ghcInit :: GhcMonad m => IORef SlickState -> m ()
@@ -84,10 +86,11 @@ loadModuleAt p = handleSourceError (return . Left) . fmap Right $ do
   -- and then call GHC.loadMoudle to avoid duplicating work
   setTargets . (:[]) =<< guessTarget p Nothing
   load LoadAllTargets
-  setContext [IIModule $ mkModuleName (takeBaseName p)]
-  readModule p
+  setContext [IIModule $ mkModuleName (takeBaseName p)] -- TODO: Shouldn't use basename
+  parsedMod <- parseModuleAt p
+  (unLoc $ parsedSource parsedMod,) <$> typecheckModule parsedMod
 
-loadFile :: IORef SlickState -> FilePath -> M (HsModule RdrName)
+loadFile :: IORef SlickState -> FilePath -> M (HsModule RdrName, TypecheckedModule)
 loadFile stRef p = do
   liftIO $ readIORef stRef >>= \s -> case fileData s of
     Nothing                                         -> return ()
@@ -100,29 +103,23 @@ loadFile stRef p = do
     Left err  -> do
       clearState stRef
       throwError . showErr fs $ srcErrorMessages err
-    Right mod -> mod <$ lift (setStateForData stRef p mod)
+    Right mods -> mods <$ lift (setStateForData stRef p mods)
   where
   clearState stRef     = gModifyIORef stRef (\s -> s {fileData = Nothing, currentHole = Nothing})
   showErr fs           = showSDocForUser fs neverQualify . vcat . pprErrMsgBag
   resetHolesInfo stRef =
     gModifyIORef stRef (\s -> s { holesInfo = M.empty })
 
-setStateForData :: GhcMonad m => IORef SlickState -> FilePath -> HsModule RdrName -> m ()
-setStateForData stRef path hsModule = do
+setStateForData :: GhcMonad m => IORef SlickState -> FilePath -> (HsModule RdrName, TypecheckedModule) -> m ()
+setStateForData stRef path (hsModule, typecheckedModule) = do
   modifyTimeAtLastLoad <- liftIO $ getModificationTime path
+  let argHoles = Holes.argHoles hsModule
   gModifyIORef stRef (\st -> st 
-    { fileData    = Just (FileData {path, hsModule, modifyTimeAtLastLoad})
+    { fileData    = Just (FileData {path, hsModule, typecheckedModule, modifyTimeAtLastLoad})
     , currentHole = Nothing
+    , argHoles
     })
-
-getCurrentHoleErr :: IORef SlickState -> M Hole
-getCurrentHoleErr r = maybe (throwError "Not currently in a hole") return . currentHole =<< gReadIORef r
-
-getFileDataErr :: IORef SlickState -> M FileData
-getFileDataErr = maybe (throwError "File not loaded") return . fileData <=< gReadIORef
-
-getHoles :: IORef SlickState -> M [Hole]
-getHoles = fmap (M.keys . holesInfo) . gReadIORef 
+  logS stRef $ show argHoles
 
 srcLocPos (RealSrcLoc l) = (srcLocLine l, srcLocCol l)
 
@@ -158,7 +155,7 @@ respond' stRef = \case
     currPosSpan = srcLocSpan (mkSrcLoc (fsLit path) line col)
 
   EnterHole (ClientState {..}) -> do
-    FileData {path=p, hsModule} <- getFileDataErr stRef
+    FileData {path=p} <- getFileDataErr stRef
     -- maybe shouldn't autoload
     when (p /= path) (void $ loadFile stRef path)
 
@@ -170,7 +167,7 @@ respond' stRef = \case
 
   GetEnv (ClientState {..}) -> do
     h               <- getCurrentHoleErr stRef
-    names           <-  filter (isNothing . nameModule_maybe) <$> lift getNamesInScope
+    names           <- filter (isNothing . nameModule_maybe) <$> lift getNamesInScope
     (HoleInfo {..}) <- ((M.! h) . holesInfo) <$> gReadIORef stRef
     let goalStr = "Goal: " ++ holeName ++ " :: " ++ holeTypeStr ++ "\n" ++ replicate 40 '-'
         envVarTypes = map (\(x,t) -> x ++ " :: " ++ t) holeEnv
@@ -179,11 +176,9 @@ respond' stRef = \case
 
   -- TODO: Switch everything to use error monad
   Refine exprStr (ClientState {..}) -> do
-    h <- getCurrentHoleErr stRef
-    (HoleInfo {..}) <- ((M.! h) . holesInfo) <$> gReadIORef stRef
-    goalTy <- readType holeTypeStr
-    expr'  <- refine goalTy exprStr
-    fs     <- lift getSessionDynFlags
+    h     <- getCurrentHoleErr stRef
+    expr' <- refine stRef exprStr
+    fs    <- lift getSessionDynFlags
     return $
       Replace (toSpan h) path
         (showSDocForUser fs neverQualify (ppr expr'))
@@ -202,7 +197,7 @@ respond' stRef = \case
 
     ty <- readType tyStr
     expansions var ty currHole hsModule >>= \case
-      Nothing                       -> return Ok
+      Nothing                    -> return (Error "Variable not found")
       Just ((L sp mg, mi), matches) -> do
         fs <- lift getSessionDynFlags
         let span              = toSpan sp
@@ -266,6 +261,7 @@ initialState logFile = mkSplitUniqSupply 'x' >>| \uniq -> SlickState
   { fileData = Nothing
   , currentHole = Nothing
   , holesInfo = M.empty
+  , argHoles = S.empty
   , logFile
   , uniq
   }

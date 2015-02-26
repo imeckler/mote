@@ -8,6 +8,8 @@ import System.IO
 import Control.Monad.IO.Class (MonadIO)
 import Types
 import Control.Monad
+import Control.Applicative
+import qualified Data.Map as M
 -- PARSE IMPORTS
 import Parser
 import Lexer
@@ -56,4 +58,20 @@ eitherThrow = either throwError return
 
 maybeThrow :: MonadError e m => e -> Maybe a -> m a
 maybeThrow err = maybe (throwError err) return
+
+getCurrentHoleInfoErr :: IORef SlickState -> M HoleInfo
+getCurrentHoleInfoErr r = do
+  h <- getCurrentHoleErr r
+  infos <- holesInfo <$> gReadIORef r
+  maybeThrow "Hole not in map" $ M.lookup h infos
+
+
+getCurrentHoleErr :: IORef SlickState -> M Hole
+getCurrentHoleErr r = maybe (throwError "Not currently in a hole") return . currentHole =<< gReadIORef r
+
+getFileDataErr :: IORef SlickState -> M FileData
+getFileDataErr = maybe (throwError "File not loaded") return . fileData <=< gReadIORef
+
+getHoles :: IORef SlickState -> M [Hole]
+getHoles = fmap (M.keys . holesInfo) . gReadIORef 
 

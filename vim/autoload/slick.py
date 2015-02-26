@@ -31,11 +31,15 @@ def replace(span, path, s):
   lines     = s.splitlines()
   log.write('lines: ' + repr(lines) + '\n')
   log.write('span: ' + repr(span) + '\n')
-  tail      = b[l1 - 1][c1:]
-  lines[-1] = lines[-1] + tail
+  if l0 == l1:
+    b[l0 - 1] = b[l0 - 1][:c0 - 1] + lines[0] + b[l0 - 1][c1 - 1:]
+    b.append(lines[1:], l0 - 1)
+  else:
+    tail      = b[l1 - 1][c1:]
+    lines[-1] = lines[-1] + tail
 
-  b[l0 - 1] = b[l0 - 1][:c0 - 1] + lines[0]
-  b[l0:l1] = lines[1:]
+    b[l0 - 1] = b[l0 - 1][:c0 - 1] + lines[0]
+    b[l0:l1] = lines[1:]
 
 
 class SlickProcess:
@@ -190,4 +194,7 @@ def prev_hole():
 
 def case_further(var):
   get_slick_process()._send_message(['CaseFurther', var, get_client_state()])
+
+def refine(expr):
+  get_slick_process()._send_message(['Refine', expr, get_client_state()])
 

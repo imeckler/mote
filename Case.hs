@@ -195,7 +195,7 @@ containingMatchGroups loc = goDecls [] . hsmodDecls where
   -- TODO: Guards should be returned too
   goGRHS acc (GRHS _gs b) = goLExpr acc b
 
-  goLExpr acc (L l e)= case e of
+  goLExpr acc (L l e) = case e of
     HsLamCase _ mg      -> goMatchGroup CaseBranch acc mg
     HsLam mg            -> goMatchGroup (SingleLambda l) acc mg
     HsApp a b           -> goLExpr acc $ nextSubLExpr [a, b]

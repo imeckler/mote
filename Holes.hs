@@ -19,6 +19,7 @@ import System.FilePath
 import qualified DynFlags
 import qualified OccName
 import qualified Bag
+import qualified Data.Set as S
 
 -- TODO: In the future, I think it should be possible to actually get the
 -- CHoleCan datastructure via runTcInteractive. Call getConstraintVar to
@@ -33,12 +34,70 @@ type M = ErrorT String Ghc
 -- Be careful with guessTarget. It might grab a compiled version
 -- of a module instead of interpreting
 
-holes = goDecls . hsmodDecls where
+argHoles = S.fromList . goDecls . hsmodDecls where
   goDecls = concatMap (goDecl . unLoc)
 
   goDecl = \case
-    ValD b -> goBind b
-    _      -> []
+    ValD bd                                   -> goBind bd
+    InstD (ClsInstD (ClsInstDecl{cid_binds})) -> concatMap (goBind . unLoc) $ Bag.bagToList cid_binds
+    _                                         -> []
+
+  goBind = \case
+    FunBind {..} -> goMatchGroup fun_matches
+    PatBind {..} -> goGRHSs pat_rhs
+    _            -> []
+
+  goMatchGroup = concatMap goLMatch . mg_alts
+
+  goLMatch lm@(L _ (Match _pats _ty grhss)) = goGRHSs grhss
+
+  goGRHSs (GRHSs {grhssGRHSs}) = concatMap (goGRHS . unLoc) grhssGRHSs
+
+  -- TODO: Guards should be returned too
+  goGRHS (GRHS _gs b) = goLExpr b
+
+  goArgLExpr e = case unLoc e of
+    HsVar (Unqual o) -> case OccName.occNameString o of { '_':_ -> [getLoc e]; _ -> [] }
+    EWildPat         -> [getLoc e]
+    _                -> goLExpr e
+
+  goLExpr :: LHsExpr RdrName -> [SrcSpan]
+  goLExpr (L l e) = case e of
+    HsLamCase _ mg      -> goMatchGroup mg
+    HsLam mg            -> goMatchGroup mg
+    HsApp a b           -> goArgLExpr b ++ goLExpr a
+    OpApp a b _ c       -> concatMap goLExpr [a, b, c]
+    NegApp e' _         -> goLExpr e'
+    HsPar e'            -> goLExpr e'
+    SectionL a b        -> concatMap goLExpr [a, b]
+    SectionR a b        -> concatMap goLExpr [a, b]
+    ExplicitTuple ts _  -> concatMap goLExpr $ mapMaybe (\case {Present e -> Just e; _ -> Nothing}) ts
+    HsCase scrut mg     -> goLExpr scrut ++ goMatchGroup mg
+    HsIf _ a b c        -> concatMap goLExpr [a, b, c]
+    HsMultiIf _ grhss   -> concatMap (goGRHS . unLoc) grhss
+    HsDo _ stmts _      -> concatMap (goStmt . unLoc) stmts
+    ExplicitList _ _ es -> concatMap goLExpr es
+    ExplicitPArr _ es   -> concatMap goLExpr es
+    -- TODO: let expr
+    _                   -> []
+
+  goStmt = \case
+    LastStmt e _synE           -> goLExpr e -- TODO: figure out what the deal is with syntaxexpr
+    BindStmt _lhs rhs _se _se' -> goLExpr rhs
+    BodyStmt e _se _se' _      -> goLExpr e
+    -- TODO
+    -- LetStmt bs                 -> goLocalBinds acc bs
+    _                          -> []
+
+{-
+-- Holes which are arguments to functions and so might need parens
+argHoles = S.fromList . goDecls . hsmodDecls where
+  goDecls = concatMap (goDecl . unLoc)
+
+  goDecl = \case
+    ValD b                                    -> goBind b
+    InstD (ClsInstD (ClsInstDecl{cid_binds})) -> concatMap (goBind . unLoc) $ Bag.bagToList cid_binds
+    _                                         -> []
 
   goBind = \case
     FunBind {fun_matches} -> goMatchGroup fun_matches
@@ -50,33 +109,36 @@ holes = goDecls . hsmodDecls where
 
   goGRHSs (GRHSs {grhssGRHSs}) = concatMap (goGRHS . unLoc) grhssGRHSs
 
-  goGRHS (GRHS gs b) = goLExpr b ++ concatMap (goStmt . unLoc) gs
+  goGRHS (GRHS gs b) = goLExpr False b ++ concatMap (goStmt . unLoc) gs
 
-  goLExpr (L l e) = case e of
-    HsVar (Unqual o)    -> case OccName.occNameString o of { '_':_ -> [l] ; _ -> [] }
+  -- isArg is a flag indicating that the hole
+  -- is an argument to a function and so might need parens upon being
+  -- replaced
+  goLExpr isArg (L l e) = case e of
+    HsVar (Unqual o)    -> case OccName.occNameString o of { '_':_ -> if isArg then [l] else []; _ -> [] }
     HsLam mg            -> goMatchGroup mg
     HsLamCase _ mg      -> goMatchGroup mg
-    HsApp a b           -> goLExpr a ++ goLExpr b
-    OpApp a b _ c       -> goLExpr a ++ goLExpr b ++ goLExpr c
-    NegApp e' _         -> goLExpr e'
-    HsPar e'            -> goLExpr e'
-    SectionL a b        -> goLExpr a ++ goLExpr b
-    SectionR a b        -> goLExpr a ++ goLExpr b
-    ExplicitTuple ts _  -> concatMap (\case { Present e' -> goLExpr e'; _ -> [] }) ts
-    HsCase scrut mg     -> goLExpr scrut ++ goMatchGroup mg
-    HsIf _ a b c        -> goLExpr a ++ goLExpr b ++ goLExpr c
+    HsApp a b           -> goLExpr False a ++ goLExpr True b
+    OpApp a b _ c       -> goLExpr False a ++ goLExpr False b ++ goLExpr False c
+    NegApp e' _         -> goLExpr False e'
+    HsPar e'            -> goLExpr False e'
+    SectionL a b        -> goLExpr False a ++ goLExpr False b
+    SectionR a b        -> goLExpr False a ++ goLExpr False b
+    ExplicitTuple ts _  -> concatMap (\case { Present e' -> goLExpr False e'; _ -> [] }) ts
+    HsCase scrut mg     -> goLExpr False scrut ++ goMatchGroup mg
+    HsIf _ a b c        -> goLExpr False a ++ goLExpr False b ++ goLExpr False c
     HsMultiIf _ grhss   -> concatMap (goGRHS . unLoc) grhss
     HsDo _ stmts _      -> concatMap (goStmt . unLoc) stmts
-    ExplicitList _ _ es -> concatMap goLExpr es
-    ExplicitPArr _ es   -> concatMap goLExpr es
-    _                   -> error "goLExpr: todo"
+    ExplicitList _ _ es -> concatMap (goLExpr False) es
+    ExplicitPArr _ es   -> concatMap (goLExpr False) es
+    _                   -> []
 
   goStmt = \case
-    LastStmt e _synE           -> goLExpr e -- TODO: figure out what the deal is with syntaxexpr
-    BindStmt _lhs rhs _se _se' -> goLExpr rhs
-    BodyStmt e _se _se' _      -> goLExpr e
+    LastStmt e _synE           -> goLExpr False e -- TODO: figure out what the deal is with syntaxexpr
+    BindStmt _lhs rhs _se _se' -> goLExpr False rhs
+    BodyStmt e _se _se' _      -> goLExpr False e
     LetStmt bs                 -> goLocalBinds bs
-    _                          -> error "goStmt: todo"
+    _                          -> []
 
   goLocalBinds = \case
     HsValBinds vals -> goValBinds vals
@@ -89,7 +151,7 @@ holes = goDecls . hsmodDecls where
   goIPBinds _ = [] -- TODO: Figure out what this is
 
   goBinds = Bag.foldrBag (\b r -> goBind (unLoc b) ++ r) []
-
+-}
 runM :: M a -> IO (Either String a)
 runM = runGhc (Just libdir) . runErrorT
 

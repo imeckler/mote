@@ -67,4 +67,16 @@ toSpan (RealSrcSpan rss) =
 
 toPos rsl = (srcLocLine rsl, srcLocCol rsl)
 
+-- needed for refine and the real version of getting hole env
+
+-- (var, Type)
+withBindings :: GhcMonad m => [(String, String)] -> m a -> m a
+withBindings bs mx = do
+  env0 <- getSession
+  mapM_ (\b -> runStmt (mkBind b) RunToCompletion) bs
+  x <- mx
+  setSession env0 -- this is maybe a little violent...
+  return x
+  where
+  mkBind (x, t) = "let " ++ x ++ " = undefined :: " ++ t
 

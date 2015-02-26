@@ -1,6 +1,7 @@
-{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE LambdaCase, RecordWildCards #-}
 module Refine where
 
+import Control.Applicative
 import Parser (parseStmt)
 import Util
 import HsExpr
@@ -17,6 +18,9 @@ import GhcUtil
 import OccName
 import Control.Monad.Error
 import Types
+import Data.IORef (IORef)
+import ReadType
+import qualified Data.Set as S
 
 import Panic
 
@@ -32,7 +36,7 @@ refineExpr goalTy e = do
   refineType goalTy ty
 
 refineType :: Type -> Type -> M Int
-refineType goalTy = go 0
+refineType goalTy = go 0 . dropForAlls
   where
   go acc t = lift (subType goalTy t) >>= \case
     True  -> return acc
@@ -40,8 +44,23 @@ refineType goalTy = go 0
       Nothing      -> throwError "Couldn't refine"
       Just (_, t') -> go (1 + acc) t'
 
-refine :: Type -> String -> M (LHsExpr RdrName)
-refine goalTy eStr = refineToExpr goalTy =<< parseExpr eStr
+refine :: IORef SlickState -> String -> M (LHsExpr RdrName)
+refine stRef eStr = do
+  h             <- getCurrentHoleErr stRef
+  isArg         <- S.member h . argHoles <$> gReadIORef stRef
+  HoleInfo {..} <- getCurrentHoleInfoErr stRef
+  goalTy        <- readType holeTypeStr
+  ErrorT . withBindings holeEnv . runErrorT $ do
+    expr' <- refineToExpr goalTy =<< parseExpr eStr
+    let atomic = 
+          case unLoc expr' of
+            HsVar {}     -> True
+            HsIPVar {}   -> True
+            HsOverLit {} -> True
+            HsLit {}     -> True
+            HsPar {}     -> True
+            _            -> False
+    return $ if isArg && not atomic then noLoc (HsPar expr') else expr'
 
 refineToExpr goalTy e =
   refineExpr goalTy e >>| \argsNum -> withNHoles argsNum e
