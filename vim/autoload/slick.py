@@ -7,6 +7,9 @@ import os.path
 # This doesn't work in vim 7.3. Window doesn't have a "valid" attribute,
 # among other things
 
+# Need to kill processes properly. If I open two slicks then they don't
+# get killed correctly
+
 log    = open(os.path.join(os.path.expanduser('~'), 'slicklog'), 'w', 0)
 reader = None
 
@@ -23,7 +26,7 @@ def find(p, xs):
   return None
 
 def replace(span, path, s):
-  s = str(s)
+  s = s.encode('utf-8')
   b = find(lambda b: b.name == path, vim.buffers)
   if b is None: return
   ((l0,c0), (l1,c1)) = span
@@ -54,7 +57,7 @@ class SlickProcess:
     log.write('in set info window\n')
     #del info_window.buffer[:]
     log.write('set buffer\n')
-    info_window.buffer[:] = str(s).splitlines()
+    info_window.buffer[:] = s.encode('utf-8').splitlines()
 
     #for line in s.splitlines():
     #  log.write('settin dat info window\n')

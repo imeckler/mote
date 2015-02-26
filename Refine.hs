@@ -30,28 +30,46 @@ import Panic
 
 -- exprType :: GhcMonad m => String -> Either String Type
 
-refineExpr :: Type -> LHsExpr RdrName -> M Int
-refineExpr goalTy e = do
+-- refineExpr :: Type -> LHsExpr RdrName -> M Int
+refineExpr stRef goalTy e = do
   ty <- hsExprType e
-  refineType goalTy ty
+  refineType stRef goalTy ty
 
-refineType :: Type -> Type -> M Int
-refineType goalTy = go 0 . dropForAlls
+-- refineType :: Type -> Type -> M Int
+refineType stRef goalTy t = let (tyVars, t') = splitForAllTys t in go 0 tyVars t'
+-- foralls of the argument type t should get pushed down as we go
   where
-  go acc t = lift (subType goalTy t) >>= \case
-    True  -> return acc
-    False -> case splitFunTy_maybe t of
-      Nothing      -> throwError "Couldn't refine"
-      Just (_, t') -> go (1 + acc) t'
+  -- The subtype thing doesn't play nice with polymorphism.
+  -- If we have a hole _ :: a (not forall a. a, it's a specific type
+  -- variable) and refine with fromJust :: forall t. Maybe t -> t,
+  -- subType says that a < the type of fromJust and we just stick fromJust
+  -- in the hole.
+  go acc tyVars t =
+    let (tyVars', t') = splitForAllTys t
+        tyVars'' = tyVars ++ tyVars'
+    in
+    do
+      tyStr <- lift (showPprM (goalTy, mkForAllTys tyVars'' t))
+      logS stRef $ "refineType: " ++ tyStr
+      lift (subType goalTy (mkForAllTys tyVars'' t)) >>= \case
+        True  -> return acc
+        False -> case splitFunTy_maybe t' of
+          Nothing      -> throwError "Couldn't refine"
+          Just (_, t'') -> go (1 + acc) tyVars'' t''
 
 refine :: IORef SlickState -> String -> M (LHsExpr RdrName)
 refine stRef eStr = do
   h             <- getCurrentHoleErr stRef
   isArg         <- S.member h . argHoles <$> gReadIORef stRef
   HoleInfo {..} <- getCurrentHoleInfoErr stRef
-  goalTy        <- readType holeTypeStr
+  -- got rid of dropForAlls here, but that's definitely wrong as per const
+  -- example
+  -- 
+  -- first order approximation: just instantiate all abstracted
+  -- kindvars to *
+  goalTy        <- dropForAlls <$> readType holeTypeStr
   ErrorT . withBindings holeEnv . runErrorT $ do
-    expr' <- refineToExpr goalTy =<< parseExpr eStr
+    expr' <- refineToExpr stRef goalTy =<< parseExpr eStr
     let atomic = 
           case unLoc expr' of
             HsVar {}     -> True
@@ -62,8 +80,8 @@ refine stRef eStr = do
             _            -> False
     return $ if isArg && not atomic then noLoc (HsPar expr') else expr'
 
-refineToExpr goalTy e =
-  refineExpr goalTy e >>| \argsNum -> withNHoles argsNum e
+refineToExpr stRef goalTy e =
+  refineExpr stRef goalTy e >>| \argsNum -> withNHoles argsNum e
 
 withNHoles n e = app e $ replicate n hole where
   app f args = foldl (\f' x -> noLoc $ HsApp f' x) f args
