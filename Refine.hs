@@ -24,18 +24,10 @@ import qualified Data.Set as S
 
 import Panic
 
--- refine :: Type -> String -> Either String Int
-
--- refine' :: Type -> HsExpr RdrName ->
-
--- exprType :: GhcMonad m => String -> Either String Type
-
--- refineExpr :: Type -> LHsExpr RdrName -> M Int
 refineExpr stRef goalTy e = do
   ty <- hsExprType e
   refineType stRef goalTy ty
 
--- refineType :: Type -> Type -> M Int
 refineType stRef goalTy t = let (tyVars, t') = splitForAllTys t in go 0 tyVars t'
 -- foralls of the argument type t should get pushed down as we go
   where
@@ -51,6 +43,8 @@ refineType stRef goalTy t = let (tyVars, t') = splitForAllTys t in go 0 tyVars t
     do
       tyStr <- lift (showPprM (goalTy, mkForAllTys tyVars'' t))
       logS stRef $ "refineType: " ++ tyStr
+      -- TODO: check what subtype does on (dropForAlls <$> readType "a") and
+      -- (dropForAlls <$> readType "a")
       lift (subType goalTy (mkForAllTys tyVars'' t)) >>= \case
         True  -> return acc
         False -> case splitFunTy_maybe t' of
@@ -66,7 +60,11 @@ refine stRef eStr = do
   -- example
   -- 
   -- first order approximation: just instantiate all abstracted
-  -- kindvars to *
+  -- kindvars to *. I believe this is approximately correct since
+  -- if there were real constraints on the kinds (ignoring prescribed type
+  -- signature), they would have been put in the result of readType
+  --
+  -- this is complicated...
   goalTy        <- dropForAlls <$> readType holeTypeStr
   ErrorT . withBindings holeEnv . runErrorT $ do
     expr' <- refineToExpr stRef goalTy =<< parseExpr eStr

@@ -22,6 +22,11 @@ import Util
 import Control.Monad.Error
 import Types
 
+-- useful things
+-- RnTypes/rnHsTyKi
+-- RnTypes/extractHsTysRdrTyVars
+-- consider adding undbound type vars to environment
+
 -- c/f TcRnDriver.hs/tcRnType. I just removed the failIfErrsM.
 tcGetType rdr_type = do
   hsc_env <- getSession
@@ -32,6 +37,9 @@ tcGetType rdr_type = do
     fam_envs <- tcGetFamInstEnvs
     let (_, ty') = normaliseType fam_envs Nominal ty
     return ty'
+
+-- any kind quantifications should ideally be pushed in all the way.
+-- for now I'm happy to replace  
 
 readType :: String -> M Type
 readType str =

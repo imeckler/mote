@@ -2,6 +2,7 @@
              OverloadedStrings,
              NamedFieldPuns,
              TupleSections,
+             ScopedTypeVariables,
              RecordWildCards #-}
 module Main where
 
@@ -48,6 +49,7 @@ import ReadType
 import Refine
 import HscTypes (srcErrorMessages)
 import ErrUtils (pprErrMsgBag)
+import Exception
 
 -- Get module name from file text
 parseModuleAt p =
@@ -80,7 +82,8 @@ findEnclosingHole pos = find (`spans` pos)
 -- TODO: access ghci cmomands from inside vim too. e.g., kind
 
 -- TODO: Don't die on parse errors
-loadModuleAt p = handleSourceError (return . Left) . fmap Right $ do
+loadModuleAt :: GhcMonad m => FilePath -> m (HsModule RdrName, TypecheckedModule)
+loadModuleAt p = do
   -- TODO: Clear old names and stuff
   -- TODO: I think we can actually do all the parsing and stuff ourselves
   -- and then call GHC.loadMoudle to avoid duplicating work
@@ -89,22 +92,33 @@ loadModuleAt p = handleSourceError (return . Left) . fmap Right $ do
   setContext [IIModule $ mkModuleName (takeBaseName p)] -- TODO: Shouldn't use basename
   parsedMod <- parseModuleAt p
   (unLoc $ parsedSource parsedMod,) <$> typecheckModule parsedMod
+-- handleSourceError (return . Left) . fmap Right $ do
 
-loadFile :: IORef SlickState -> FilePath -> M (HsModule RdrName, TypecheckedModule)
-loadFile stRef p = do
-  liftIO $ readIORef stRef >>= \s -> case fileData s of
-    Nothing                                         -> return ()
-    Just fd@(FileData {path, modifyTimeAtLastLoad}) -> do
-      t <- getModificationTime path
-      when (t /= modifyTimeAtLastLoad) (resetHolesInfo stRef)
-
-  fs <- lift getSessionDynFlags
-  lift (loadModuleAt p) >>= \case
-    Left err  -> do
-      clearState stRef
-      throwError . showErr fs $ srcErrorMessages err
-    Right mods -> mods <$ lift (setStateForData stRef p mods)
+-- TODO: This is throwing and it's not clear how to catch
+-- the error properly
+loadFile :: IORef SlickState -> FilePath -> (M (HsModule RdrName, TypecheckedModule))
+loadFile stRef p = eitherThrow =<< lift handled
   where
+  getModules = do
+    clearOldHoles
+    fs <- getSessionDynFlags
+    mods <- loadModuleAt p
+    mods <$ setStateForData stRef p mods
+
+  handled = do
+    fs <- getSessionDynFlags
+    ghandle (\(e :: SomeException) -> Left (show e) <$ clearState stRef) $
+      handleSourceError (\e ->
+        (Left . showErr fs $ srcErrorMessages e) <$ clearState stRef)
+        (Right <$> getModules)
+
+  clearOldHoles =
+    liftIO $ readIORef stRef >>= \s -> case fileData s of
+      Nothing                                         -> return ()
+      Just fd@(FileData {path, modifyTimeAtLastLoad}) -> do
+        t <- getModificationTime path
+        when (t /= modifyTimeAtLastLoad) (resetHolesInfo stRef)
+
   clearState stRef     = gModifyIORef stRef (\s -> s {fileData = Nothing, currentHole = Nothing})
   showErr fs           = showSDocForUser fs neverQualify . vcat . pprErrMsgBag
   resetHolesInfo stRef =
