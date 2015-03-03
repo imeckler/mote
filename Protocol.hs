@@ -9,6 +9,7 @@ import Control.Monad
 
 type Pos  = (Int, Int)
 type Span = (Pos, Pos)
+
 data ToClient
   = Replace Span FilePath String
   | SetInfoWindow String

@@ -33,14 +33,16 @@ hsExprType expr = do
   ((warns, errs), mayTy) <- liftIO $ tcRnExpr hsc_env expr
   case mayTy of 
     Just t  -> return t
-    Nothing -> throwError . showSDoc fs . vcat $ pprErrMsgBag errs
+    Nothing -> throwError . GHCError . showSDoc fs . vcat $ pprErrMsgBag errs
    
 parseExpr :: String -> M (LHsExpr RdrName)
-parseExpr e = do
-  stmt_orerr <- lift $ runParserM parseStmt e
-  eitherThrow stmt_orerr >>= \case
-    Just (L _ (BodyStmt expr _ _ _)) -> return expr
-    _                                -> throwError "Expected body statement"
+parseExpr e = lift (runParserM parseStmt e) >>= \case
+  Right (Just (L _ (BodyStmt expr _ _ _))) ->
+    return expr
+  Right _                                  ->
+    throwError $ ParseError "Expected body statement."
+  Left parseError ->
+    throwError $ ParseError parseError
 
 subTypeEv t1 t2 = do
   { env <- getSession

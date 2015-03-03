@@ -107,9 +107,9 @@ loadFile stRef p = eitherThrow =<< lift handled
 
   handled = do
     fs <- getSessionDynFlags
-    ghandle (\(e :: SomeException) -> Left (show e) <$ clearState stRef) $
+    ghandle (\(e :: SomeException) -> Left (OtherError $ show e) <$ clearState stRef) $
       handleSourceError (\e ->
-        (Left . showErr fs $ srcErrorMessages e) <$ clearState stRef)
+        (Left . GHCError . showErr fs $ srcErrorMessages e) <$ clearState stRef)
         (Right <$> getModules)
 
   clearOldHoles =
@@ -138,7 +138,7 @@ setStateForData stRef path (hsModule, typecheckedModule) = do
 srcLocPos (RealSrcLoc l) = (srcLocLine l, srcLocCol l)
 
 respond :: IORef SlickState -> FromClient -> Ghc ToClient
-respond stRef msg = either Error id <$> runErrorT (respond' stRef msg)
+respond stRef msg = either (Error . show) id <$> runErrorT (respond' stRef msg)
 
 respond' :: IORef SlickState -> FromClient -> M ToClient
 respond' stRef = \case
@@ -205,8 +205,8 @@ respond' stRef = \case
     SlickState {..} <- gReadIORef stRef
     FileData {path, hsModule} <- getFileDataErr stRef
     currHole           <- getCurrentHoleErr stRef
-    HoleInfo {holeEnv} <- maybeThrow "Hole info not found" $ M.lookup currHole holesInfo
-    (_, tyStr)         <- maybeThrow "Variable not found in env" $
+    HoleInfo {holeEnv} <- maybeThrow NoHoleInfo $ M.lookup currHole holesInfo
+    (_, tyStr)         <- maybeThrow (NoVariable var) $
                             List.find ((== var) . fst) holeEnv
 
     ty <- readType tyStr
