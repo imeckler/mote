@@ -42,6 +42,11 @@ function! slick#getType(e)
   py slick.get_type(vim.eval('a:e'))
 endfunction
 
+function! slick#refine(e)
+  py slick.refine(vim.eval('a:e'))
+  redraw!
+endfunction
+
 function! slick#nextHole()
   py slick.next_hole()
   redraw!
@@ -63,6 +68,7 @@ augroup END
 
 command! SlickStart  call slick#start()
 command! -nargs=1 SlickGetType call slick#getType(<f-args>)
+command! -nargs=1 SlickRefine call slick#refine(<f-args>)
 command! SlickLoadCurrentFIle call slick#loadCurrentFile()
 command! SlickGetEnv call slick#getEnv()
 command! -nargs=1 Casex call slick#caseFurther(<f-args>)

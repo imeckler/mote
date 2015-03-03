@@ -55,6 +55,7 @@ data FromClient
   | NextHole ClientState
   | PrevHole ClientState
   | GetEnv ClientState
+  | Refine String ClientState
   | GetType String
   | CaseFurther Var ClientState 
   | CaseOn String
@@ -70,6 +71,7 @@ instance FromJSON FromClient where
       [String "NextHole", state]                -> NextHole <$> parseJSON state
       [String "PrevHole", state]                -> PrevHole <$> parseJSON state
       [String "GetEnv", state]                  -> GetEnv <$> parseJSON state
+      [String "Refine", String expr, state]     -> Refine (T.unpack expr) <$> parseJSON state
       [String "GetType", String e]              -> return . GetType $ T.unpack e
       [String "SendStop"]                       -> return SendStop
       _                                         -> mzero

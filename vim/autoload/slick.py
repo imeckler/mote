@@ -7,6 +7,9 @@ import os.path
 # This doesn't work in vim 7.3. Window doesn't have a "valid" attribute,
 # among other things
 
+# Need to kill processes properly. If I open two slicks then they don't
+# get killed correctly
+
 log    = open(os.path.join(os.path.expanduser('~'), 'slicklog'), 'w', 0)
 reader = None
 
@@ -23,7 +26,7 @@ def find(p, xs):
   return None
 
 def replace(span, path, s):
-  s = str(s)
+  s = s.encode('utf-8')
   b = find(lambda b: b.name == path, vim.buffers)
   if b is None: return
   ((l0,c0), (l1,c1)) = span
@@ -31,11 +34,15 @@ def replace(span, path, s):
   lines     = s.splitlines()
   log.write('lines: ' + repr(lines) + '\n')
   log.write('span: ' + repr(span) + '\n')
-  tail      = b[l1 - 1][c1:]
-  lines[-1] = lines[-1] + tail
+  if l0 == l1:
+    b[l0 - 1] = b[l0 - 1][:c0 - 1] + lines[0] + b[l0 - 1][c1 - 1:]
+    b.append(lines[1:], l0 - 1)
+  else:
+    tail      = b[l1 - 1][c1:]
+    lines[-1] = lines[-1] + tail
 
-  b[l0 - 1] = b[l0 - 1][:c0 - 1] + lines[0]
-  b[l0:l1] = lines[1:]
+    b[l0 - 1] = b[l0 - 1][:c0 - 1] + lines[0]
+    b[l0:l1] = lines[1:]
 
 
 class SlickProcess:
@@ -50,7 +57,7 @@ class SlickProcess:
     log.write('in set info window\n')
     #del info_window.buffer[:]
     log.write('set buffer\n')
-    info_window.buffer[:] = str(s).splitlines()
+    info_window.buffer[:] = s.encode('utf-8').splitlines()
 
     #for line in s.splitlines():
     #  log.write('settin dat info window\n')
@@ -190,4 +197,7 @@ def prev_hole():
 
 def case_further(var):
   get_slick_process()._send_message(['CaseFurther', var, get_client_state()])
+
+def refine(expr):
+  get_slick_process()._send_message(['Refine', expr, get_client_state()])
 

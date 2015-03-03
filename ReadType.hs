@@ -19,6 +19,13 @@ import Var (mkTyVar)
 import Kind (anyKind)
 import HsTypes
 import Util
+import Control.Monad.Error
+import Types
+
+-- useful things
+-- RnTypes/rnHsTyKi
+-- RnTypes/extractHsTysRdrTyVars
+-- consider adding undbound type vars to environment
 
 -- c/f TcRnDriver.hs/tcRnType. I just removed the failIfErrsM.
 tcGetType rdr_type = do
@@ -31,10 +38,17 @@ tcGetType rdr_type = do
     let (_, ty') = normaliseType fam_envs Nominal ty
     return ty'
 
+-- any kind quantifications should ideally be pushed in all the way.
+-- for now I'm happy to replace  
+
+readType :: String -> M Type
 readType str =
-  runParserM parseType str >>= \case
-    Left _  -> return Nothing
-    Right t -> fmap snd (tcGetType t)
+  lift (runParserM parseType str) >>= \case
+    Left s  -> throwError s
+    Right t -> do
+      let errMsg = "Could not make sense of type in current env."
+      (_, mt) <- lift (tcGetType t)
+      maybe (throwError errMsg) return mt
 
 -- getTypeQuantified str =
 
