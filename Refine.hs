@@ -48,7 +48,7 @@ refineType stRef goalTy t = let (tyVars, t') = splitForAllTys t in go 0 tyVars t
       lift (subType goalTy (mkForAllTys tyVars'' t)) >>= \case
         True  -> return acc
         False -> case splitFunTy_maybe t' of
-          Nothing      -> throwError "Couldn't refine"
+          Nothing      -> throwError NoRefine
           Just (_, t'') -> go (1 + acc) tyVars'' t''
 
 refine :: IORef SlickState -> String -> M (LHsExpr RdrName)

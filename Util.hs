@@ -63,14 +63,14 @@ getCurrentHoleInfoErr :: IORef SlickState -> M HoleInfo
 getCurrentHoleInfoErr r = do
   h <- getCurrentHoleErr r
   infos <- holesInfo <$> gReadIORef r
-  maybeThrow "Hole not in map" $ M.lookup h infos
+  maybeThrow NotInMap $ M.lookup h infos
 
 
 getCurrentHoleErr :: IORef SlickState -> M Hole
-getCurrentHoleErr r = maybe (throwError "Not currently in a hole") return . currentHole =<< gReadIORef r
+getCurrentHoleErr r = maybe (throwError NoHole) return . currentHole =<< gReadIORef r
 
 getFileDataErr :: IORef SlickState -> M FileData
-getFileDataErr = maybe (throwError "File not loaded") return . fileData <=< gReadIORef
+getFileDataErr = maybe (throwError NoFile) return . fileData <=< gReadIORef
 
 getHoles :: IORef SlickState -> M [Hole]
 getHoles = fmap (M.keys . holesInfo) . gReadIORef 

@@ -164,7 +164,7 @@ expansions var ty loc mod =
         Nothing  -> Nothing
         Just dcs -> Just (mgi, map (patPosn . conPattern) dcs)
 
-    Nothing -> throwError "Variable not found"
+    Nothing -> throwError $ NoVariable var
   where
   varName       = mkVarUnqual $ fsLit var
   mgs           = containingMatchGroups loc mod

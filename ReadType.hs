@@ -44,11 +44,11 @@ tcGetType rdr_type = do
 readType :: String -> M Type
 readType str =
   lift (runParserM parseType str) >>= \case
-    Left s  -> throwError s
+    Left s  -> throwError $ ParseError s
     Right t -> do
-      let errMsg = "Could not make sense of type in current env."
+      -- let errMsg = "Could not make sense of type in current env."
       (_, mt) <- lift (tcGetType t)
-      maybe (throwError errMsg) return mt
+      maybe (throwError TypeNotInEnv) return mt
 
 -- getTypeQuantified str =
 
