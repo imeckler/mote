@@ -1,12 +1,13 @@
-module Types where
+module Slick.Types (Hole, FileData (..), SlickState (..),
+                    HoleInfo (..), ErrorType (..), M) where
 
-import qualified Data.Map as M
-import qualified Data.Set as S
-import GHC
-import System.IO
-import UniqSupply
-import Data.Time.Clock
-import Control.Monad.Error
+import           Control.Monad.Error
+import qualified Data.Map            as M
+import qualified Data.Set            as S
+import           Data.Time.Clock
+import           GHC
+import           System.IO
+import           UniqSupply
 
 type Hole = SrcSpan
 

@@ -1,33 +1,36 @@
-{-# LANGUAGE LambdaCase, RecordWildCards #-}
-module Refine where
+{-# LANGUAGE FlexibleContexts, LambdaCase, RecordWildCards #-}
+module Slick.Refine where
 
-import Control.Applicative
-import Parser (parseStmt)
-import Util
-import HsExpr
-import GhcMonad
-import GHC hiding (exprType)
-import Outputable (vcat, showSDoc)
-import ErrUtils (pprErrMsgBag)
-import TcRnDriver (tcRnExpr)
-import Data.Traversable
-import TcRnTypes
-import TcType (UserTypeCtxt(GhciCtxt))
-import Type
-import GhcUtil
-import OccName
-import Control.Monad.Error
-import Types
-import Data.IORef (IORef)
-import ReadType
-import qualified Data.Set as S
+import           Control.Applicative ((<$>))
+import           Control.Monad.Error (ErrorT (..), MonadError, lift, throwError)
+import           Control.Monad.Trans (MonadIO, MonadTrans)
+import           Data.IORef          (IORef)
+import qualified Data.Set            as S
+import           GhcMonad
+import           HsExpr              (HsExpr (..), LHsExpr)
+import           OccName             (mkVarOcc)
+import           RdrName             (RdrName (Unqual))
+import           SrcLoc              (noLoc, unLoc)
+import           TcType              (TcSigmaType)
+import           Type                (dropForAlls, mkForAllTys, splitForAllTys,
+                                      splitFunTy_maybe)
+import           TypeRep             (Type)
 
-import Panic
+import           Slick.GhcUtil
+import           Slick.ReadType
+import           Slick.Types
+import           Slick.Util
 
+refineExpr
+  :: Num b => IORef SlickState -> TcType.TcSigmaType -> LHsExpr RdrName -> ErrorT ErrorType Ghc b
 refineExpr stRef goalTy e = do
   ty <- hsExprType e
   refineType stRef goalTy ty
 
+refineType
+  :: (MonadError ErrorType (t m), MonadTrans t, GhcMonad m,
+      MonadIO (t m), Num b) =>
+     IORef SlickState -> TcSigmaType -> TypeRep.Type -> t m b
 refineType stRef goalTy t = let (tyVars, t') = splitForAllTys t in go 0 tyVars t'
 -- foralls of the argument type t should get pushed down as we go
   where
@@ -58,7 +61,7 @@ refine stRef eStr = do
   HoleInfo {..} <- getCurrentHoleInfoErr stRef
   -- got rid of dropForAlls here, but that's definitely wrong as per const
   -- example
-  -- 
+  --
   -- first order approximation: just instantiate all abstracted
   -- kindvars to *. I believe this is approximately correct since
   -- if there were real constraints on the kinds (ignoring prescribed type
@@ -68,7 +71,7 @@ refine stRef eStr = do
   goalTy        <- dropForAlls <$> readType holeTypeStr
   ErrorT . withBindings holeEnv . runErrorT $ do
     expr' <- refineToExpr stRef goalTy =<< parseExpr eStr
-    let atomic = 
+    let atomic =
           case unLoc expr' of
             HsVar {}     -> True
             HsIPVar {}   -> True
@@ -78,9 +81,15 @@ refine stRef eStr = do
             _            -> False
     return $ if isArg && not atomic then noLoc (HsPar expr') else expr'
 
+refineToExpr
+  :: IORef SlickState
+     -> TcSigmaType
+     -> LHsExpr RdrName
+     -> ErrorT ErrorType Ghc (LHsExpr RdrName)
 refineToExpr stRef goalTy e =
   refineExpr stRef goalTy e >>| \argsNum -> withNHoles argsNum e
 
+withNHoles :: Int -> LHsExpr RdrName -> LHsExpr RdrName
 withNHoles n e = app e $ replicate n hole where
   app f args = foldl (\f' x -> noLoc $ HsApp f' x) f args
   hole       = noLoc $ HsVar (Unqual (mkVarOcc "_"))

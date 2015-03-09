@@ -1,11 +1,11 @@
-{-# LANGUAGE LambdaCase, ViewPatterns, OverloadedStrings #-}
-module Protocol where
+{-# LANGUAGE LambdaCase, OverloadedStrings #-}
+module Slick.Protocol where
 
-import qualified Data.Vector as V
-import qualified Data.Text as T
-import Data.Aeson hiding (Error)
-import Control.Applicative
-import Control.Monad
+import           Control.Applicative
+import           Control.Monad
+import           Data.Aeson          hiding (Error)
+import qualified Data.Text           as T
+import qualified Data.Vector         as V
 
 type Pos  = (Int, Int)
 type Span = (Pos, Pos)
@@ -14,7 +14,6 @@ data ToClient
   = Replace Span FilePath String
   | SetInfoWindow String
   | SetCursor Pos
-  | Print String
   | Ok
   | Error String
   | Stop
@@ -49,7 +48,7 @@ instance FromJSON ClientState where
 -- Functions are suggested whose target type is SrcLoc
 -- and whose arguments are in the environment. Perhaps
 -- do something linear. Also maybe use hoogle
--- 
+--
 data FromClient
   = Load FilePath
   | EnterHole ClientState
@@ -58,7 +57,7 @@ data FromClient
   | GetEnv ClientState
   | Refine String ClientState
   | GetType String
-  | CaseFurther Var ClientState 
+  | CaseFurther Var ClientState
   | CaseOn String
   | SendStop
   deriving (Show)
@@ -76,4 +75,5 @@ instance FromJSON FromClient where
       [String "GetType", String e]              -> return . GetType $ T.unpack e
       [String "SendStop"]                       -> return SendStop
       _                                         -> mzero
+    _                                           -> mzero
 
