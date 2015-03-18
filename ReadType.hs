@@ -50,11 +50,11 @@ tcRdrTypeToType rdr_type = do
 readTypeWithTyVarsInScope :: [Name] -> String -> M Type
 readTypeWithTyVarsInScope tvNames str =
   lift (runParserM parseType str) >>= \case
-    Left s  -> throwError s
+    Left s  -> throwError $ ParseError s
     Right t -> do
       let errMsg = "Could not make sense of type in current env."
       (_, mt) <- lift (rdrTypeToTypeWithTyVarsInScope tvNames t)
-      maybe (throwError errMsg) return mt
+      maybe (throwError TypeNotInEnv) return mt
 
 readType :: String -> M Type
 readType = readTypeWithTyVarsInScope []
