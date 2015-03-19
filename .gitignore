@@ -6,3 +6,8 @@
 .cabal-sandbox
 cabal.sandbox.config
 dist
+
+**.swp
+**.pyc
+**.hi
+**.o
