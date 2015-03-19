@@ -56,9 +56,9 @@ refineType stRef goalTy t = let (tyVars, t') = splitForAllTys t in go 0 tyVars t
 
 refine :: IORef SlickState -> String -> M (LHsExpr RdrName)
 refine stRef eStr = do
-  h             <- getCurrentHoleErr stRef
-  isArg         <- S.member h . argHoles <$> gReadIORef stRef
-  HoleInfo {..} <- getCurrentHoleInfoErr stRef
+  h                  <- getCurrentHoleErr stRef
+  isArg              <- S.member h . argHoles <$> gReadIORef stRef
+  hi@(HoleInfo {..}) <- getCurrentHoleInfoErr stRef
   -- got rid of dropForAlls here, but that's definitely wrong as per const
   -- example
   --
@@ -68,7 +68,7 @@ refine stRef eStr = do
   -- signature), they would have been put in the result of readType
   --
   -- this is complicated...
-  goalTy        <- dropForAlls <$> readType holeTypeStr
+  goalTy <- dropForAlls <$> readType holeTypeStr
   ErrorT . withBindings holeEnv . runErrorT $ do
     expr' <- refineToExpr stRef goalTy =<< parseExpr eStr
     let atomic =
