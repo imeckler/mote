@@ -1,5 +1,5 @@
 {-# LANGUAGE LambdaCase #-}
-module ReadType where
+module Slick.ReadType where
 
 import           CoAxiom             (Role (Nominal))
 import           Control.Monad.Error
