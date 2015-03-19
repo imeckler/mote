@@ -1,5 +1,5 @@
-{-# LANGUAGE LambdaCase, RecordWildCards #-}
-module Init where
+{-# LANGUAGE LambdaCase, RecordWildCards, FlexibleContexts, ConstraintKinds #-}
+module Init (Init.init) where
 
 import qualified ParseHoleMessage
 import Outputable
@@ -43,6 +43,23 @@ import System.FilePath ((</>))
 import System.Process
 import System.Exit
 import Exception
+
+-- Imports for cabalConfigDependencies
+import qualified CabalVersions.Cabal16 as C16
+import qualified CabalVersions.Cabal18 as C18
+import qualified CabalVersions.Cabal21 as C21
+import Data.List (find,tails,isPrefixOf,isInfixOf,nub,stripPrefix,splitAt)
+import Data.List.Split (splitOn)
+import Text.Read (readEither, readMaybe)
+import Distribution.Package (InstalledPackageId(..)
+                           , PackageIdentifier(..)
+                           , PackageName(..))
+import Distribution.Simple.LocalBuildInfo (ComponentName)
+
+-- TODO: I really should have just copied to ghcmod source to this
+-- directory and used it directly. God willing I will never have
+-- to touch this module again.
+
 {- The following code is adapted from ghc-mod -}
 {- Copyright (c) 2009, IIJ Innovation Institute Inc.
 All rights reserved.
@@ -71,9 +88,10 @@ LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
 ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 POSSIBILITY OF SUCH DAMAGE. -}
 
--- init :: IORef SlickState -> m ()
+init :: GhcMonad m => IORef SlickState -> m ()
 init stRef = initializeWithCabal stRef defaultOptions
 
+initializeWithCabal :: GhcMonad m => IORef SlickState -> Options -> m ()
 initializeWithCabal stRef opt = do
   c <- liftIO findCradle
   logS stRef "Found cradle"
@@ -148,12 +166,15 @@ ghcDbOpt db
 
 -- begin implementation of parseCabalFile
 -- The offending function
+getConfig :: (IOish m, MonadError GhcModError m)
+          => Cradle
+          -> m CabalConfig
 getConfig cradle = do
   outOfDate <- liftIO $ isSetupConfigOutOfDate cradle
   when outOfDate configure
   liftIO (readFile file) `catchError` \_ ->
     -- TODO: A lovely hack can be seen here
-    readProcess "cabalparse" [file] ""
+    liftIO $ readProcess "cabalparse" [file] ""
   where
   file   = setupConfigFile cradle
   prjDir = cradleRootDir cradle
@@ -196,9 +217,9 @@ isSetupConfigOutOfDate crdl =
     Just cab -> doesFileExist cab >>= \case
       False -> return False
       True  -> doesFileExist (setupConfigFile crdl) >>= \case
-        False -> True
+        False -> return True
         True  ->
-          (<) <$> getModificationTime (setupConfigFile cab)
+          (<) <$> getModificationTime (setupConfigFile crdl)
               <*> getModificationTime cab
 
 -- begin implementation of getCompilerOptions
@@ -255,6 +276,7 @@ setupConfigPath = localBuildInfoFile defaultDistPref
 
 -- end implementation of getCompilerOptions
 
+type CabalConfig = String
 configDependencies :: PackageIdentifier -> CabalConfig -> [Package]
 configDependencies thisPkg config = map fromInstalledPackageId deps
  where
@@ -331,4 +353,36 @@ configDependencies thisPkg config = map fromInstalledPackageId deps
        readConfigs f s = case readEither s of
            Right x -> x
            Left msg -> error $ "reading config " ++ f ++ " failed ("++msg++")"
+
+fromInstalledPackageId' :: InstalledPackageId -> Maybe Package
+fromInstalledPackageId' pid = let
+    InstalledPackageId pkg = pid
+    in case reverse $ splitOn "-" pkg of
+      i:v:rest -> Just (intercalate "-" (reverse rest), v, i)
+      _ -> Nothing
+
+fromInstalledPackageId :: InstalledPackageId -> Package
+fromInstalledPackageId pid =
+    case fromInstalledPackageId' pid of
+      Just p -> p
+      Nothing -> error $
+        "fromInstalledPackageId: `"++show pid++"' is not a valid package-id"
+
+extractField :: CabalConfig -> String -> Either String String
+extractField config field =
+    case extractParens <$> find (field `isPrefixOf`) (tails config) of
+        Just f -> Right f
+        Nothing -> Left $ "extractField: failed extracting "++field++" from input, input contained `"++field++"'? " ++ show (field `isInfixOf` config)
+
+extractParens :: String -> String
+extractParens str = extractParens' str 0
+ where
+   extractParens' :: String -> Int -> String
+   extractParens' [] _ = []
+   extractParens' (s:ss) level
+       | s `elem` "([{" = s : extractParens' ss (level+1)
+       | level == 0 = extractParens' ss 0
+       | s `elem` "}])" && level == 1 = [s]
+       | s `elem` "}])" = s : extractParens' ss (level-1)
+       | otherwise = s : extractParens' ss level
 

@@ -31,7 +31,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. -}
 
 
 -- | ComponentLocalBuildInfo for Cabal <= 1.16
-module Language.Haskell.GhcMod.Cabal16 (
+module CabalVersions.Cabal16 (
     ComponentLocalBuildInfo
   , componentPackageDeps
   ) where
