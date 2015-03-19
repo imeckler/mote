@@ -1,34 +1,39 @@
-{-# LANGUAGE LambdaCase,
-             RecordWildCards,
-             NamedFieldPuns,
-             TupleSections #-}
-module Case where
+{-# LANGUAGE LambdaCase, NamedFieldPuns, RecordWildCards, TupleSections #-}
+module Slick.Case where
 
-import FastString(fsLit)
-import RdrName (mkVarUnqual, nameRdrName)
-import BasicTypes(Boxity(..))
-import TyCon
-import DataCon
-import Control.Monad
-import Util
-import Type
-import Control.Applicative
-import GHC
-import Bag (bagToList)
-import TcRnMonad(setXOptM)
-import DynFlags(ExtensionFlag(Opt_PolyKinds))
-import FamInst (tcGetFamInstEnvs)
+import           Bag                 (bagToList)
+import           BasicTypes          (Boxity (..))
+import           Control.Applicative ((<|>))
+import           Control.Arrow       (second)
+import           Control.Monad.Error (lift, throwError)
+import qualified Data.List           as List
+import           Data.Maybe          (fromMaybe, mapMaybe)
+import           DataCon             (DataCon, dataConInstArgTys, dataConIsInfix, dataConName,
+                                      isTupleDataCon, isUnboxedTupleCon)
+import           DynFlags            (ExtensionFlag (Opt_PolyKinds))
+import           FamInst             (tcGetFamInstEnvs)
 import qualified FamInstEnv
-import CoAxiom(Role(Nominal))
-import GhcMonad
-import Data.Maybe
-import HsPat
-import UniqSupply
-import Name (mkInternalName, mkVarOcc, nameOccName)
-import Control.Arrow
-import qualified Data.List as List
-import Types
-import Control.Monad.Error
+import           FastString          (fsLit)
+import qualified GHC
+import           GhcMonad
+import           HsBinds             (HsBindLR (..))
+import           HsDecls             (ClsInstDecl (..), HsDecl (..),
+                                      InstDecl (..))
+import           HsExpr              (GRHS (..), GRHSs (..), HsExpr (..),
+                                      LHsExpr, LMatch, Match (..), HsTupArg (..), StmtLR (..))
+import           HsPat
+import           HsSyn               (HsModule (..))
+import           Name                (Name)
+import           RdrName             (RdrName, mkVarUnqual, nameRdrName)
+import           SrcLoc              (GenLocated (..), Located, SrcSpan, getLoc,
+                                      isSubspanOf, noLoc)
+import           TcRnDriver          (runTcInteractive)
+import           TcRnMonad           (setXOptM)
+import           TyCon
+import           Type
+
+import           Slick.Types
+import           Slick.Util
 
 type SatDataConRep = (Name, [Type])
 
@@ -49,7 +54,7 @@ unpeel :: GhcMonad m => Type -> m (Maybe DataType)
 unpeel t =
   fmap (splitTyConApp_maybe . dropForAlls) (normaliseType t) >>| \case
     Nothing         -> Nothing
-    Just (tc, args) -> 
+    Just (tc, args) ->
       fmap (map (\dc -> (dc, dataConInstArgTys dc args)))
         (tyConDataCons_maybe tc)
 
@@ -61,23 +66,25 @@ unpeel t =
 --   one that has a variable named as requested.
 -- > replace case exprs with expanded one
 -- conPattern :: TypedDataCon -> UniqSM (Pat Name)
+conPattern :: (DataCon, [Type]) -> Pat RdrName
 conPattern (dc, argTys)
   | isTupleDataCon dc =
-    let b    = if isUnboxedTupleCon dc then Unboxed else Boxed 
-        pats = zipWith varPat argTys [0..] 
+    let b    = if isUnboxedTupleCon dc then Unboxed else Boxed
+        pats = zipWith varPat argTys [0..]
     in
     TuplePat pats b argTys
-  | otherwise = 
+  | otherwise =
     ConPatIn (noLoc . nameRdrName $ dataConName dc) deets
   where
   deets
     | dataConIsInfix dc = case argTys of
         [x, y] -> InfixCon (varPat x 0) (varPat y 1)
+        _      -> error "Unexpected number of arguments to an infix constructor."
     -- TODO: Records
     | otherwise = PrefixCon $ zipWith varPat argTys [0..]
 
 varPat :: Type -> Int -> LPat RdrName
-varPat t i = noLoc . VarPat . mkVarUnqual . fsLit $ "x" ++ show i
+varPat _t i = noLoc . VarPat . mkVarUnqual . fsLit $ "x" ++ show i
 
 -- zipWithM f xs = sequence . zipWith f xs
 
@@ -104,6 +111,8 @@ data MatchInfo id
   | SingleLambda SrcSpan -- the srcspan of the whole lambda
   | CaseBranch
 
+namesBound
+  :: GenLocated t (Match id body) -> [(id, Pat id -> Match id body)]
 namesBound (L _ (Match pats t rhs)) = listyPat (\pats' -> Match pats' t rhs) pats where
 
   goPat = \case
@@ -140,7 +149,7 @@ namesBound (L _ (Match pats t rhs)) = listyPat (\pats' -> Match pats' t rhs) pat
   goLPat (L l p) = map (second (L l .)) (goPat p)
 
   listViews = go [] where
-    go pre []     = []
+    go _ []       = []
     go pre (x:xs) = (pre, x, xs) : go (x:pre) xs
 
 
@@ -171,26 +180,30 @@ expansions var ty loc mod =
   findMap f     = foldr (\x r -> f x <|> r) Nothing
   aListLookup k = fmap snd . List.find ((== k) . fst)
 
--- matchToExpand loc var 
+-- matchToExpand loc var
 
-containingMatchGroups loc = goDecls [] . hsmodDecls where
+containingMatchGroups :: SrcSpan -> HsModule id ->
+                         [(GenLocated SrcSpan (Match id (GenLocated SrcSpan (HsExpr id))), MatchInfo id)]
+containingMatchGroups loc = goDecls [] . GHC.hsmodDecls where
   goDecls acc = goDecl acc . nextSubexpr loc
 
   goDecl acc = \case
-    ValD bd                                   -> goBind acc bd
-    InstD (ClsInstD (ClsInstDecl{cid_binds})) -> goBind acc . nextSubexpr loc $ bagToList cid_binds
-    _                                         -> acc
+    ValD bd                                            -> goBind acc bd
+    InstD (ClsInstD (ClsInstDecl {cid_binds})) ->
+      goBind acc . nextSubexpr loc $ bagToList cid_binds
+    _                                                      -> acc
 
   goBind acc = \case
     FunBind {..} -> goMatchGroup (Equation fun_id) acc $ fun_matches
     PatBind {..} -> goGRHSs acc pat_rhs
     _            -> acc
 
-  goMatchGroup mi acc = maybe acc (goLMatch mi acc) . List.find ((loc `isSubspanOf`) . getLoc) . mg_alts
+  goMatchGroup mi acc =
+    maybe acc (goLMatch mi acc) . List.find ((loc `isSubspanOf`) . getLoc) . GHC.mg_alts
 
   goLMatch mi acc lm@(L _ (Match _pats _ty grhss)) = goGRHSs ((lm, mi):acc) grhss
 
-  goGRHSs acc (GRHSs {grhssGRHSs}) = goGRHS acc $ nextSubexpr loc grhssGRHSs
+  goGRHSs acc (GRHSs { grhssGRHSs }) = goGRHS acc $ nextSubexpr loc grhssGRHSs
 
   -- TODO: Guards should be returned too
   goGRHS acc (GRHS _gs b) = goLExpr acc b
@@ -205,7 +218,7 @@ containingMatchGroups loc = goDecls [] . hsmodDecls where
     SectionL a b        -> goLExpr acc $ nextSubLExpr [a, b]
     SectionR a b        -> goLExpr acc $ nextSubLExpr [a, b]
     ExplicitTuple ts _  -> goLExpr acc . nextSubLExpr $ mapMaybe (\case {Present e -> Just e; _ -> Nothing}) ts
-    HsCase scrut mg     -> goMatchGroup CaseBranch acc mg
+    HsCase _scrut mg    -> goMatchGroup CaseBranch acc mg
     HsIf _ a b c        -> goLExpr acc . nextSubLExpr $ [a, b, c]
     HsMultiIf _ grhss   -> goGRHS acc . nextSubexpr loc $ grhss
     HsDo _ stmts _      -> goStmt acc . nextSubexpr loc $ stmts

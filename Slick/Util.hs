@@ -1,31 +1,33 @@
-module Util where
+module Slick.Util where
 
-import GHC
-import Outputable
-import GhcMonad
-import Data.IORef
-import System.IO
-import Control.Monad.IO.Class (MonadIO)
-import Types
-import Control.Monad
-import Control.Applicative
-import qualified Data.Map as M
+import           Control.Applicative    ((<$>))
+import           Control.Monad          ((<=<))
+import           Control.Monad.IO.Class (MonadIO, liftIO)
+import           Data.IORef             (IORef, modifyIORef, readIORef)
+import qualified Data.Map               as M
+import           GHC                    ()
+import           GhcMonad               (GhcMonad, getSessionDynFlags)
+import           Outputable             (Outputable, SDoc, ppr, showSDoc)
+import           System.IO
+
 -- PARSE IMPORTS
-import Parser
-import Lexer
-import StringBuffer (stringToStringBuffer)
-import FastString (fsLit)
-import SrcLoc
-import GhcMonad
-import Control.Monad.Error
+import           Control.Monad.Error    (MonadError, throwError)
+import           FastString             (fsLit)
+import           Lexer                  (P, ParseResult (..), mkPState, unP)
+import           SrcLoc                 (GenLocated (..), SrcSpan, isSubspanOf,
+                                         mkRealSrcLoc)
+import           StringBuffer           (stringToStringBuffer)
 
+import           Slick.Types
+
+runParserM :: GhcMonad m => Lexer.P a -> String -> m (Either String a)
 runParserM parser str = do
   fs <- getSessionDynFlags
   let buf = stringToStringBuffer str
       loc = mkRealSrcLoc (fsLit "<slick>") 1 1
   return $ case unP parser (mkPState fs buf loc) of
-    PFailed span err -> Left (showSDoc fs err)
-    POk _pst x       -> Right x
+    PFailed _span err -> Left (showSDoc fs err)
+    POk _pst x        -> Right x
 
 
 (>>|) :: Functor f => f a -> (a -> b) -> f b
@@ -37,6 +39,7 @@ showPprM = showSDocM . ppr
 output :: (Outputable a, GhcMonad m) => a -> m ()
 output = liftIO . putStrLn <=< showSDocM . ppr
 
+showSDocM :: GhcMonad m => SDoc -> m String
 showSDocM x = getSessionDynFlags >>| \fs -> showSDoc fs x
 
 gReadIORef :: MonadIO m => IORef a -> m a
@@ -45,13 +48,19 @@ gReadIORef = liftIO . readIORef
 gModifyIORef :: MonadIO m => IORef a -> (a -> a) -> m ()
 gModifyIORef x = liftIO . modifyIORef x
 
+logS :: MonadIO m => IORef SlickState -> String -> m ()
 logS stRef s = liftIO $ flip hPutStrLn s . logFile =<< readIORef stRef
 
+nextSubexpr :: SrcSpan -> [GenLocated SrcSpan b] -> b
 nextSubexpr  hole       = foldr (\(L l x) r -> if hole `isSubspanOf` l then x else r) (error "nextSubexpr failure")
+
+nextLocatedSubexpr :: SrcSpan -> [GenLocated SrcSpan b] -> b
 nextLocatedSubexpr hole = foldr (\(L l x) r -> if hole `isSubspanOf` l then x else r) (error "nextLocatedSubexpr failure")
+
+nextSubexpr' :: SrcSpan -> [GenLocated SrcSpan a] -> Maybe a
 nextSubexpr' hole       = foldr (\(L l x) r -> if hole `isSubspanOf` l then Just x else r) Nothing
 
--- foldExprs :: ([s] -> s) -> (LHsExpr id -> s -> Maybe s) -> HsModule id -> 
+-- foldExprs :: ([s] -> s) -> (LHsExpr id -> s -> Maybe s) -> HsModule id ->
 
 eitherThrow :: MonadError e m => Either e a -> m a
 eitherThrow = either throwError return
@@ -73,5 +82,5 @@ getFileDataErr :: IORef SlickState -> M FileData
 getFileDataErr = maybe (throwError NoFile) return . fileData <=< gReadIORef
 
 getHoles :: IORef SlickState -> M [Hole]
-getHoles = fmap (M.keys . holesInfo) . gReadIORef 
+getHoles = fmap (M.keys . holesInfo) . gReadIORef
 

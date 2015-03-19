@@ -1,25 +1,21 @@
 {-# LANGUAGE LambdaCase, RecordWildCards #-}
-module GhcUtil where
+module Slick.GhcUtil where
 
-import Parser (parseStmt)
-import Util
-import HsExpr
-import GhcMonad
-import GHC hiding (exprType)
-import Outputable (vcat, showSDoc)
-import ErrUtils (pprErrMsgBag)
-import TcRnDriver (tcRnExpr)
-import TcRnTypes
-import Type
-import TcRnMonad
-import Bag
-import RdrName
-import Name
-import SrcLoc
-import Types
-import Control.Monad.Error
--- TODO: DEBUG IMPORTS
-import Parser (parseType)
+import           Bag (Bag, foldrBag)
+import           Control.Monad.Error
+import           ErrUtils            (pprErrMsgBag)
+import           GHC                 hiding (exprType)
+import           Name
+import           Outputable          (showSDoc, vcat)
+import           Parser              (parseStmt)
+import           RdrName (RdrName (Exact), extendLocalRdrEnvList)
+import           SrcLoc              (realSrcSpanStart, realSrcSpanEnd)
+import           TcRnDriver          (tcRnExpr)
+import           TcRnMonad
+
+import           Slick.Types
+import           Slick.Util
+
 
 exprType :: String -> M Type
 exprType = hsExprType <=< parseExpr
@@ -28,11 +24,11 @@ hsExprType :: LHsExpr RdrName -> M Type
 hsExprType expr = do
   hsc_env <- lift getSession
   fs      <- lift getSessionDynFlags
-  ((warns, errs), mayTy) <- liftIO $ tcRnExpr hsc_env expr
-  case mayTy of 
+  ((_warns, errs), mayTy) <- liftIO $ tcRnExpr hsc_env expr
+  case mayTy of
     Just t  -> return t
     Nothing -> throwError . GHCError . showSDoc fs . vcat $ pprErrMsgBag errs
-   
+
 parseExpr :: String -> M (LHsExpr RdrName)
 parseExpr e = lift (runParserM parseStmt e) >>= \case
   Right (Just (L _ (BodyStmt expr _ _ _))) ->
@@ -42,7 +38,6 @@ parseExpr e = lift (runParserM parseStmt e) >>= \case
   Left parseError ->
     throwError $ ParseError parseError
 
-
 -- TcRnMonad.newUnique
 -- RnTypes.filterInScope has clues
 --   put RdrName of relevant tyvars into LocalRdrEnv
@@ -50,6 +45,7 @@ parseExpr e = lift (runParserM parseStmt e) >>= \case
 --   extendLocalRdrEnv
 
 -- for debugging
+withStrTyVarsInScope :: [Name] -> TcRn a -> TcRn a
 withStrTyVarsInScope = withTyVarsInScope
 
 -- should actually use  TcEnv/tcExtendTyVarEnv. I doubt this will work as is.
@@ -58,26 +54,31 @@ withTyVarsInScope :: [Name] -> TcRn a -> TcRn a
 withTyVarsInScope tvNames inner = do
   lcl_rdr_env <- TcRnMonad.getLocalRdrEnv
   TcRnMonad.setLocalRdrEnv
-    (RdrName.extendLocalRdrEnvList lcl_rdr_env tvNames)
+    (extendLocalRdrEnvList lcl_rdr_env tvNames)
     inner
 
-withTyVarsInScope' :: [Name] -> TcRn a -> TcRn a
-withTyVarsInScope' tvNames inner = do
+-- withTyVarsInScope' :: [Name] -> TcRn a -> TcRn a
+-- withTyVarsInScope' tvNames inner = do
 -- check out
 -- RnTypes/bindHsTyVars
 
+rdrNameToName :: HasOccName name => name -> IOEnv (Env gbl lcl) Name
 rdrNameToName rdrName = do
   u <- newUnique
   return $ Name.mkSystemName u (occName rdrName)
 
-
+allBag :: (a -> Bool) -> Bag a -> Bool
 allBag p = foldrBag (\x r -> if p x then r else False) True
 
+nameVar :: Name -> Located (HsExpr RdrName)
 nameVar = noLoc . HsVar . Exact
 
+toSpan :: SrcSpan -> ((Int, Int), (Int, Int))
 toSpan (RealSrcSpan rss) =
   (toPos (realSrcSpanStart rss), toPos (realSrcSpanEnd rss))
+toSpan UnhelpfulSpan {} = error "Unhelpful span."
 
+toPos :: RealSrcLoc -> (Int, Int)
 toPos rsl = (srcLocLine rsl, srcLocCol rsl)
 
 -- needed for refine and the real version of getting hole env
