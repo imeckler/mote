@@ -1,4 +1,5 @@
-{-# LANGUAGE FlexibleContexts, LambdaCase, RecordWildCards #-}
+{-# LANGUAGE FlexibleContexts, LambdaCase, MultiParamTypeClasses,
+             NamedFieldPuns, RecordWildCards #-}
 module Slick.Refine where
 
 import           Control.Applicative ((<$>))
@@ -8,9 +9,11 @@ import           Data.IORef          (IORef)
 import qualified Data.Set            as S
 import           GhcMonad
 import           HsExpr              (HsExpr (..), LHsExpr)
-import           OccName             (mkVarOcc)
+import           OccName             (mkVarOcc, occName)
 import           RdrName             (RdrName (Unqual))
-import           SrcLoc              (noLoc, unLoc)
+import           SrcLoc              (noLoc, noSrcSpan, unLoc)
+import           TcRnDriver          (runTcInteractive)
+import           TcRnTypes           (CtOrigin (..))
 import           TcType              (TcSigmaType)
 import           Type                (dropForAlls, mkForAllTys, splitForAllTys,
                                       splitFunTy_maybe)
@@ -21,8 +24,19 @@ import           Slick.ReadType
 import           Slick.Types
 import           Slick.Util
 
+-- Imports for doing subtype testing
+import           Data.Either         (rights)
+import           Name                (mkInternalName)
+import           Parser              (parseType)
+import           RnTypes             (extractHsTysRdrTyVars)
+import           TcEvidence          (EvBind (..), EvTerm (..))
+import           TcRnMonad           (captureConstraints, newUnique)
+import           TcSimplify          (simplifyInteractive)
+import           TcType              (UserTypeCtxt (GhciCtxt))
+import           TcUnify             (tcSubType)
+
 refineExpr
-  :: Num b => IORef SlickState -> TcType.TcSigmaType -> LHsExpr RdrName -> ErrorT ErrorType Ghc b
+  :: Num b => IORef SlickState -> TcSigmaType -> LHsExpr RdrName -> ErrorT ErrorType Ghc b
 refineExpr stRef goalTy e = do
   ty <- hsExprType e
   refineType stRef goalTy ty
@@ -30,7 +44,7 @@ refineExpr stRef goalTy e = do
 refineType
   :: (MonadError ErrorType (t m), MonadTrans t, GhcMonad m,
       MonadIO (t m), Num b) =>
-     IORef SlickState -> TcSigmaType -> TypeRep.Type -> t m b
+     IORef SlickState -> TcSigmaType -> Type -> t m b
 refineType stRef goalTy t = let (tyVars, t') = splitForAllTys t in go 0 tyVars t'
 -- foralls of the argument type t should get pushed down as we go
   where
@@ -68,7 +82,11 @@ refine stRef eStr = do
   -- signature), they would have been put in the result of readType
   --
   -- this is complicated...
-  goalTy <- dropForAlls <$> readType holeTypeStr
+  rdrTyVars <- lift (holeRdrTyVars hi)
+  goalTy    <- dropForAlls <$> readType holeTypeStr
+
+  -- have to make sure that the hole-local type variables are in scope
+  -- for "withBindings"
   ErrorT . withBindings holeEnv . runErrorT $ do
     expr' <- refineToExpr stRef goalTy =<< parseExpr eStr
     let atomic =
@@ -94,3 +112,38 @@ withNHoles n e = app e $ replicate n hole where
   app f args = foldl (\f' x -> noLoc $ HsApp f' x) f args
   hole       = noLoc $ HsVar (Unqual (mkVarOcc "_"))
 
+holeRdrTyVars :: GhcMonad m => HoleInfo -> m [RdrName]
+holeRdrTyVars (HoleInfo {holeEnv}) = do
+  hsTys <- fmap rights . mapM (runParserM parseType) $ map snd holeEnv
+  let (_rdrKvs, rdrTvs) = extractHsTysRdrTyVars hsTys
+  return rdrTvs
+
+subTypeEvInHole hi t1 t2 = do
+  env <- getSession
+  rdrTvs <- holeRdrTyVars hi
+  fmap snd . liftIO . runTcInteractive env $ do
+    nameTvs <- mapM toNameVar rdrTvs
+    withTyVarsInScope nameTvs $ do
+      (_, cons) <- captureConstraints (tcSubType origin ctx t1 t2)
+      simplifyInteractive cons
+  where
+  toNameVar x = do { u <- newUnique; return $ Name.mkInternalName u (occName x) noSrcSpan }
+  origin = AmbigOrigin GhciCtxt
+  ctx = GhciCtxt
+
+
+subTypeEv t1 t2 = do
+  { env <- getSession
+  ; fmap snd . liftIO . runTcInteractive env $ do
+  { (_, cons) <- captureConstraints (tcSubType origin ctx t1 t2)
+  ; simplifyInteractive cons } }
+  where
+  origin = AmbigOrigin GhciCtxt
+  ctx = GhciCtxt
+
+subType t1 t2 =
+  subTypeEv t1 t2 >>| \case
+    Nothing -> False
+    Just b  -> allBag (\(EvBind _ t) -> case t of
+      EvDelayedError{} -> False
+      _                -> True) b

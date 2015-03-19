@@ -1,29 +1,21 @@
 {-# LANGUAGE LambdaCase, RecordWildCards #-}
 module Slick.GhcUtil where
 
-import           Bag                 (Bag, foldrBag)
-import           Control.Monad       ((<=<))
-import           Control.Monad.Error (lift, throwError)
+import           Bag (Bag, foldrBag)
+import           Control.Monad.Error
 import           ErrUtils            (pprErrMsgBag)
 import           GHC                 hiding (exprType)
 import           Name
 import           Outputable          (showSDoc, vcat)
 import           Parser              (parseStmt)
-import           RdrName             (RdrName (Exact), extendLocalRdrEnvList)
+import           RdrName (RdrName (Exact), extendLocalRdrEnvList)
 import           SrcLoc              (realSrcSpanStart, realSrcSpanEnd)
-import           TcEvidence
 import           TcRnDriver          (tcRnExpr)
 import           TcRnMonad
-import           TcSimplify
-import           TcType              (TcSigmaType, UserTypeCtxt (GhciCtxt))
-import           TcUnify             (tcSubType)
-
-import           Data.Either         (rights)
-import           Parser              (parseType)
-import           RnTypes
 
 import           Slick.Types
 import           Slick.Util
+
 
 exprType :: String -> M Type
 exprType = hsExprType <=< parseExpr
@@ -46,42 +38,6 @@ parseExpr e = lift (runParserM parseStmt e) >>= \case
   Left parseError ->
     throwError $ ParseError parseError
 
-subTypeEvInHole
-  :: GhcMonad m =>
-     HoleInfo -> TcSigmaType -> TcSigmaType -> m (Maybe (Bag EvBind))
-subTypeEvInHole (HoleInfo {..}) t1 t2 = do
-  hsTys <- fmap rights . mapM (runParserM parseType) $ map snd holeEnv
-  let (_rdrKvs, rdrTvs) = extractHsTysRdrTyVars hsTys
-  env <- getSession
-  fmap snd . liftIO . runTcInteractive env $ do
-    nameTvs <- mapM toNameVar rdrTvs
-    withTyVarsInScope nameTvs $ do
-      (_, cons) <- captureConstraints (tcSubType origin ctx t1 t2)
-      simplifyInteractive cons
-  where
-  toNameVar x = do { u <- newUnique; return $ Name.mkInternalName u (occName x) noSrcSpan }
-  origin = AmbigOrigin GhciCtxt
-  ctx = GhciCtxt
-
-subTypeEv
-  :: GhcMonad m => TcSigmaType -> TcSigmaType -> m (Maybe (Bag EvBind))
-subTypeEv t1 t2 = do
-  { env <- getSession
-  ; fmap snd . liftIO . runTcInteractive env $ do
-  { (_, cons) <- captureConstraints (tcSubType origin ctx t1 t2)
-  ; simplifyInteractive cons } }
-  where
-  origin = AmbigOrigin GhciCtxt
-  ctx = GhciCtxt
-
-subType :: GhcMonad f => TcSigmaType -> TcSigmaType -> f Bool
-subType t1 t2 =
-  subTypeEv t1 t2 >>| \case
-    Nothing -> False
-    Just b  -> allBag (\(EvBind _ t) -> case t of
-      EvDelayedError{} -> False
-      _                -> True) b
-
 -- TcRnMonad.newUnique
 -- RnTypes.filterInScope has clues
 --   put RdrName of relevant tyvars into LocalRdrEnv
@@ -92,6 +48,8 @@ subType t1 t2 =
 withStrTyVarsInScope :: [Name] -> TcRn a -> TcRn a
 withStrTyVarsInScope = withTyVarsInScope
 
+-- should actually use  TcEnv/tcExtendTyVarEnv. I doubt this will work as is.
+-- looks like I want RnEnv/bindLocatedLocals
 withTyVarsInScope :: [Name] -> TcRn a -> TcRn a
 withTyVarsInScope tvNames inner = do
   lcl_rdr_env <- TcRnMonad.getLocalRdrEnv
@@ -99,14 +57,15 @@ withTyVarsInScope tvNames inner = do
     (extendLocalRdrEnvList lcl_rdr_env tvNames)
     inner
 
+-- withTyVarsInScope' :: [Name] -> TcRn a -> TcRn a
+-- withTyVarsInScope' tvNames inner = do
+-- check out
+-- RnTypes/bindHsTyVars
+
 rdrNameToName :: HasOccName name => name -> IOEnv (Env gbl lcl) Name
 rdrNameToName rdrName = do
   u <- newUnique
   return $ Name.mkSystemName u (occName rdrName)
-
-tyVarTest = do
-  Right hsTy <- runParserM parseType "a" :: Ghc (Either String (LHsType RdrName))
-  return $ extractHsTyRdrTyVars hsTy
 
 allBag :: (a -> Bool) -> Bag a -> Bool
 allBag p = foldrBag (\x r -> if p x then r else False) True
