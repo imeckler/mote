@@ -1,64 +1,71 @@
-{-# LANGUAGE LambdaCase, RecordWildCards, FlexibleContexts, ConstraintKinds, ScopedTypeVariables #-}
+{-# LANGUAGE ConstraintKinds, FlexibleContexts, LambdaCase, RecordWildCards,
+             ScopedTypeVariables #-}
 module Slick.Init where
 
+import           Data.IORef
+import           Data.List                                     (intercalate)
+import           GHC
+import           Language.Haskell.GhcMod.Internal              hiding (getCompilerOptions,
+                                                                parseCabalFile)
+import           Outputable
 import qualified Slick.ParseHoleMessage
-import Outputable
-import Data.List (intercalate)
-import Slick.Types
-import Slick.Util
-import GHC
-import Data.IORef
-import Language.Haskell.GhcMod.Internal hiding (getCompilerOptions, parseCabalFile)
+import           Slick.Types
+import           Slick.Util
 -- I had to write my own "getCompilerOptions" and "parseCabalFile"
 -- since the ghcmod versions die on new binary format cabal files.
-import Language.Haskell.GhcMod
-import DynFlags
-import Control.Applicative
-import Control.Monad
-import qualified Data.Map as M
-import qualified Data.Set as S
-import GhcMonad
-import Control.Monad.Error
+import           Control.Applicative
 import qualified Control.Exception
+import           Control.Monad
+import           Control.Monad.Error
+import qualified Data.Map                                      as M
+import qualified Data.Set                                      as S
+import           DynFlags
+import           GhcMonad
+import           Language.Haskell.GhcMod
 
-import qualified Distribution.PackageDescription as P
-import Distribution.Simple.Compiler (CompilerId(..), CompilerFlavor(..))
-import qualified Distribution.Package as C
-import Distribution.Simple.Program as C (ghcProgram)
-import Distribution.PackageDescription.Configuration (finalizePackageDescription)
-import Distribution.PackageDescription.Parse (readPackageDescription)
-import Distribution.Verbosity as Verbosity
-import Distribution.System (buildPlatform)
+import qualified Distribution.Package                          as C
+import qualified Distribution.PackageDescription               as P
+import           Distribution.PackageDescription.Configuration (finalizePackageDescription)
+import           Distribution.PackageDescription.Parse         (readPackageDescription)
+import           Distribution.Simple.Compiler                  (CompilerFlavor (..),
+                                                                CompilerId (..))
+import           Distribution.Simple.Program                   as C (ghcProgram)
+import           Distribution.System                           (buildPlatform)
+import           Distribution.Verbosity                        as Verbosity
 -- import Distribution.Simple.LocalBuildInfo (configFlags)
-import Distribution.PackageDescription (FlagAssignment)
-import Data.Version(Version)
-import Distribution.Simple.Program.Types (programName, programFindVersion)
+import           Data.Version                                  (Version)
+import           Distribution.PackageDescription               (FlagAssignment)
+import           Distribution.Simple.Program.Types             (programFindVersion,
+                                                                programName)
 
 import qualified System.IO.Strict
 
 -- Imports for setupConfigFile
-import Distribution.Simple.BuildPaths (defaultDistPref)
-import Distribution.Simple.Configure (localBuildInfoFile)
-import Distribution.Text (display)
+import           Distribution.Simple.BuildPaths                (defaultDistPref)
+import           Distribution.Simple.Configure                 (localBuildInfoFile)
+import           Distribution.Text                             (display)
 
-import System.Directory
-import System.FilePath ((</>))
-import System.Process
-import System.Exit
-import Exception
+import           Exception
+import           System.Directory
+import           System.Exit
+import           System.FilePath                               ((</>))
+import           System.Process
 
 -- Imports for cabalConfigDependencies
-import qualified CabalVersions.Cabal16 as C16
-import qualified CabalVersions.Cabal18 as C18
-import qualified CabalVersions.Cabal21 as C21
-import qualified CabalVersions.Cabal22 as C22
-import Data.List (find,tails,isPrefixOf,isInfixOf,nub,stripPrefix,splitAt)
-import Data.List.Split (splitOn)
-import Text.Read (readEither, readMaybe)
-import Distribution.Package (InstalledPackageId(..)
-                           , PackageIdentifier(..)
-                           , PackageName(..))
-import Distribution.Simple.LocalBuildInfo (ComponentName)
+import qualified CabalVersions.Cabal16                         as C16
+import qualified CabalVersions.Cabal18                         as C18
+import qualified CabalVersions.Cabal21                         as C21
+import qualified CabalVersions.Cabal22                         as C22
+import           Data.List                                     (find, isInfixOf,
+                                                                isPrefixOf, nub,
+                                                                splitAt,
+                                                                stripPrefix,
+                                                                tails)
+import           Data.List.Split                               (splitOn)
+import           Distribution.Package                          (InstalledPackageId (..), PackageIdentifier (..), PackageName (..))
+import           Distribution.Simple.LocalBuildInfo            (ComponentName)
+import           Text.Read                                     (readEither,
+                                                                readMaybe)
 
 -- TODO: I really should have just copied to ghcmod source to this
 -- directory and used it directly. God willing I will never have
