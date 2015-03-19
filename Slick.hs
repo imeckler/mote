@@ -50,8 +50,10 @@ import Refine
 import HscTypes (srcErrorMessages)
 import ErrUtils (pprErrMsgBag)
 import Exception
+import qualified Init
 
--- Get module name from file text
+-- TODO: Get module name from file text, or at least don't use basename
+-- since it's wrong.
 parseModuleAt p =
   GHC.parseModule =<< (getModSummary . mkModuleName $ takeBaseName p)
 
@@ -290,6 +292,11 @@ runWithTestRef x = do
     r <- newIORef =<< initialState logFile
     run $ do { ghcInit r; x r }
 
+runWithTestRef' x = do
+  home <- getHomeDirectory
+  withFile (home </> "prog/slick/testlog") WriteMode $ \logFile -> do
+    r <- newIORef =<< initialState logFile
+    run $ do { Init.init r; x r }
 
 run = runGhc (Just libdir)
 

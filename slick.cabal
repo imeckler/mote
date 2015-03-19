@@ -36,6 +36,7 @@ executable slick
                        directory >= 1.2,
                        time >= 1.4,
                        process >= 1.2,
+                       strict  >= 0.3.2,
                        -- debug
                        syb
 

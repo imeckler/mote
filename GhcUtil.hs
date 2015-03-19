@@ -18,8 +18,6 @@ import Name
 import SrcLoc
 import Types
 import Control.Monad.Error
--- TODO: DEBUG IMPORTS
-import Parser (parseType)
 
 exprType :: String -> M Type
 exprType = hsExprType <=< parseExpr
@@ -61,10 +59,12 @@ withTyVarsInScope tvNames inner = do
     (RdrName.extendLocalRdrEnvList lcl_rdr_env tvNames)
     inner
 
+{-
 withTyVarsInScope' :: [Name] -> TcRn a -> TcRn a
 withTyVarsInScope' tvNames inner = do
 -- check out
 -- RnTypes/bindHsTyVars
+-}
 
 rdrNameToName rdrName = do
   u <- newUnique
