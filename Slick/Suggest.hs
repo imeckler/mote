@@ -1,18 +1,18 @@
-{-# LANGUAGE TupleSections, LambdaCase #-}
+{-# LANGUAGE LambdaCase, TupleSections #-}
 module Suggest where
 
-import GhcMonad
-import GHC
-import GhcUtil
-import Type
-import RdrName
-import Util
-import HsExpr
-import Control.Applicative
-import Data.Maybe
-import GhcUtil
-import Refine
-import OccName
+import           Control.Applicative
+import           Data.Maybe
+import           GHC
+import           GhcMonad
+import           GhcUtil
+import           GhcUtil
+import           HsExpr
+import           OccName
+import           RdrName
+import           Refine
+import           Type
+import           Util
 
 mapMaybeM f = fmap catMaybes . mapM f
 

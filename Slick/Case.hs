@@ -8,7 +8,8 @@ import           Control.Arrow       (second)
 import           Control.Monad.Error (lift, throwError)
 import qualified Data.List           as List
 import           Data.Maybe          (fromMaybe, mapMaybe)
-import           DataCon             (DataCon, dataConInstArgTys, dataConIsInfix, dataConName,
+import           DataCon             (DataCon, dataConInstArgTys,
+                                      dataConIsInfix, dataConName,
                                       isTupleDataCon, isUnboxedTupleCon)
 import           DynFlags            (ExtensionFlag (Opt_PolyKinds))
 import           FamInst             (tcGetFamInstEnvs)
@@ -20,7 +21,8 @@ import           HsBinds             (HsBindLR (..))
 import           HsDecls             (ClsInstDecl (..), HsDecl (..),
                                       InstDecl (..))
 import           HsExpr              (GRHS (..), GRHSs (..), HsExpr (..),
-                                      LHsExpr, LMatch, Match (..), HsTupArg (..), StmtLR (..))
+                                      HsTupArg (..), LHsExpr, LMatch,
+                                      Match (..), StmtLR (..))
 import           HsPat
 import           HsSyn               (HsModule (..))
 import           Name                (Name)
