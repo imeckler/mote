@@ -1,4 +1,4 @@
-{-# LANGUAGE LambdaCase, RecordWildCards #-}
+{-# LANGUAGE LambdaCase, RecordWildCards, NamedFieldPuns #-}
 module Refine where
 
 import Control.Applicative
@@ -9,8 +9,6 @@ import GhcMonad
 import GHC hiding (exprType)
 import Outputable (vcat, showSDoc)
 import ErrUtils (pprErrMsgBag)
-import TcRnDriver (tcRnExpr)
-import Data.Traversable
 import TcRnTypes
 import TcType (UserTypeCtxt(GhciCtxt))
 import Type
@@ -21,6 +19,17 @@ import Types
 import Data.IORef (IORef)
 import ReadType
 import qualified Data.Set as S
+
+-- Imports for doing subtype testing
+import TcUnify (tcSubType)
+import TcType (UserTypeCtxt(GhciCtxt))
+import TcEvidence (EvBind(..), EvTerm(..))
+import TcSimplify (simplifyInteractive)
+import Data.Either (rights)
+import TcRnMonad (newUnique, captureConstraints)
+import RnTypes (extractHsTysRdrTyVars)
+import Parser (parseType)
+import Name (mkInternalName)
 
 import Panic
 
@@ -65,7 +74,11 @@ refine stRef eStr = do
   -- signature), they would have been put in the result of readType
   --
   -- this is complicated...
-  goalTy <- dropForAlls <$> readType holeTypeStr
+  rdrTyVars <- lift (holeRdrTyVars hi)
+  goalTy    <- dropForAlls <$> readType holeTypeStr
+
+  -- have to make sure that the hole-local type variables are in scope
+  -- for "withBindings"
   ErrorT . withBindings holeEnv . runErrorT $ do
     expr' <- refineToExpr stRef goalTy =<< parseExpr eStr
     let atomic = 
@@ -85,3 +98,38 @@ withNHoles n e = app e $ replicate n hole where
   app f args = foldl (\f' x -> noLoc $ HsApp f' x) f args
   hole       = noLoc $ HsVar (Unqual (mkVarOcc "_"))
 
+holeRdrTyVars :: GhcMonad m => HoleInfo -> m [RdrName]
+holeRdrTyVars (HoleInfo {holeEnv}) = do
+  hsTys <- fmap rights . mapM (runParserM parseType) $ map snd holeEnv
+  let (_rdrKvs, rdrTvs) = extractHsTysRdrTyVars hsTys
+  return rdrTvs
+
+subTypeEvInHole hi t1 t2 = do
+  env <- getSession
+  rdrTvs <- holeRdrTyVars hi
+  fmap snd . liftIO . runTcInteractive env $ do
+    nameTvs <- mapM toNameVar rdrTvs
+    withTyVarsInScope nameTvs $ do
+      (_, cons) <- captureConstraints (tcSubType origin ctx t1 t2)
+      simplifyInteractive cons
+  where
+  toNameVar x = do { u <- newUnique; return $ Name.mkInternalName u (occName x) noSrcSpan }
+  origin = AmbigOrigin GhciCtxt
+  ctx = GhciCtxt
+
+
+subTypeEv t1 t2 = do
+  { env <- getSession
+  ; fmap snd . liftIO . runTcInteractive env $ do
+  { (_, cons) <- captureConstraints (tcSubType origin ctx t1 t2)
+  ; simplifyInteractive cons } }
+  where
+  origin = AmbigOrigin GhciCtxt
+  ctx = GhciCtxt
+
+subType t1 t2 =
+  subTypeEv t1 t2 >>| \case
+    Nothing -> False
+    Just b  -> allBag (\(EvBind _ t) -> case t of
+      EvDelayedError{} -> False
+      _                -> True) b
