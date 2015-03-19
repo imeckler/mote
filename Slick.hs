@@ -52,6 +52,9 @@ import ErrUtils (pprErrMsgBag)
 import Exception
 import qualified Init
 
+-- TODO: Need better error messages. For now any load failure gives
+-- "Cannot add module MODULENAME to context: not a home module"
+
 -- TODO: Get module name from file text, or at least don't use basename
 -- since it's wrong.
 parseModuleAt p =
@@ -259,8 +262,8 @@ main = do
     hSetBuffering stdout NoBuffering
     hPutStrLn logFile "Testing, testing"
     runGhc (Just libdir) $ do
-      ghcInit stRef
-      -- Init.init stRef
+      -- ghcInit stRef
+      Init.init stRef
       logS stRef "init'd"
       forever $ do
         ln <- liftIO B.getLine
