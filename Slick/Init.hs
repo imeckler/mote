@@ -1,11 +1,11 @@
 {-# LANGUAGE LambdaCase, RecordWildCards, FlexibleContexts, ConstraintKinds, ScopedTypeVariables #-}
-module Init where -- (Init.init) where
+module Slick.Init where
 
-import qualified ParseHoleMessage
+import qualified Slick.ParseHoleMessage
 import Outputable
 import Data.List (intercalate)
-import Types
-import Util
+import Slick.Types
+import Slick.Util
 import GHC
 import Data.IORef
 import Language.Haskell.GhcMod.Internal hiding (getCompilerOptions, parseCabalFile)
@@ -139,7 +139,7 @@ setOptions stRef (Options {..}) (CompilerOptions{..}) = do
             -- Here be hacks
             let s = showSDoc fs (withPprStyle sty msg)
             logS stRef s
-            case ParseHoleMessage.parseHoleInfo s of
+            case Slick.ParseHoleMessage.parseHoleInfo s of
               Nothing   -> return ()
               Just info -> modifyIORef stRef (\s ->
                 s { holesInfo = M.insert span info (holesInfo s) })

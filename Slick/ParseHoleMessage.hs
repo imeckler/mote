@@ -1,14 +1,14 @@
 {-# LANGUAGE NamedFieldPuns, PatternGuards, QuasiQuotes #-}
-module ParseHoleMessage where
+module Slick.ParseHoleMessage where
 
-import Text.Parsec
-import Text.Parsec.String
-import Control.Applicative hiding (many)
-import Data.Maybe
-import Data.List.Split
-import Types
-import Data.Char
-import Text.Regex.PCRE.Heavy
+import           Data.Char             (isSpace)
+import           Data.List.Split       (splitOn)
+import           Data.Maybe            (mapMaybe)
+import           Text.Parsec
+import           Text.Parsec.String
+import           Text.Regex.PCRE.Heavy
+
+import           Slick.Types
 
 -- Soooo brittle
 identAndType :: Parser (String, String)
@@ -37,6 +37,5 @@ parseHoleInfo msg =
       = Just (var, gsub [re|\(bound at.*?\)|] "" ty)
     | otherwise = Nothing
 
-  isIdent (c:s) = isAlpha c && all isAlphaNum s
   isSymbol = all (not . isSpace)
 

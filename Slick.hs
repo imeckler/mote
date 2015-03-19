@@ -1,62 +1,50 @@
-{-# LANGUAGE LambdaCase,
-             OverloadedStrings,
-             NamedFieldPuns,
-             TupleSections,
-             ScopedTypeVariables,
-             RecordWildCards #-}
+{-# LANGUAGE LambdaCase, NamedFieldPuns, OverloadedStrings, RecordWildCards,
+             ScopedTypeVariables, TupleSections #-}
 module Main where
 
-import DataCon
-import TyCon
-import Type
---
-import System.Directory (getHomeDirectory, getModificationTime)
-import SrcLoc
-import FastString (fsLit)
-import ParseHoleMessage
-import qualified Data.Map as M
-import qualified Data.Set as S
-import Name
-import Data.Maybe
-import Control.Applicative
-import Control.Monad
-import Control.Monad.Error
-import Protocol
-import GhcMonad
-import GHC hiding (exprType)
-import GhcUtil
-import GHC.Paths
-import Data.List (find)
-import qualified Holes
-import qualified Data.ByteString as B
-import qualified Data.ByteString.Char8 as B8
-import qualified Data.ByteString.Lazy as LB
+import           Control.Applicative        ((<$), (<$>))
+import           Control.Monad.Error
+import           Data.Aeson                 (decodeStrict, encode)
+import qualified Data.ByteString            as B
 import qualified Data.ByteString.Lazy.Char8 as LB8
-import System.FilePath
-import Data.IORef
+import           Data.IORef
+import qualified Data.List                  as List
+import qualified Data.Map                   as M
+import           Data.Maybe                 (isNothing)
+import qualified Data.Set                   as S
 import qualified DynFlags
-import Data.Aeson (encode, decodeStrict)
-import Outputable
-import Util
-import qualified Data.Text as T
-import System.IO
-import Case
-import Data.List (isInfixOf)
-import qualified Data.List as List
-import Types
-import UniqSupply (mkSplitUniqSupply)
-import ReadType
-import Refine
-import HscTypes (srcErrorMessages)
-import ErrUtils (pprErrMsgBag)
-import Exception
-import qualified Init
+
+import           ErrUtils                   (pprErrMsgBag)
+import           Exception
+import           FastString                 (fsLit)
+import           GHC                        hiding (exprType)
+import           GHC.Paths
+import           HscTypes                   (srcErrorMessages)
+import           Name
+import           Outputable
+import           System.Directory           (getHomeDirectory,
+                                            getModificationTime)
+import           System.FilePath
+import           System.IO
+import           UniqSupply                 (mkSplitUniqSupply)
+
+import           Slick.Case
+import           Slick.GhcUtil
+import qualified Slick.Holes
+import qualified Slick.Init
+import           Slick.ParseHoleMessage     (parseHoleInfo)
+import           Slick.Protocol
+import           Slick.ReadType
+import           Slick.Refine
+import           Slick.Types
+import           Slick.Util
 
 -- TODO: Need better error messages. For now any load failure gives
 -- "Cannot add module MODULENAME to context: not a home module"
 
 -- TODO: Get module name from file text, or at least don't use basename
 -- since it's wrong.
+parseModuleAt :: GhcMonad m => FilePath -> m ParsedModule
 parseModuleAt p =
   GHC.parseModule =<< (getModSummary . mkModuleName $ takeBaseName p)
 
@@ -67,11 +55,11 @@ ghcInit stRef = do
     { hscTarget  = HscInterpreted
     , ghcLink    = LinkInMemory
     , ghcMode    = CompManager
-    , log_action = \fs sev span sty msg -> do
+    , log_action = \fs _sev span sty msg -> do
         -- Here be hacks
         let s = showSDoc fs (withPprStyle sty msg)
         logS stRef s
-        case ParseHoleMessage.parseHoleInfo s of
+        case parseHoleInfo s of
           Nothing -> return ()
           Just info -> gModifyIORef stRef (\s ->
             s { holesInfo = M.insert span info (holesInfo s) })
@@ -82,7 +70,7 @@ ghcInit stRef = do
 -- tcl_lie should contain the CHoleCan's
 
 findEnclosingHole :: (Int, Int) -> [Hole] -> Maybe Hole
-findEnclosingHole pos = find (`spans` pos)
+findEnclosingHole pos = List.find (`spans` pos)
 
 -- TODO: access ghci cmomands from inside vim too. e.g., kind
 
@@ -106,7 +94,7 @@ loadFile stRef p = eitherThrow =<< lift handled
   where
   getModules = do
     clearOldHoles
-    fs <- getSessionDynFlags
+    _fs <- getSessionDynFlags
     mods <- loadModuleAt p
     mods <$ setStateForData stRef p mods
 
@@ -120,7 +108,7 @@ loadFile stRef p = eitherThrow =<< lift handled
   clearOldHoles =
     liftIO $ readIORef stRef >>= \s -> case fileData s of
       Nothing                                         -> return ()
-      Just fd@(FileData {path, modifyTimeAtLastLoad}) -> do
+      Just (FileData {path, modifyTimeAtLastLoad}) -> do
         t <- getModificationTime path
         when (t /= modifyTimeAtLastLoad) (resetHolesInfo stRef)
 
@@ -132,15 +120,17 @@ loadFile stRef p = eitherThrow =<< lift handled
 setStateForData :: GhcMonad m => IORef SlickState -> FilePath -> (HsModule RdrName, TypecheckedModule) -> m ()
 setStateForData stRef path (hsModule, typecheckedModule) = do
   modifyTimeAtLastLoad <- liftIO $ getModificationTime path
-  let argHoles = Holes.argHoles hsModule
-  gModifyIORef stRef (\st -> st 
+  let argHoles = Slick.Holes.argHoles hsModule
+  gModifyIORef stRef (\st -> st
     { fileData    = Just (FileData {path, hsModule, typecheckedModule, modifyTimeAtLastLoad})
     , currentHole = Nothing
     , argHoles
     })
   logS stRef $ show argHoles
 
-srcLocPos (RealSrcLoc l) = (srcLocLine l, srcLocCol l)
+srcLocPos :: SrcLoc -> (Int, Int)
+srcLocPos (RealSrcLoc l)  = (srcLocLine l, srcLocCol l)
+srcLocPos UnhelpfulLoc {} = error "srcLocPos: unhelpful loc"
 
 respond :: IORef SlickState -> FromClient -> Ghc ToClient
 respond stRef msg = either (Error . show) id <$> runErrorT (respond' stRef msg)
@@ -150,8 +140,8 @@ respond' stRef = \case
   Load p -> const Ok <$> loadFile stRef p
 
   NextHole (ClientState {path, cursorPos=(line,col)}) ->
-    getHoles stRef >>| \holes -> 
-      let mh = 
+    getHoles stRef >>| \holes ->
+      let mh =
             case dropWhile ((currPosLoc >=) . srcSpanStart) holes of
               [] -> case holes of
                 [] -> Nothing
@@ -164,7 +154,7 @@ respond' stRef = \case
 
   -- inefficient
   PrevHole (ClientState {path, cursorPos=(line, col)}) ->
-    getHoles stRef >>| \holes -> 
+    getHoles stRef >>| \holes ->
       let mxs = case takeWhile (< currPosSpan) holes of
                 [] -> case holes of {[] -> Nothing; _ -> Just holes}
                 xs -> Just xs
@@ -186,7 +176,7 @@ respond' stRef = \case
 
   GetEnv (ClientState {..}) -> do
     h               <- getCurrentHoleErr stRef
-    names           <- filter (isNothing . nameModule_maybe) <$> lift getNamesInScope
+    _names          <- filter (isNothing . nameModule_maybe) <$> lift getNamesInScope
     (HoleInfo {..}) <- ((M.! h) . holesInfo) <$> gReadIORef stRef
     let goalStr = "Goal: " ++ holeName ++ " :: " ++ holeTypeStr ++ "\n" ++ replicate 40 '-'
         envVarTypes = map (\(x,t) -> x ++ " :: " ++ t) holeEnv
@@ -206,7 +196,7 @@ respond' stRef = \case
   SendStop -> return Stop
 
   -- Precondition here: Hole has already been entered
-  CaseFurther var (ClientState {path, cursorPos=(line,col)}) -> do
+  CaseFurther var ClientState {} -> do
     SlickState {..} <- gReadIORef stRef
     FileData {path, hsModule} <- getFileDataErr stRef
     currHole           <- getCurrentHoleErr stRef
@@ -217,19 +207,17 @@ respond' stRef = \case
     ty <- readType tyStr
     expansions var ty currHole hsModule >>= \case
       Nothing                    -> return (Error "Variable not found")
-      Just ((L sp mg, mi), matches) -> do
+      Just ((L sp _mg, mi), matches) -> do
         fs <- lift getSessionDynFlags
         let span              = toSpan sp
             indentLevel       = subtract 1 . snd . fst $ span
+            indentTail []     = error "indentTail got []"
             indentTail (s:ss) = s : map (replicate indentLevel ' ' ++) ss
 
             showMatch :: HsMatchContext RdrName -> Match RdrName (LHsExpr RdrName) -> String
             showMatch ctx = showSDocForUser fs neverQualify . pprMatch ctx
-
-            showForUser :: Outputable a => a -> String
-            showForUser = showSDocForUser fs neverQualify . ppr
         return $ case mi of
-          Equation (L l name) ->
+          Equation (L _l name) ->
             Replace (toSpan sp) path . unlines . indentTail $
               map (showMatch (FunRhs name False)) matches
 
@@ -238,11 +226,10 @@ respond' stRef = \case
             Replace (toSpan sp) path . unlines . indentTail $
               map (showMatch CaseAlt) matches
 
-          SingleLambda loc ->
+          SingleLambda _loc ->
             Error "TODO: SingleLambda"
-    where
-    maybeThrow s = maybe (throwError s) return
-    currPosSpan  = mkSrcLoc (fsLit path) line col
+
+  CaseOn _ -> return $ Error "CaseOn not implemented yet."
 
   -- every message should really send current file name (ClientState) and
   -- check if it matches the currently loaded file
@@ -254,6 +241,7 @@ respond' stRef = \case
 showM :: (GhcMonad m, Outputable a) => a -> m String
 showM = showSDocM . ppr
 
+main :: IO ()
 main = do
   home <- getHomeDirectory
   withFile (home </> "slickserverlog") WriteMode $ \logFile -> do
@@ -263,7 +251,7 @@ main = do
     hPutStrLn logFile "Testing, testing"
     runGhc (Just libdir) $ do
       -- ghcInit stRef
-      Init.init stRef
+      Slick.Init.init stRef
       logS stRef "init'd"
       forever $ do
         ln <- liftIO B.getLine
@@ -276,6 +264,7 @@ main = do
             liftIO $ hPutStrLn logFile ("Giving: " ++ show resp)
             liftIO $ LB8.putStrLn (encode resp)
 
+initialState :: Handle -> IO SlickState
 initialState logFile = mkSplitUniqSupply 'x' >>| \uniq -> SlickState
   { fileData = Nothing
   , currentHole = Nothing
@@ -285,10 +274,12 @@ initialState logFile = mkSplitUniqSupply 'x' >>| \uniq -> SlickState
   , uniq
   }
 
+testStateRef :: IO (IORef SlickState)
 testStateRef = do
   h <- openFile "testlog" WriteMode
   newIORef =<< initialState h
 
+runWithTestRef :: (IORef SlickState -> Ghc b) -> IO b
 runWithTestRef x = do
   home <- getHomeDirectory
   withFile (home </> "prog/slick/testlog") WriteMode $ \logFile -> do
@@ -299,7 +290,8 @@ runWithTestRef' x = do
   home <- getHomeDirectory
   withFile (home </> "prog/slick/testlog") WriteMode $ \logFile -> do
     r <- newIORef =<< initialState logFile
-    run $ do { Init.init r; x r }
+    run $ do { Slick.Init.init r; x r }
 
+run :: Ghc a -> IO a
 run = runGhc (Just libdir)
 

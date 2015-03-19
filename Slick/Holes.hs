@@ -1,25 +1,21 @@
-{-# LANGUAGE LambdaCase, 
-             RecordWildCards,
-             NamedFieldPuns,
-             TupleSections,
-             NoMonomorphismRestriction #-}
-module Holes where
+{-# LANGUAGE LambdaCase, NamedFieldPuns, NoMonomorphismRestriction,
+             RecordWildCards, TupleSections #-}
+module Slick.Holes where
 
-import Control.Applicative
-import Data.Maybe
-import Util
-import GHC
-import GhcMonad
-import GHC.Paths
-import Outputable
-import qualified Data.Map as M
-import Control.Monad.Error hiding (liftIO)
-import Control.Monad.State hiding (liftIO)
-import System.FilePath
-import qualified DynFlags
-import qualified OccName
 import qualified Bag
-import qualified Data.Set as S
+import           Control.Applicative
+import           Control.Monad.Error hiding (liftIO)
+import           Control.Monad.State hiding (liftIO)
+import qualified Data.Map            as M
+import           Data.Maybe
+import qualified Data.Set            as S
+import           GHC
+import           GHC.Paths
+import           GhcMonad
+import qualified OccName
+import           Outputable
+
+import           Slick.Util
 
 -- TODO: In the future, I think it should be possible to actually get the
 -- CHoleCan datastructure via runTcInteractive. Call getConstraintVar to
@@ -34,6 +30,7 @@ type M = ErrorT String Ghc
 -- Be careful with guessTarget. It might grab a compiled version
 -- of a module instead of interpreting
 
+argHoles :: HsModule RdrName -> S.Set SrcSpan
 argHoles = S.fromList . goDecls . hsmodDecls where
   goDecls = concatMap (goDecl . unLoc)
 
@@ -49,7 +46,7 @@ argHoles = S.fromList . goDecls . hsmodDecls where
 
   goMatchGroup = concatMap goLMatch . mg_alts
 
-  goLMatch lm@(L _ (Match _pats _ty grhss)) = goGRHSs grhss
+  goLMatch (L _ (Match _pats _ty grhss)) = goGRHSs grhss
 
   goGRHSs (GRHSs {grhssGRHSs}) = concatMap (goGRHS . unLoc) grhssGRHSs
 
@@ -62,7 +59,7 @@ argHoles = S.fromList . goDecls . hsmodDecls where
     _                -> goLExpr e
 
   goLExpr :: LHsExpr RdrName -> [SrcSpan]
-  goLExpr (L l e) = case e of
+  goLExpr (L _l e) = case e of
     HsLamCase _ mg      -> goMatchGroup mg
     HsLam mg            -> goMatchGroup mg
     HsApp a b           -> goArgLExpr b ++ goLExpr a
@@ -155,15 +152,15 @@ argHoles = S.fromList . goDecls . hsmodDecls where
 runM :: M a -> IO (Either String a)
 runM = runGhc (Just libdir) . runErrorT
 
-setupImports = undefined
-
+printScope :: GhcMonad m => m ()
 printScope = liftIO . putStrLn =<< showSDocM . ppr =<< getNamesInScope
 
+localNames :: GhcMonad m => m [Name]
 localNames = getNamesInScope
 
--- when we step under a binder, record the binding and it's 
+-- when we step under a binder, record the binding and it's
 -- purported type from a signature. Always in our map we must
--- have 
+-- have
 --
 -- TODO maintain a stack of "arg types". we pop off an arg and
 -- assign it to a variable when we find one, recording this
@@ -200,9 +197,13 @@ setupContext hole mod = goDecls decls where
 
   goBind b = case b of
     FunBind {..} ->
-      let tys     = fromMaybe [] $ M.lookup (unLoc fun_id) sigs 
+      let tys     = fromMaybe [] $ M.lookup (unLoc fun_id) sigs
       in
       evalStateT (goMatchGroup fun_matches) tys
+    PatBind {}    -> error "Expected FunBind but got PatBind"
+    VarBind {}    -> error "Expected FunBind but got VarBind"
+    AbsBinds {}   -> error "Expected FunBind but got AbsBinds"
+    PatSynBind {} -> error "Expected FunBind but got PatSynBind"
 
   goMatchGroup :: (OutputableBndr id) => MatchGroup id (LHsExpr id) -> StateT [HsType id] M ()
   goMatchGroup (MG {..}) =
@@ -210,13 +211,13 @@ setupContext hole mod = goDecls decls where
       (error "Where the hole?") mg_alts
 
   goStmt = \case
-    LastStmt e _synE           -> error "goStmt:todo"
-    BindStmt _lhs rhs _se _se' -> error "goStmt:todo"
-    BodyStmt e _se _se' _      -> error "goStmt:todo"
-    LetStmt bs                 -> error "goStmt:todo"
-    _                          -> error "goStmt:todo"
+    LastStmt _e _synE           -> error "goStmt:todo"
+    BindStmt _lhs _rhs _se _se' -> error "goStmt:todo"
+    BodyStmt _e _se _se' _      -> error "goStmt:todo"
+    LetStmt _bs                 -> error "goStmt:todo"
+    _                           -> error "goStmt:todo"
 
- 
+
   goGRHS (GRHS gs (L _ rhs)) = maybe (goExpr rhs) goStmt (nextSubexpr' hole gs)
 
   goGRHSs :: OutputableBndr id => GRHSs id (LHsExpr id) -> StateT [HsType id] M ()
@@ -244,24 +245,24 @@ setupContext hole mod = goDecls decls where
   goExpr = \case
     HsLam mg              -> goMatchGroup mg
     HsLamCase _ty mg      -> goMatchGroup mg
-    HsCase (L l scrut) (MG{..}) -> 
+    HsCase (L l scrut) (MG{..}) ->
       if hole `isSubspanOf` l
       then goExpr scrut
       else do
-        let Match [L l pat] _ grhss = nextSubexpr hole mg_alts
+        let Match [L _l pat] _ grhss = nextSubexpr hole mg_alts
         lift . lift $ do
           scrutStr <- showSDocM (ppr scrut)
           patStr   <- showSDocM (ppr pat)
           setBinding patStr scrutStr
         goGRHSs grhss
 
-    HsLet bs e        -> error "todo: let"
-    HsDo {}           -> error "todo: do"
-    OpApp l op _fix r -> goExpr $ nextSubexpr hole [l, op, r]
-    SectionL o x      -> goExpr $ nextSubexpr hole [o, x]
-    SectionR o x      -> goExpr $ nextSubexpr hole [o, x]
-    HsMultiIf _ grhss -> error "multiif"
-    RecordUpd {}      -> error "todo: RecordUpd"
+    HsLet _bs _e       -> error "todo: let"
+    HsDo {}            -> error "todo: do"
+    OpApp l op _fix r  -> goExpr $ nextSubexpr hole [l, op, r]
+    SectionL o x       -> goExpr $ nextSubexpr hole [o, x]
+    SectionR o x       -> goExpr $ nextSubexpr hole [o, x]
+    HsMultiIf _ _grhss -> error "multiif"
+    RecordUpd {}       -> error "todo: RecordUpd"
 
     HsApp e1 e2         -> goExpr $ nextSubexpr hole [e1, e2]
     NegApp (L _ e) _    -> goExpr e
@@ -271,9 +272,9 @@ setupContext hole mod = goDecls decls where
     ExplicitList _ _ es -> goExpr $ nextSubexpr hole es
     ExplicitPArr _ es   -> goExpr $ nextSubexpr hole es
     RecordCon _ _ bs    -> goRecordBinds bs
-    
+
     _ -> return ()
-  
+
   goRecordBinds = undefined
 
   setBinding lhs rhs = runStmt ("let " ++ lhs ++ " = " ++ rhs) RunToCompletion
