@@ -45,6 +45,14 @@ def replace(span, path, s):
     b[l0:l1] = lines[1:]
 
 
+def synchronous(cmd):
+  def sync_cmd(self, *args):
+    cmd(self, *args)
+    s = self.pipe.stdout.readline()
+    log.write('got message: ' + s + '\n')
+    return self.handle(s)
+  return sync_cmd
+
 class SlickProcess:
   def __init__(self):
     self.pipe        = None
@@ -98,13 +106,25 @@ class SlickProcess:
 
     return True
 
+  # synchronous for now.
   def _send_message(self, x):
     s = json.dumps(x) + '\n'
     log.write('_send_message: ' + s)
     if self.pipe.returncode == None:
       self.pipe.stdin.write(s)
+      s = self.pipe.stdout.readline()
+      log.write('got message: ' + s + '\n')
+      return self.handle(s)
     else:
       log.write('send message: return code not none. heres stderr\n')
+
+#  def _send_message(self, x):
+#    s = json.dumps(x) + '\n'
+#    log.write('_send_message: ' + s)
+#    if self.pipe.returncode == None:
+#      self.pipe.stdin.write(s)
+#    else:
+#      log.write('send message: return code not none. heres stderr\n')
 
 
   def start(self):
@@ -169,9 +189,9 @@ def wait_for_messages():
 
 def start():
   global reader
-  reader = threading.Thread(target=wait_for_messages)
-  reader.start()
-  log.write('called start\n')
+  #reader = threading.Thread(target=wait_for_messages)
+  #reader.start()
+  #log.write('called start\n')
 
 def stop():
   get_slick_process().send_stop()
