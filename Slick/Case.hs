@@ -2,8 +2,8 @@
 module Slick.Case where
 
 import           Bag                 (bagToList)
-import           BasicTypes          (Boxity (..))
-import           Control.Applicative ((<|>))
+import           BasicTypes          (Boxity (..), Origin(..))
+import           Control.Applicative ((<|>), (<$>))
 import           Control.Arrow       (second)
 import           Control.Monad.Error (lift, throwError)
 import qualified Data.List           as List
@@ -16,11 +16,11 @@ import qualified FamInstEnv
 import           FastString          (fsLit)
 import qualified GHC
 import           GhcMonad
-import           HsBinds             (HsBindLR (..))
+import           HsBinds             (HsBindLR (..), HsLocalBindsLR(..))
 import           HsDecls             (ClsInstDecl (..), HsDecl (..),
                                       InstDecl (..))
 import           HsExpr              (GRHS (..), GRHSs (..), HsExpr (..),
-                                      LHsExpr, LMatch, Match (..), HsTupArg (..), StmtLR (..))
+                                      LHsExpr, LMatch, Match (..), HsTupArg (..), StmtLR (..), MatchGroup(..))
 import           HsPat
 import           HsSyn               (HsModule (..))
 import           Name                (Name)
@@ -155,6 +155,17 @@ namesBound (L _ (Match pats t rhs)) = listyPat (\pats' -> Match pats' t rhs) pat
 
 -- expansions :: (VarName, loc) -> Module -> Maybe ((MatchInfo, [Pat]), UniqSupply)
 -- TODO: Change to ErrorT
+
+patternsForType :: Type -> M [LPat RdrName]
+patternsForType ty =
+  lift (unpeel ty) >>| \case
+    Just dt -> map (noLoc . conPattern) dt
+    Nothing -> [varPat ty 0] -- TODO: Variable names
+
+matchesForType :: Type -> M [Match RdrName (LHsExpr RdrName)]
+matchesForType = fmap (map (\p -> Match [p] Nothing holyGRHSs)) . patternsForType where
+  holyGRHSs :: GRHSs RdrName (LHsExpr RdrName)
+  holyGRHSs = GRHSs [noLoc $ GRHS [] (noLoc EWildPat)] EmptyLocalBinds
 
 expansions
   :: String

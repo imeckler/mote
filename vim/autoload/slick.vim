@@ -62,6 +62,11 @@ function! slick#caseFurther(x)
   redraw!
 endfunction
 
+function! slick#caseOn(e)
+  py slick.case_on(vim.eval('a:e'))
+  redraw!
+endfunction
+
 augroup slickGroup
   autocmd VimLeave * :call slick#stop()
 augroup END
@@ -72,4 +77,5 @@ command! -nargs=1 SlickRefine call slick#refine(<f-args>)
 command! SlickLoadCurrentFIle call slick#loadCurrentFile()
 command! SlickGetEnv call slick#getEnv()
 command! -nargs=1 Casex call slick#caseFurther(<f-args>)
+command! -nargs=1 CaseOn call slick#caseOn(<f-args>)
 

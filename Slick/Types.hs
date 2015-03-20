@@ -8,14 +8,16 @@ import           Data.Time.Clock
 import           GHC
 import           System.IO
 import           UniqSupply
+import           TcRnTypes           (Ct (..))
 
 type Hole = SrcSpan
 
 data FileData = FileData
   { path                 :: FilePath
+  -- This is apparently stored in the ModSummary. Check it out.
   , modifyTimeAtLastLoad :: UTCTime
-  , typecheckedModule    :: TypecheckedModule
   , hsModule             :: HsModule RdrName
+  , typecheckedModule    :: TypecheckedModule
   }
 
 data SlickState = SlickState
@@ -25,16 +27,13 @@ data SlickState = SlickState
   , logFile     :: Handle
   , uniq        :: UniqSupply
   , argHoles    :: S.Set Hole -- holes which are arguments to functions
+  , loadErrors  :: [String]
   }
 
--- TODO: Maybe just comute all the types up front
 data HoleInfo = HoleInfo
-  { holeName    :: String
-  , holeTypeStr :: String
-  , holeEnv     :: [(String, String)] -- (ident, type)
+  { holeCt  :: Ct
+  , holeEnv :: [(Id, Type)]
   }
-  deriving (Show)
-
 
 -- | Possible errors from the server.
 data ErrorType

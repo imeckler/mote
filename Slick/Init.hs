@@ -8,7 +8,7 @@ import           GHC
 import           Language.Haskell.GhcMod.Internal              hiding (getCompilerOptions,
                                                                 parseCabalFile)
 import           Outputable
-import qualified Slick.ParseHoleMessage
+import           Slick.Protocol (ToClient(Error))
 import           Slick.Types
 import           Slick.Util
 -- I had to write my own "getCompilerOptions" and "parseCabalFile"
@@ -17,6 +17,8 @@ import           Control.Applicative
 import qualified Control.Exception
 import           Control.Monad
 import           Control.Monad.Error
+import           Data.Aeson                                    (encode)
+import qualified Data.ByteString.Lazy.Char8 as LB8
 import qualified Data.Map                                      as M
 import qualified Data.Set                                      as S
 import           DynFlags
@@ -142,14 +144,17 @@ setOptions stRef (Options {..}) (CompilerOptions{..}) = do
         { hscTarget  = HscInterpreted
         , ghcLink    = LinkInMemory
         , ghcMode    = CompManager
+        {-
         , log_action = \fs sev span sty msg -> do
             -- Here be hacks
             let s = showSDoc fs (withPprStyle sty msg)
-            logS stRef s
+            logS stRef $ "A nice error message: " ++ show s
             case Slick.ParseHoleMessage.parseHoleInfo s of
-              Nothing   -> return ()
-              Just info -> modifyIORef stRef (\s ->
+              Nothing   -> modifyIORef stRef (\st -> st { loadErrors = s : loadErrors st })
+              Just info ->
+                modifyIORef stRef (\s ->
                 s { holesInfo = M.insert span info (holesInfo s) })
+                -}
         }
 
   void $ setSessionDynFlags =<< addCmdOpts ghcOptions
