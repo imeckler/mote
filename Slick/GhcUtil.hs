@@ -84,6 +84,20 @@ toPos rsl = (srcLocLine rsl, srcLocCol rsl)
 
 -- needed for refine and the real version of getting hole env
 
+inHoleEnv :: IORef SlickState -> TcRn a -> M a
+inHoleEnv stRef tcx = do
+  hsc_env      <- lift getSession
+  hi           <- getCurrentHoleInfoErr stRef
+  (gbl_env, _) <- tm_internals_ . typecheckedModule <$> getFileDataErr stRef
+  let lcl_env = ctLocEnv . ctLoc $ holeCt hi
+
+  ((_warns, errs), xMay) <- liftIO . runTcInteractive hsc_env $ do
+    setEnvs (gbl_env, lcl_env) $ tcx
+  fs <- lift getSessionDynFlags
+  maybe (throwErrs fs errs) return xMay
+  where
+  throwErrs fs = throwError . GHCError . showSDoc fs . vcat . pprErrMsgBag
+
 -- (var, Type)
 withBindings :: GhcMonad m => [(String, String)] -> m a -> m a
 withBindings bs mx = do

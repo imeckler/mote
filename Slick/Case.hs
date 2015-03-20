@@ -153,9 +153,6 @@ namesBound (L _ (Match pats t rhs)) = listyPat (\pats' -> Match pats' t rhs) pat
     go pre (x:xs) = (pre, x, xs) : go (x:pre) xs
 
 
--- expansions :: (VarName, loc) -> Module -> Maybe ((MatchInfo, [Pat]), UniqSupply)
--- TODO: Change to ErrorT
-
 patternsForType :: Type -> M [LPat RdrName]
 patternsForType ty =
   lift (unpeel ty) >>| \case
@@ -167,6 +164,8 @@ matchesForType = fmap (map (\p -> Match [p] Nothing holyGRHSs)) . patternsForTyp
   holyGRHSs :: GRHSs RdrName (LHsExpr RdrName)
   holyGRHSs = GRHSs [noLoc $ GRHS [] (noLoc EWildPat)] EmptyLocalBinds
 
+-- TODO: We have an actual Var at are disposal now when we call this so the
+-- string argument can be replaced with a Var argument
 expansions
   :: String
      -> Type

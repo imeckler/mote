@@ -144,17 +144,6 @@ setOptions stRef (Options {..}) (CompilerOptions{..}) = do
         { hscTarget  = HscInterpreted
         , ghcLink    = LinkInMemory
         , ghcMode    = CompManager
-        {-
-        , log_action = \fs sev span sty msg -> do
-            -- Here be hacks
-            let s = showSDoc fs (withPprStyle sty msg)
-            logS stRef $ "A nice error message: " ++ show s
-            case Slick.ParseHoleMessage.parseHoleInfo s of
-              Nothing   -> modifyIORef stRef (\st -> st { loadErrors = s : loadErrors st })
-              Just info ->
-                modifyIORef stRef (\s ->
-                s { holesInfo = M.insert span info (holesInfo s) })
-                -}
         }
 
   void $ setSessionDynFlags =<< addCmdOpts ghcOptions

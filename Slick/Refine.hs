@@ -4,10 +4,13 @@ module Slick.Refine where
 
 import           Control.Applicative ((<$>))
 import           Control.Monad.Error (ErrorT (..), MonadError, lift, throwError)
+import           Outputable          (showSDoc, vcat)
 import           Control.Monad.Trans (MonadIO, MonadTrans)
+import           ErrUtils            (pprErrMsgBag)
 import           Data.IORef          (IORef)
 import qualified Data.Set            as S
 import           GhcMonad
+import GHC (TypecheckedModule(..))
 import           HsExpr              (HsExpr (..), LHsExpr)
 import           OccName             (mkVarOcc, occName)
 import           RdrName             (RdrName (Unqual))
@@ -58,75 +61,60 @@ tcRnExprTc rdr_expr = do
   simplifyInteractive lie_top
   zonkTcType . mkForAllTys qtvs $ mkPiTypes dicts res_ty
 
-refineExpr
-  :: Num b => IORef SlickState -> Type -> LHsExpr RdrName -> ErrorT ErrorType Ghc b
-refineExpr stRef goalTy e = do
-  ty <- hsExprType e
-  refineType stRef goalTy ty
-
-refineType
-  :: (MonadError ErrorType (t m), MonadTrans t, GhcMonad m,
-      MonadIO (t m), Num b) =>
-     IORef SlickState -> Type -> Type -> t m b
-refineType stRef goalTy t = let (tyVars, t') = splitForAllTys t in go 0 tyVars t'
--- foralls of the argument type t should get pushed down as we go
-  where
-  -- The subtype thing doesn't play nice with polymorphism.
-  -- If we have a hole _ :: a (not forall a. a, it's a specific type
-  -- variable) and refine with fromJust :: forall t. Maybe t -> t,
-  -- subType says that a < the type of fromJust and we just stick fromJust
-  -- in the hole.
-  go acc tyVars t =
-    let (tyVars', t') = splitForAllTys t
-        tyVars'' = tyVars ++ tyVars'
-    in
-    do
-      tyStr <- lift (showPprM (goalTy, mkForAllTys tyVars'' t))
-      logS stRef $ "refineType: " ++ tyStr
-      -- TODO: check what subtype does on (dropForAlls <$> readType "a") and
-      -- (dropForAlls <$> readType "a")
-      lift (subType goalTy (mkForAllTys tyVars'' t)) >>= \case
-        True  -> return acc
-        False -> case splitFunTy_maybe t' of
-          Nothing      -> throwError NoRefine
-          Just (_, t'') -> go (1 + acc) tyVars'' t''
-
 refine :: IORef SlickState -> String -> M (LHsExpr RdrName)
 refine stRef eStr = do
+  logS stRef "refine1"
   h     <- getCurrentHoleErr stRef
   isArg <- S.member h . argHoles <$> gReadIORef stRef
   hi    <- getCurrentHoleInfoErr stRef
+  logS stRef "refine2"
   -- got rid of dropForAlls here, but that's definitely wrong as per const
   -- example
-  --
-  -- first order approximation: just instantiate all abstracted
-  -- kindvars to *. I believe this is approximately correct since
-  -- if there were real constraints on the kinds (ignoring prescribed type
-  -- signature), they would have been put in the result of readType
-  --
-  -- this is complicated...
+  fs <- lift getSessionDynFlags
+  let goalTy            = holeType hi
+      go acc tyVars rty = do
+        logS stRef $ showType fs rty
+        let (tyVars', rty') = splitForAllTys rty
+            tyVars'' = tyVars ++ tyVars'
 
-  (gbl_env, _) <- tm_internals_ . typecheckedModule <$> gReadIORef stRef
-  let goalTy  = holeType hi
-      lcl_env = ctLocEnv . ctLoc $ holeCt hi
+        logS stRef $ "rty: " ++ showType fs rty
+        logS stRef $ "rty': " ++ showType fs rty'
+
+        logS stRef $ "comparing: " ++ showType fs goalTy
+        logS stRef $ "with: " ++ showType fs (mkForAllTys tyVars'' rty)
+        subTypeTc (mkForAllTys tyVars'' rty) goalTy >>= \case
+          True -> return (Right acc)
+          False -> case splitFunTy_maybe rty' of
+            Nothing        -> return (Left NoRefine)
+            Just (_, rty'') -> go (1 + acc) tyVars'' rty''
 
   expr <- parseExpr eStr
+  (nerr, _cons) <- inHoleEnv stRef . captureConstraints $ do
+    rty <- tcRnExprTc expr
+    logS stRef $ showType fs rty
+    go 0 [] rty
+  {-
+  (gbl_env, _) <- tm_internals_ . typecheckedModule <$> getFileDataErr stRef
+      lcl_env = ctLocEnv . ctLoc $ holeCt hi
+
   hsc_env <- lift getSession
 
-  runTcInteractive hsc_env $
+  ((_warns, errs), nerrMay) <- liftIO . runTcInteractive hsc_env $
     setEnvs (gbl_env, lcl_env) $ do
       rty <- tcRnExprTc expr
-      n   <- go 0 [] goalTy rty
+      go 0 [] goalTy rty
+  fs   <- lift getSessionDynFlags
+  nerr <- maybe (throwErrs fs errs) return nerrMay
+  -}
+  logS stRef "refine3"
+  case nerr of
+    Right n  -> return $ withNHoles n expr
+    Left err -> throwError err
+  
   where
-  go acc tyVars goalTy rty = do
-    let (tyVars', rty') = splitForAllTys rty
-        tyVars''        = tyVars ++ tyVars'
-    subTypeTc goalTy (mkForAllTys tyVars'' rty') >>= \case
-      True -> return (Just acc)
-      False -> case splitFunTy_maybe rty' of
-        Nothing         -> return Nothing
-        Just (_, rty'') -> go (1 + acc) tyVars'' rty''
 
+--    let (tyVars', rty') = splitForAllTys rty
+--        tyVars''        = tyVars ++ tyVars'
 
   -- have to make sure that the hole-local type variables are in scope
   -- for "withBindings"
@@ -143,39 +131,12 @@ refine stRef eStr = do
             _            -> False
     return $ if isArg && not atomic then noLoc (HsPar expr') else expr'
 -}
-refineToExpr
-  :: IORef SlickState
-     -> Type
-     -> LHsExpr RdrName
-     -> M (LHsExpr RdrName)
-refineToExpr stRef goalTy e =
-  refineExpr stRef goalTy e >>| \argsNum -> withNHoles argsNum e
 
 withNHoles :: Int -> LHsExpr RdrName -> LHsExpr RdrName
 withNHoles n e = app e $ replicate n hole where
   app f args = foldl (\f' x -> noLoc $ HsApp f' x) f args
   hole       = noLoc $ HsVar (Unqual (mkVarOcc "_"))
 
-{-
-holeRdrTyVars :: GhcMonad m => HoleInfo -> m [RdrName]
-holeRdrTyVars (HoleInfo {holeEnv}) = do
-  hsTys <- fmap rights . mapM (runParserM parseType) $ map snd holeEnv
-  let (_rdrKvs, rdrTvs) = extractHsTysRdrTyVars hsTys
-  return rdrTvs
-
-subTypeEvInHole hi t1 t2 = do
-  env <- getSession
-  rdrTvs <- holeRdrTyVars hi
-  fmap snd . liftIO . runTcInteractive env $ do
-    nameTvs <- mapM toNameVar rdrTvs
-    withTyVarsInScope nameTvs $ do
-      (_, cons) <- captureConstraints (tcSubType origin ctx t1 t2)
-      simplifyInteractive cons
-  where
-  toNameVar x = do { u <- newUnique; return $ Name.mkInternalName u (occName x) noSrcSpan }
-  origin = AmbigOrigin GhciCtxt
-  ctx = GhciCtxt
--}
 
 subTypeEvTc t1 t2 = do
   { (_, cons) <- captureConstraints (tcSubType origin ctx t1 t2)
@@ -184,19 +145,9 @@ subTypeEvTc t1 t2 = do
   origin = AmbigOrigin GhciCtxt
   ctx = GhciCtxt
 
-subTypeTc t1 t2 = do
-  b <- subTypeEvTc t1 t2 
-  allBag (\(EvBind _ t) -> case t of
-    EvDelayedError {} -> False
-    _                 -> True) b
+subTypeTc t1 t2 =
+  subTypeEvTc t1 t2 >>|
+    allBag (\(EvBind _ t) -> case t of
+      EvDelayedError {} -> False
+      _                 -> True)
 
-subTypeEv t1 t2 = do
-  { env <- getSession
-  ; fmap snd . liftIO . runTcInteractive env $ subTypeEvTc t1 t2 }
-
-subType t1 t2 =
-  subTypeEv t1 t2 >>| \case
-    Nothing -> False
-    Just b  -> allBag (\(EvBind _ t) -> case t of
-      EvDelayedError{} -> False
-      _                -> True) b

@@ -219,11 +219,14 @@ zipSplit (x:xs) (y:ys) = let (ps, r) = zipSplit xs ys in ((x,y) : ps, r)
 
 type GHCHole = (CtEvidence, OccName.OccName)
 
-holePos :: HoleInfo -> SrcSpan
-holePos = ctLocSpan . ctLoc . holeCt
+holeSpan :: HoleInfo -> SrcSpan
+holeSpan = ctLocSpan . ctLoc . holeCt
 
 holeType :: HoleInfo -> Type
 holeType = ctEvPred . ctEvidence . holeCt
+
+holeNameString :: HoleInfo -> String
+holeNameString = occNameToString . cc_occ . holeCt
 
 getRelevantBindings :: Ct -> TcM [(Id, Type)]
 getRelevantBindings ct = go 100 (tcl_bndrs lcl_env)

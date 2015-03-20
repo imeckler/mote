@@ -16,7 +16,7 @@ import qualified DynFlags
 
 import           ErrUtils                   (pprErrMsgBag)
 import           Exception
-import           FastString                 (fsLit)
+import           FastString                 (fsLit, unpackFS)
 import           GHC                        hiding (exprType)
 import           GHC.Paths
 import           HscTypes                   (srcErrorMessages)
@@ -30,7 +30,7 @@ import           UniqSupply                 (mkSplitUniqSupply)
 
 import           Slick.Case
 import           Slick.GhcUtil
-import qualified Slick.Holes
+import           Slick.Holes
 import qualified Slick.Init
 import           Slick.Protocol
 import           Slick.ReadType
@@ -49,18 +49,7 @@ ghcInit stRef = do
     , ghcLink    = LinkInMemory
     , ghcMode    = CompManager
     , traceLevel = 10
-    {-
-    , log_action = \fs _sev span sty msg -> do
-        -- Here be hacks
-        let s = showSDoc fs (withPprStyle sty msg)
-        logS stRef s
-        case parseHoleInfo s of
-          Nothing -> return ()
-          Just info -> gModifyIORef stRef (\s ->
-            s { holesInfo = M.insert span info (holesInfo s) })
-            -}
     }
-
   where
   withFlags fs dynFs = foldl DynFlags.gopt_set dynFs fs
 
@@ -99,7 +88,13 @@ loadModuleAt p = do
 -- TODO: This is throwing and it's not clear how to catch
 -- the error properly
 loadFile :: IORef SlickState -> FilePath -> M ParsedModule
-loadFile stRef p = eitherThrow =<< lift handled
+loadFile stRef p = do
+  pmod  <- eitherThrow =<< lift handled
+  fdata <- getFileDataErr stRef
+  his   <- getHoleInfos (typecheckedModule fdata)
+  gModifyIORef stRef (\s -> s {
+      holesInfo = M.fromList $ map (\hi -> (holeSpan hi, hi)) his })
+  return pmod
   where
   getModules = do
     clearOldHoles
@@ -137,12 +132,17 @@ loadFile stRef p = eitherThrow =<< lift handled
 setStateForData :: GhcMonad m => IORef SlickState -> FilePath -> TypecheckedModule -> HsModule RdrName -> m ()
 setStateForData stRef path tcmod hsModule = do
   modifyTimeAtLastLoad <- liftIO $ getModificationTime path
-  let argHoles = Slick.Holes.argHoles hsModule
+  let argHoles = findArgHoles hsModule
   gModifyIORef stRef (\st -> st
-    { fileData    = Just (FileData {path, hsModule, modifyTimeAtLastLoad})
+    { fileData    = Just $
+        FileData
+        { path
+        , hsModule
+        , modifyTimeAtLastLoad
+        , typecheckedModule=tcmod
+        }
     , currentHole = Nothing
     , argHoles
-    , typecheckedModule = tcmod
     })
   logS stRef $ show argHoles
 
@@ -191,15 +191,16 @@ respond' stRef = \case
       Just _  -> Ok
 
   GetEnv (ClientState {..}) -> do
-    h               <- getCurrentHoleErr stRef
-    _names          <- filter (isNothing . nameModule_maybe) <$> lift getNamesInScope
-    (HoleInfo {..}) <- ((M.! h) . holesInfo) <$> gReadIORef stRef
-    let goalStr = "Goal: " ++ holeName ++ " :: " ++ holeTypeStr ++ "\n" ++ replicate 40 '-'
-        envVarTypes = map (\(x,t) -> x ++ " :: " ++ t) holeEnv
+    hi@(HoleInfo {..}) <- getCurrentHoleInfoErr stRef
+    fs <- lift getSessionDynFlags
+    let tyStr       = showType fs $ holeType hi
+        goalStr     = "Goal: " ++ holeNameString hi ++ " :: " ++ tyStr ++ "\n" ++ replicate 40 '-'
+        envVarTypes =
+          map (\(id,t) -> occNameToString (getOccName id) ++ " :: " ++ showType fs t)
+            holeEnv
 
     return (SetInfoWindow $ unlines (goalStr : envVarTypes))
 
-  -- TODO: Switch everything to use error monad
   Refine exprStr (ClientState {..}) -> do
     h     <- getCurrentHoleErr stRef
     expr' <- refine stRef exprStr
@@ -215,17 +216,12 @@ respond' stRef = \case
   CaseFurther var ClientState {} -> do
     SlickState {..} <- gReadIORef stRef
     FileData {path, hsModule} <- getFileDataErr stRef
-    HoleInfo {holeEnv} <- getCurrentHoleInfoErr stRef
+    hi@(HoleInfo {holeEnv})   <- getCurrentHoleInfoErr stRef
 
     (id, ty) <- maybeThrow (NoVariable var) $
-      List.find (\(id,_) -> var == unpackFS (occNameFS (getOccName id))) holeEnv
+      List.find (\(id,_) -> var == occNameToString (getOccName id)) holeEnv
 
-    (_, tyStr)         <- maybeThrow (NoVariable var) $
-                            List.find ((== var) . fst) holeEnv
-
-    ty <- readType tyStr
-
-    expansions var ty currHole hsModule >>= \case
+    expansions (occNameToString (getOccName id)) ty (holeSpan hi) hsModule >>= \case
       Nothing                        -> return (Error "Variable not found")
       Just ((L sp _mg, mi), matches) -> do
         fs <- lift getSessionDynFlags
@@ -249,8 +245,8 @@ respond' stRef = \case
           SingleLambda _loc ->
             Error "TODO: SingleLambda"
 
+{-
   CaseOn exprStr (ClientState {..}) -> do
-    logS stRef "1"
     expr <- parseExpr exprStr
     -- Should actually have general mechanism for getting the scope at
     -- a point...
@@ -260,14 +256,12 @@ respond' stRef = \case
     ty <- wrap $ hsExprType expr
     ms <- matchesForType ty
     fs <- lift getSessionDynFlags
-    logS stRef "2"
     let indent n  = (replicate n ' ' ++)
         showMatch = showSDocForUser fs neverQualify . pprMatch (CaseAlt :: HsMatchContext RdrName)
-    logS stRef "3"
     return
       . Insert cursorPos path
       . unlines
-      $ ("case " ++ exprStr ++ " of") : map (indent 2 . showMatch) ms
+      $ ("case " ++ exprStr ++ " of") : map (indent 2 . showMatch) ms -}
 
   -- every message should really send current file name (ClientState) and
   -- check if it matches the currently loaded file
@@ -297,10 +291,9 @@ main = do
           Nothing  ->
             return ()
           Just msg -> do
-            liftIO $ hPutStrLn logFile ("Got: " ++ show msg)
+            logS stRef ("Got: " ++ show msg)
             resp <- respond stRef msg
-            logS stRef . ("holes be: " ++) . show . holesInfo =<< gReadIORef stRef
-            liftIO $ hPutStrLn logFile ("Giving: " ++ show resp)
+            logS stRef ("Giving: " ++ show resp)
             liftIO $ LB8.putStrLn (encode resp)
 
 initialState :: Handle -> IO SlickState

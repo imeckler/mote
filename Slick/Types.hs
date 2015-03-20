@@ -23,6 +23,7 @@ data FileData = FileData
 data SlickState = SlickState
   { fileData    :: Maybe FileData
   , currentHole :: Maybe Hole
+  -- holesInfo really belongs in filedata
   , holesInfo   :: M.Map SrcSpan HoleInfo
   , logFile     :: Handle
   , uniq        :: UniqSupply
