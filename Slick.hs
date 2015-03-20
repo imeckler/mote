@@ -144,7 +144,7 @@ setStateForData stRef path tcmod hsModule = do
     , currentHole = Nothing
     , argHoles
     })
-  logS stRef $ show argHoles
+  logS stRef $ "These be the argHoles:" ++ show argHoles
 
 srcLocPos :: SrcLoc -> (Int, Int)
 srcLocPos (RealSrcLoc l)  = (srcLocLine l, srcLocCol l)

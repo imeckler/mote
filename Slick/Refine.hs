@@ -19,8 +19,8 @@ import           TcRnDriver          (runTcInteractive)
 import           TcRnTypes           (CtOrigin (..))
 import           TcType              (TcSigmaType)
 import           Type                (dropForAlls, mkForAllTys, splitForAllTys,
-                                      splitFunTy_maybe, mkPiTypes)
-import           TypeRep             (Type)
+                                      splitFunTy_maybe, mkPiTypes, isPredTy)
+import           TypeRep             (Type(..))
 
 import           Slick.GhcUtil
 import           Slick.ReadType
@@ -63,55 +63,47 @@ tcRnExprTc rdr_expr = do
 
 refine :: IORef SlickState -> String -> M (LHsExpr RdrName)
 refine stRef eStr = do
-  logS stRef "refine1"
   h     <- getCurrentHoleErr stRef
   isArg <- S.member h . argHoles <$> gReadIORef stRef
   hi    <- getCurrentHoleInfoErr stRef
-  logS stRef "refine2"
   -- got rid of dropForAlls here, but that's definitely wrong as per const
   -- example
   fs <- lift getSessionDynFlags
   let goalTy            = holeType hi
-      go acc tyVars rty = do
-        logS stRef $ showType fs rty
-        let (tyVars', rty') = splitForAllTys rty
-            tyVars'' = tyVars ++ tyVars'
+      go acc tyVars predTys rty = do
+        let (tyVars', rty')   = splitForAllTys rty
+            (predTys', rty'') = splitPredTys rty'
+            tyVars''          = tyVars ++ tyVars'
+            predTys''         = predTys ++ predTys'
 
-        logS stRef $ "rty: " ++ showType fs rty
-        logS stRef $ "rty': " ++ showType fs rty'
-
-        logS stRef $ "comparing: " ++ showType fs goalTy
-        logS stRef $ "with: " ++ showType fs (mkForAllTys tyVars'' rty)
-        subTypeTc (mkForAllTys tyVars'' rty) goalTy >>= \case
+        subTypeTc (mkForAllTys tyVars'' $ withArgTys predTys'' rty) goalTy >>= \case
           True -> return (Right acc)
-          False -> case splitFunTy_maybe rty' of
-            Nothing        -> return (Left NoRefine)
-            Just (_, rty'') -> go (1 + acc) tyVars'' rty''
+          False -> case splitFunTy_maybe rty'' of
+            Nothing          -> return (Left NoRefine)
+            Just (_, rty''') -> go (1 + acc) tyVars'' predTys'' rty'''
 
   expr <- parseExpr eStr
   (nerr, _cons) <- inHoleEnv stRef . captureConstraints $ do
     rty <- tcRnExprTc expr
-    logS stRef $ showType fs rty
-    go 0 [] rty
-  {-
-  (gbl_env, _) <- tm_internals_ . typecheckedModule <$> getFileDataErr stRef
-      lcl_env = ctLocEnv . ctLoc $ holeCt hi
+    go 0 [] [] rty
 
-  hsc_env <- lift getSession
-
-  ((_warns, errs), nerrMay) <- liftIO . runTcInteractive hsc_env $
-    setEnvs (gbl_env, lcl_env) $ do
-      rty <- tcRnExprTc expr
-      go 0 [] goalTy rty
-  fs   <- lift getSessionDynFlags
-  nerr <- maybe (throwErrs fs errs) return nerrMay
-  -}
-  logS stRef "refine3"
   case nerr of
-    Right n  -> return $ withNHoles n expr
+    Right n  ->
+      let expr' = withNHoles n expr
+          atomic =
+            case unLoc expr' of
+              HsVar {}     -> True
+              HsIPVar {}   -> True
+              HsOverLit {} -> True
+              HsLit {}     -> True
+              HsPar {}     -> True
+              _            -> False
+      in
+      return $ if isArg && not atomic then noLoc (HsPar expr') else expr'
+
     Left err -> throwError err
-  
-  where
+
+  where withArgTys ts t = foldr (\s r -> FunTy s r) t ts
 
 --    let (tyVars', rty') = splitForAllTys rty
 --        tyVars''        = tyVars ++ tyVars'
@@ -121,15 +113,6 @@ refine stRef eStr = do
   {-
   ErrorT . withBindings holeEnv . runErrorT $ do
     expr' <- refineToExpr stRef goalTy =<< parseExpr eStr
-    let atomic =
-          case unLoc expr' of
-            HsVar {}     -> True
-            HsIPVar {}   -> True
-            HsOverLit {} -> True
-            HsLit {}     -> True
-            HsPar {}     -> True
-            _            -> False
-    return $ if isArg && not atomic then noLoc (HsPar expr') else expr'
 -}
 
 withNHoles :: Int -> LHsExpr RdrName -> LHsExpr RdrName
@@ -137,6 +120,8 @@ withNHoles n e = app e $ replicate n hole where
   app f args = foldl (\f' x -> noLoc $ HsApp f' x) f args
   hole       = noLoc $ HsVar (Unqual (mkVarOcc "_"))
 
+splitPredTys (FunTy t1 t2) | isPredTy t1 = let (ps, t) = splitPredTys t2 in (t1:ps, t)
+splitPredTys t                           = ([], t)
 
 subTypeEvTc t1 t2 = do
   { (_, cons) <- captureConstraints (tcSubType origin ctx t1 t2)
