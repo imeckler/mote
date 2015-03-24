@@ -56,18 +56,12 @@ ghcInit stRef = do
   where
   withFlags fs dynFs = foldl DynFlags.gopt_set dynFs fs
 
--- tcl_lie should contain the CHoleCan's
-
 getEnclosingHole :: IORef SlickState -> (Int, Int) -> M (Maybe AugmentedHoleInfo)
 getEnclosingHole stRef pos =
   M.foldrWithKey (\k hi r -> if k `spans` pos then Just hi else r) Nothing
   . holesInfo
   <$> getFileDataErr stRef
 -- TODO: access ghci cmomands from inside vim too. e.g., kind
-
-
-
--- handleSourceError (return . Left) . fmap Right $ do
 
 -- TODO: This is throwing and it's not clear how to catch
 -- the error properly
