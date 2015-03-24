@@ -45,6 +45,8 @@ endfunction
 function! slick#refine(e)
   py slick.refine(vim.eval('a:e'))
   redraw!
+  write
+  call slick#loadCurrentFile()
 endfunction
 
 function! slick#nextHole()
@@ -60,6 +62,8 @@ endfunction
 function! slick#caseFurther(x)
   py slick.case_further(vim.eval('a:x'))
   redraw!
+  write
+  call slick#loadCurrentFile()
 endfunction
 
 function! slick#caseOn(e)

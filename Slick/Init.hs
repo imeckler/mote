@@ -24,6 +24,7 @@ import qualified Data.Set                                      as S
 import           DynFlags
 import           GhcMonad
 import           Language.Haskell.GhcMod
+import ErrUtils
 
 import qualified Distribution.Package                          as C
 import qualified Distribution.PackageDescription               as P
@@ -144,6 +145,22 @@ setOptions stRef (Options {..}) (CompilerOptions{..}) = do
         { hscTarget  = HscInterpreted
         , ghcLink    = LinkInMemory
         , ghcMode    = CompManager
+        , log_action = \dfs sev span pprsty msgdoc ->
+            let msg =
+                  showSDocForUser dfs neverQualify
+                  $ mkLocMessage sev span msgdoc
+                isHoleMsg = and . zipWith (==) "Found hole" $ showSDoc dfs msgdoc
+            in
+            if isHoleMsg
+            then return ()
+            else
+              gModifyIORef stRef (\s ->
+                s { loadErrors = msg : loadErrors s })
+        {- TODO: Debug
+        , traceLevel = 2
+        , log_action = \dfs sev span pprsty msgdoc ->
+            logS stRef $ showSDoc dfs msgdoc
+        -}
         }
 
   void $ setSessionDynFlags =<< addCmdOpts ghcOptions

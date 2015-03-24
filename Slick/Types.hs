@@ -1,5 +1,5 @@
 module Slick.Types (Hole, FileData (..), SlickState (..),
-                    HoleInfo (..), ErrorType (..), M) where
+                    HoleInfo (..), ErrorType (..), AugmentedHoleInfo(..), M) where
 
 import           Control.Monad.Error
 import qualified Data.Map            as M
@@ -18,22 +18,27 @@ data FileData = FileData
   , modifyTimeAtLastLoad :: UTCTime
   , hsModule             :: HsModule RdrName
   , typecheckedModule    :: TypecheckedModule
+  , holesInfo            :: M.Map SrcSpan AugmentedHoleInfo
   }
 
 data SlickState = SlickState
   { fileData    :: Maybe FileData
-  , currentHole :: Maybe Hole
-  -- holesInfo really belongs in filedata
-  , holesInfo   :: M.Map SrcSpan HoleInfo
+  , currentHole :: Maybe AugmentedHoleInfo
   , logFile     :: Handle
   , uniq        :: UniqSupply
   , argHoles    :: S.Set Hole -- holes which are arguments to functions
   , loadErrors  :: [String]
   }
 
+data AugmentedHoleInfo =
+  AugmentedHoleInfo
+  { holeInfo    :: HoleInfo
+  , suggestions :: [(Name, Type)]
+  }
+
 data HoleInfo = HoleInfo
-  { holeCt  :: Ct
-  , holeEnv :: [(Id, Type)]
+  { holeCt          :: Ct
+  , holeEnv         :: [(Id, Type)]
   }
 
 -- | Possible errors from the server.
@@ -43,7 +48,7 @@ data ErrorType
   | NoFile             -- ^ The given file was not loaded properly into Slick.
   | NoVariable String  -- ^ The variable with the given name does not exist.
   | TypeNotInEnv       -- ^ The type does not make sense in the current environment.
-  | NoRefine           -- TODO: Figure out what this means :þ ("Could not refine.")
+  | NoRefine           -- ^ The provided expression for refinement didn't match the hole type.
   | NoHoleInfo         -- ^ Information for the current hole was not loaded properly.
   | ParseError String  -- ^ A parse error with the given message.
   | GHCError String    -- ^ An error (and message) directly from GHC.

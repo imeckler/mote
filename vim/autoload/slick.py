@@ -100,7 +100,7 @@ class SlickProcess:
       pass
 
     elif  msg[0] == 'Error':
-      self.append_to_info_window(msg[1])
+      self.set_info_window(msg[1])
 
     elif msg[0] == 'SetInfoWindow':
       log.write('setting info window\n')

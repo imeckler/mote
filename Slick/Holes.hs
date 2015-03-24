@@ -2,37 +2,43 @@
              RecordWildCards, TupleSections #-}
 module Slick.Holes where
 
-import DynFlags
 import qualified Bag
+import           BasicTypes          (isTopLevel)
 import           Control.Applicative
-import ErrUtils
 import           Control.Monad.Error hiding (liftIO)
 import           Control.Monad.State hiding (liftIO)
 import qualified Data.Map            as M
 import           Data.Maybe
-import HscTypes (HsParsedModule(..), HscEnv(..))
 import qualified Data.Set            as S
+import           DynFlags
+import           ErrUtils
 import           GHC
 import           GHC.Paths
 import           GhcMonad
+import           HscTypes            (HsParsedModule (..), HscEnv (..))
+import           Inst                (tyVarsOfCt)
 import qualified OccName
 import           Outputable
 import qualified PrelNames
-import TcRnDriver (tcTopSrcDecls)
-import BasicTypes (isTopLevel)
-import           TcRnMonad           (getConstraintVar, readTcRef, TcM, captureConstraints)
-import           TcRnTypes           (Ct (..), TcIdBinder(..), Implication(..), WantedConstraints (..), CtEvidence(..), TcLclEnv(..), isHoleCt, ctEvPred, ctEvidence, ctLoc, ctLocEnv, ctLocSpan)
-import TcMType (zonkCt, zonkTcType)
-import Inst (tyVarsOfCt)
-import TcType (tyVarsOfType)
-import VarSet (disjointVarSet)
-import Slick.Types
-
+import           Slick.Types
 import           Slick.Util
+import           TcMType             (zonkCt, zonkTcType)
+import           TcRnDriver          (tcTopSrcDecls)
+import           TcRnMonad           (TcM, captureConstraints, getConstraintVar,
+                                      readTcRef)
+import           TcRnTypes           (Ct (..), CtEvidence (..),
+                                      Implication (..), TcIdBinder (..),
+                                      TcLclEnv (..), WantedConstraints (..),
+                                      ctEvPred, ctEvidence, ctLoc, ctLocEnv,
+                                      ctLocSpan, isHoleCt)
+import           TcType              (tyVarsOfType)
+import           VarSet              (disjointVarSet)
 
 -- Be careful with guessTarget. It might grab a compiled version
 -- of a module instead of interpreting
 
+-- TODO: It's not only arg holes that matter. We need to put parens around
+-- non atomic expressions being applied to other things as well
 findArgHoles :: HsModule RdrName -> S.Set SrcSpan
 findArgHoles = S.fromList . goDecls . hsmodDecls where
   goDecls = concatMap (goDecl . unLoc)
@@ -211,8 +217,9 @@ setupContext hole mod = goDecls decls where
 
   setBinding lhs rhs = runStmt ("let " ++ lhs ++ " = " ++ rhs) RunToCompletion
 
+first f (x, y) = (f x, y)
 -- linearity ftw
-zipSplit :: [a] -> [b] -> ([(a,b)], Either [a] [b])
+
 zipSplit []     ys     = ([], Right ys)
 zipSplit xs     []     = ([], Left xs)
 zipSplit (x:xs) (y:ys) = let (ps, r) = zipSplit xs ys in ((x,y) : ps, r)
@@ -251,6 +258,9 @@ getHoleInfos tcmod = ErrorT $ do
     Nothing             -> return (Right []) -- TODO: Error
     Just (grp, _, _, _) -> do
       hsc_env <- getSession
+      -- TODO: this is a hack to fix a problem with an unknown cause
+      -- let hsc_env' = hsc_env { hsc_dflags = hsc_dflags hsc_env `xopt_set` Opt_OverlappingInstances }
+      -- Actually this didn't work.
       ((_warningmsgs, errmsgs), mayHoles) <- liftIO . runTcInteractive hsc_env $ do
         (_, wc) <- captureConstraints $ tcTopSrcDecls mod_details grp
         let cts = filter isHoleCt $ wcCts wc
@@ -259,7 +269,7 @@ getHoleInfos tcmod = ErrorT $ do
       fs <- getSessionDynFlags
       return $ case mayHoles of
         Just holes -> Right holes
-        Nothing    -> Left . GHCError . showSDoc fs . vcat $ pprErrMsgBag errmsgs
+        Nothing    -> Left . GHCError . ("Slick.Holes.getHoleInfos: " ++) . showSDoc fs . vcat $ pprErrMsgBag errmsgs
   where
   wcCts (WC {wc_insol, wc_impl}) =
     Bag.bagToList wc_insol ++ Bag.foldrBag (\impl r -> wcCts (ic_wanted impl) ++ r) []  wc_impl
