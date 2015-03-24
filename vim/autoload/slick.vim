@@ -45,6 +45,8 @@ endfunction
 function! slick#refine(e)
   py slick.refine(vim.eval('a:e'))
   redraw!
+  write
+  call slick#loadCurrentFile()
 endfunction
 
 function! slick#nextHole()
@@ -60,6 +62,13 @@ endfunction
 function! slick#caseFurther(x)
   py slick.case_further(vim.eval('a:x'))
   redraw!
+  write
+  call slick#loadCurrentFile()
+endfunction
+
+function! slick#caseOn(e)
+  py slick.case_on(vim.eval('a:e'))
+  redraw!
 endfunction
 
 augroup slickGroup
@@ -72,4 +81,5 @@ command! -nargs=1 SlickRefine call slick#refine(<f-args>)
 command! SlickLoadCurrentFIle call slick#loadCurrentFile()
 command! SlickGetEnv call slick#getEnv()
 command! -nargs=1 Casex call slick#caseFurther(<f-args>)
+command! -nargs=1 CaseOn call slick#caseOn(<f-args>)
 

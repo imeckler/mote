@@ -42,7 +42,7 @@ rdrTypeToTypeWithTyVarsInScope tvNames rdr_type = do
     $ tcRdrTypeToType rdr_type
 
 tcRdrTypeToType rdr_type = do
-  (rn_type, _fvs) <- rnLHsType GHCiCtx (noLoc $ mkImplicitHsForAllTy (noLoc []) rdr_type)
+  (rn_type, _fvs) <- rnLHsType GHCiCtx rdr_type
   ty <- tcHsSigType GhciCtxt rn_type
   fam_envs <- tcGetFamInstEnvs
   let (_, ty') = normaliseType fam_envs Nominal ty
@@ -56,12 +56,27 @@ readTypeWithTyVarsInScope tvNames str =
   lift (runParserM parseType str) >>= \case
     Left s  -> throwError $ ParseError s
     Right t -> do
-      let errMsg = "Could not make sense of type in current env."
       (_, mt) <- lift (rdrTypeToTypeWithTyVarsInScope tvNames t)
       maybe (throwError TypeNotInEnv) return mt
 
-readType :: String -> M Type
-readType = readTypeWithTyVarsInScope []
 
--- getTypeQuantified str =
+-- Bringing back the old readType for now as readTypeWithTyVarsInScope
+-- doesn't work properly yet.
+tcGetType rdr_type = do
+  hsc_env <- getSession
+  fs <- getSessionDynFlags
+  liftIO . runTcInteractive hsc_env . setXOptM Opt_PolyKinds $ do
+    (rn_type, _fvs) <- rnLHsType GHCiCtx (noLoc $ mkImplicitHsForAllTy (noLoc []) rdr_type)
+    ty <- tcHsSigType GhciCtxt rn_type
+    fam_envs <- tcGetFamInstEnvs
+    let (_, ty') = normaliseType fam_envs Nominal ty
+    return ty'
+
+readType :: String -> M Type
+readType str =
+  lift (runParserM parseType str) >>= \case
+    Left s  -> throwError $ ParseError s
+    Right t -> do
+      (_, mt) <- lift (tcGetType t)
+      maybe (throwError (OtherError "hi")) return mt
 

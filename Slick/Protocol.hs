@@ -12,6 +12,7 @@ type Span = (Pos, Pos)
 
 data ToClient
   = Replace Span FilePath String
+  | Insert Pos FilePath String
   | SetInfoWindow String
   | SetCursor Pos
   | Ok
@@ -27,6 +28,7 @@ instance ToJSON ToClient where
     Ok              -> Array $ V.fromList [toJSON (str "Ok")]
     Error t         -> Array $ V.fromList [toJSON (str "Error"), toJSON t]
     Stop            -> Array $ V.fromList [toJSON (str "Stop")]
+    Insert pos p t  -> Array $ V.fromList [toJSON (str "Insert"), toJSON pos, toJSON p, toJSON t]
     where
     str x = x :: String
 
@@ -58,7 +60,7 @@ data FromClient
   | Refine String ClientState
   | GetType String
   | CaseFurther Var ClientState
-  | CaseOn String
+  | CaseOn String ClientState
   | SendStop
   deriving (Show)
 
@@ -67,6 +69,7 @@ instance FromJSON FromClient where
     Array a                                     -> case V.toList a of
       [String "Load", String path]              -> return (Load (T.unpack path))
       [String "CaseFurther", String var, state] -> CaseFurther (T.unpack var) <$> parseJSON state
+      [String "CaseOn", String expr, state]     -> CaseOn (T.unpack expr) <$> parseJSON state
       [String "EnterHole", state]               -> EnterHole <$> parseJSON state
       [String "NextHole", state]                -> NextHole <$> parseJSON state
       [String "PrevHole", state]                -> PrevHole <$> parseJSON state

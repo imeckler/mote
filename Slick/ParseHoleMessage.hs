@@ -1,6 +1,7 @@
 {-# LANGUAGE NamedFieldPuns, PatternGuards, QuasiQuotes #-}
 module Slick.ParseHoleMessage where
 
+import           Control.Applicative hiding (many)
 import           Data.Char             (isSpace)
 import           Data.List.Split       (splitOn)
 import           Data.Maybe            (mapMaybe)
@@ -15,11 +16,13 @@ identAndType :: Parser (String, String)
 identAndType = do
   string "Found hole "
   holeName <- between (char openQuote) (char closeQuote) (many (satisfy (/= closeQuote)))
-  string " with type: "
-  holeTypeStr <- many notNewline
+  skipMany1 space
+  string "with type:"
+  holeTypeStr <- unwords <$> many (skipMany1 space *> aLine)
   return (holeName, holeTypeStr)
   where
   notNewline = satisfy (/= '\n')
+  aLine = many notNewline <* char '\n'
   openQuote = '\8216'
   closeQuote = '\8217'
 

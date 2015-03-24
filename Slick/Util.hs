@@ -1,18 +1,24 @@
 module Slick.Util where
 
 import           Control.Applicative    ((<$>))
-import           Control.Monad          ((<=<))
+import           Control.Monad          ((<=<), liftM)
 import           Control.Monad.IO.Class (MonadIO, liftIO)
 import           Data.IORef             (IORef, modifyIORef, readIORef)
 import qualified Data.Map               as M
+import           Data.Maybe             (catMaybes)
+import           DynFlags               (DynFlags)
 import           GHC                    ()
 import           GhcMonad               (GhcMonad, getSessionDynFlags)
-import           Outputable             (Outputable, SDoc, ppr, showSDoc)
+import           Name                   (Name, occName)
+import           OccName
+import           Outputable             (Outputable, SDoc, neverQualify, ppr,
+                                         showSDoc, showSDocForUser)
 import           System.IO
+import           Type                   (Type)
 
 -- PARSE IMPORTS
 import           Control.Monad.Error    (MonadError, throwError)
-import           FastString             (fsLit)
+import           FastString             (fsLit, unpackFS)
 import           Lexer                  (P, ParseResult (..), mkPState, unP)
 import           SrcLoc                 (GenLocated (..), SrcSpan, isSubspanOf,
                                          mkRealSrcLoc)
@@ -68,19 +74,24 @@ eitherThrow = either throwError return
 maybeThrow :: MonadError e m => e -> Maybe a -> m a
 maybeThrow err = maybe (throwError err) return
 
-getCurrentHoleInfoErr :: IORef SlickState -> M HoleInfo
-getCurrentHoleInfoErr r = do
-  h <- getCurrentHoleErr r
-  infos <- holesInfo <$> gReadIORef r
-  maybeThrow NotInMap $ M.lookup h infos
-
-
-getCurrentHoleErr :: IORef SlickState -> M Hole
+getCurrentHoleErr :: IORef SlickState -> M AugmentedHoleInfo
 getCurrentHoleErr r = maybe (throwError NoHole) return . currentHole =<< gReadIORef r
 
 getFileDataErr :: IORef SlickState -> M FileData
 getFileDataErr = maybe (throwError NoFile) return . fileData <=< gReadIORef
 
 getHoles :: IORef SlickState -> M [Hole]
-getHoles = fmap (M.keys . holesInfo) . gReadIORef
+getHoles = fmap (M.keys . holesInfo) . getFileDataErr
+
+occNameToString :: OccName -> String
+occNameToString = unpackFS . occNameFS
+
+nameToString :: Name -> String
+nameToString = occNameToString . occName
+
+showType :: DynFlags -> Type -> String
+showType fs = showSDocForUser fs neverQualify . ppr
+
+mapMaybeM :: Monad m => (a -> m (Maybe b)) -> [a] -> m [b]
+mapMaybeM f = liftM catMaybes . mapM f
 

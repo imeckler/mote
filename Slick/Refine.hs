@@ -1,25 +1,31 @@
 {-# LANGUAGE FlexibleContexts, LambdaCase, MultiParamTypeClasses,
-             NamedFieldPuns, RecordWildCards #-}
+             NamedFieldPuns, RecordWildCards, TupleSections #-}
 module Slick.Refine where
 
+import           Bag                 (bagToList)
 import           Control.Applicative ((<$>))
 import           Control.Monad.Error (ErrorT (..), MonadError, lift, throwError)
 import           Control.Monad.Trans (MonadIO, MonadTrans)
 import           Data.IORef          (IORef)
 import qualified Data.Set            as S
+import           ErrUtils            (pprErrMsgBag)
+import           GHC                 (TypecheckedModule (..))
 import           GhcMonad
 import           HsExpr              (HsExpr (..), LHsExpr)
 import           OccName             (mkVarOcc, occName)
+import           Outputable          (showSDoc, vcat)
 import           RdrName             (RdrName (Unqual))
 import           SrcLoc              (noLoc, noSrcSpan, unLoc)
 import           TcRnDriver          (runTcInteractive)
 import           TcRnTypes           (CtOrigin (..))
 import           TcType              (TcSigmaType)
-import           Type                (dropForAlls, mkForAllTys, splitForAllTys,
+import           Type                (PredType, TyVar, dropForAlls, isPredTy,
+                                      mkForAllTys, mkPiTypes, splitForAllTys,
                                       splitFunTy_maybe)
-import           TypeRep             (Type)
+import           TypeRep             (Type (..))
 
 import           Slick.GhcUtil
+import           Slick.Holes
 import           Slick.ReadType
 import           Slick.Types
 import           Slick.Util
@@ -28,122 +34,131 @@ import           Slick.Util
 import           Data.Either         (rights)
 import           Name                (mkInternalName)
 import           Parser              (parseType)
+import           PrelNames           (itName)
+import           RnExpr              (rnLExpr)
 import           RnTypes             (extractHsTysRdrTyVars)
-import           TcEvidence          (EvBind (..), EvTerm (..))
-import           TcRnMonad           (captureConstraints, newUnique)
+import           SrcLoc              (getLoc)
+import           TcEvidence          (EvBind (..), EvTerm (..), HsWrapper (..))
+import           TcExpr              (tcInferRho)
+import           TcMType             (zonkTcType)
+import           TcRnMonad           (captureConstraints, failIfErrsM,
+                                      newUnique)
+import           TcRnMonad
 import           TcSimplify          (simplifyInteractive)
+import           TcSimplify          (simplifyInfer)
 import           TcType              (UserTypeCtxt (GhciCtxt))
 import           TcUnify             (tcSubType)
 
-refineExpr
-  :: Num b => IORef SlickState -> TcSigmaType -> LHsExpr RdrName -> ErrorT ErrorType Ghc b
-refineExpr stRef goalTy e = do
-  ty <- hsExprType e
-  refineType stRef goalTy ty
+-- tcRnExprTc :: LHsExpr RdrName -> TcRn Type
+tcRnExprTc rdr_expr = do
+  (rn_expr, _fvs) <- rnLExpr rdr_expr
+  uniq <- newUnique
+  let fresh_it = itName uniq (getLoc rdr_expr)
+  -- I guess I could pick up some new holes here, but there's really no
+  -- point since in general we might have to load after a refine.
+  ((_tc_expr, res_ty), lie) <- captureConstraints $ tcInferRho rn_expr
+  ((qtvs, dicts, _, _), lie_top) <- captureConstraints $
+    simplifyInfer True False [(fresh_it, res_ty)] lie
+  simplifyInteractive lie_top
+  zonkTcType . mkForAllTys qtvs $ mkPiTypes dicts res_ty
 
-refineType
-  :: (MonadError ErrorType (t m), MonadTrans t, GhcMonad m,
-      MonadIO (t m), Num b) =>
-     IORef SlickState -> TcSigmaType -> Type -> t m b
-refineType stRef goalTy t = let (tyVars, t') = splitForAllTys t in go 0 tyVars t'
--- foralls of the argument type t should get pushed down as we go
-  where
-  -- The subtype thing doesn't play nice with polymorphism.
-  -- If we have a hole _ :: a (not forall a. a, it's a specific type
-  -- variable) and refine with fromJust :: forall t. Maybe t -> t,
-  -- subType says that a < the type of fromJust and we just stick fromJust
-  -- in the hole.
-  go acc tyVars t =
-    let (tyVars', t') = splitForAllTys t
-        tyVars'' = tyVars ++ tyVars'
-    in
-    do
-      tyStr <- lift (showPprM (goalTy, mkForAllTys tyVars'' t))
-      logS stRef $ "refineType: " ++ tyStr
-      -- TODO: check what subtype does on (dropForAlls <$> readType "a") and
-      -- (dropForAlls <$> readType "a")
-      lift (subType goalTy (mkForAllTys tyVars'' t)) >>= \case
-        True  -> return acc
-        False -> case splitFunTy_maybe t' of
-          Nothing      -> throwError NoRefine
-          Just (_, t'') -> go (1 + acc) tyVars'' t''
+data RefineMatch = RefineMatch
+  { refineForAllVars :: [TyVar]
+  , refinePredTys    :: [PredType]
+  , refineArgTys     :: [Type]
+  , refineTarget     :: Type
+  , refineEvBinds    :: [EvBind]
+  , refineWrapper    :: HsWrapper
+  }
+
+-- score :: RefineMatch -> Int
+-- score (RefineMatch {..}) = 
+
+refineMatch :: Type -> Type -> TcRn (Maybe RefineMatch)
+refineMatch goalTy rty = go [] [] [] rty where
+  go tyVars predTys argTys rty = do
+    let (tyVars', rty')   = splitForAllTys rty
+        (predTys', rty'') = splitPredTys rty'
+        tyVars''          = tyVars ++ tyVars'
+        predTys''         = predTys ++ predTys'
+
+    (wrapper, b) <- subTypeEvTc (mkForAllTys tyVars'' $ withArgTys predTys'' rty) goalTy
+    case allBag (\(EvBind _ t) -> case t of {EvDelayedError {} -> False; _ -> True}) b of
+      True -> return . Just $
+        RefineMatch
+        { refineForAllVars = tyVars''
+        , refinePredTys    = predTys''
+        , refineTarget     = rty''
+        , refineArgTys     = reverse argTys
+        , refineEvBinds    = bagToList b
+        , refineWrapper    = wrapper
+        }
+
+      False -> case splitFunTy_maybe rty'' of
+        Nothing            -> return Nothing
+        Just (arg, rty''') -> go tyVars'' predTys'' (arg : argTys) rty'''
+
+  withArgTys ts t = foldr (\s r -> FunTy s r) t ts
+
+refineNumArgs :: Type -> Type -> TcRn (Maybe Int)
+refineNumArgs goalTy rty = fmap (length . refineArgTys) <$> refineMatch goalTy rty
 
 refine :: IORef SlickState -> String -> M (LHsExpr RdrName)
 refine stRef eStr = do
-  h                  <- getCurrentHoleErr stRef
-  isArg              <- S.member h . argHoles <$> gReadIORef stRef
-  hi@(HoleInfo {..}) <- getCurrentHoleInfoErr stRef
-  -- got rid of dropForAlls here, but that's definitely wrong as per const
-  -- example
-  --
-  -- first order approximation: just instantiate all abstracted
-  -- kindvars to *. I believe this is approximately correct since
-  -- if there were real constraints on the kinds (ignoring prescribed type
-  -- signature), they would have been put in the result of readType
-  --
-  -- this is complicated...
-  rdrTyVars <- lift (holeRdrTyVars hi)
-  goalTy    <- dropForAlls <$> readType holeTypeStr
+  hi    <- holeInfo <$> getCurrentHoleErr stRef
+  isArg <- S.member (holeSpan hi) . argHoles <$> gReadIORef stRef
+  fs    <- lift getSessionDynFlags
+  let goalTy = holeType hi
+
+  expr <- parseExpr eStr
+  tcmod <- typecheckedModule <$> getFileDataErr stRef
+  (nerr, _cons) <- inHoleEnv tcmod hi . captureConstraints $ do
+    rty <- tcRnExprTc expr
+    refineNumArgs goalTy rty
+
+  case nerr of
+    Just n  ->
+      let expr' = withNHoles n expr
+          atomic =
+            case unLoc expr' of
+              HsVar {}     -> True
+              HsIPVar {}   -> True
+              HsOverLit {} -> True
+              HsLit {}     -> True
+              HsPar {}     -> True
+              EWildPat     -> True
+              _            -> False
+      in
+      return $ if isArg && not atomic then noLoc (HsPar expr') else expr'
+
+    Nothing -> throwError NoRefine
+
+
+--    let (tyVars', rty') = splitForAllTys rty
+--        tyVars''        = tyVars ++ tyVars'
 
   -- have to make sure that the hole-local type variables are in scope
   -- for "withBindings"
+  {-
   ErrorT . withBindings holeEnv . runErrorT $ do
     expr' <- refineToExpr stRef goalTy =<< parseExpr eStr
-    let atomic =
-          case unLoc expr' of
-            HsVar {}     -> True
-            HsIPVar {}   -> True
-            HsOverLit {} -> True
-            HsLit {}     -> True
-            HsPar {}     -> True
-            _            -> False
-    return $ if isArg && not atomic then noLoc (HsPar expr') else expr'
-
-refineToExpr
-  :: IORef SlickState
-     -> TcSigmaType
-     -> LHsExpr RdrName
-     -> ErrorT ErrorType Ghc (LHsExpr RdrName)
-refineToExpr stRef goalTy e =
-  refineExpr stRef goalTy e >>| \argsNum -> withNHoles argsNum e
+-}
 
 withNHoles :: Int -> LHsExpr RdrName -> LHsExpr RdrName
 withNHoles n e = app e $ replicate n hole where
   app f args = foldl (\f' x -> noLoc $ HsApp f' x) f args
   hole       = noLoc $ HsVar (Unqual (mkVarOcc "_"))
 
-holeRdrTyVars :: GhcMonad m => HoleInfo -> m [RdrName]
-holeRdrTyVars (HoleInfo {holeEnv}) = do
-  hsTys <- fmap rights . mapM (runParserM parseType) $ map snd holeEnv
-  let (_rdrKvs, rdrTvs) = extractHsTysRdrTyVars hsTys
-  return rdrTvs
+splitPredTys (FunTy t1 t2) | isPredTy t1 = let (ps, t) = splitPredTys t2 in (t1:ps, t)
+splitPredTys t                           = ([], t)
 
-subTypeEvInHole hi t1 t2 = do
-  env <- getSession
-  rdrTvs <- holeRdrTyVars hi
-  fmap snd . liftIO . runTcInteractive env $ do
-    nameTvs <- mapM toNameVar rdrTvs
-    withTyVarsInScope nameTvs $ do
-      (_, cons) <- captureConstraints (tcSubType origin ctx t1 t2)
-      simplifyInteractive cons
-  where
-  toNameVar x = do { u <- newUnique; return $ Name.mkInternalName u (occName x) noSrcSpan }
-  origin = AmbigOrigin GhciCtxt
-  ctx = GhciCtxt
-
-
-subTypeEv t1 t2 = do
-  { env <- getSession
-  ; fmap snd . liftIO . runTcInteractive env $ do
-  { (_, cons) <- captureConstraints (tcSubType origin ctx t1 t2)
-  ; simplifyInteractive cons } }
+-- TODO: There's a bug where goal type [a_a2qhr] doesn't accept refinement
+-- type [HoleInfo]
+-- TODO: Refinement for record constructors
+subTypeEvTc t1 t2 = do
+  { (wrapper, cons) <- captureConstraints (tcSubType origin ctx t1 t2)
+  ; (wrapper,) <$> simplifyInteractive cons }
   where
   origin = AmbigOrigin GhciCtxt
   ctx = GhciCtxt
 
-subType t1 t2 =
-  subTypeEv t1 t2 >>| \case
-    Nothing -> False
-    Just b  -> allBag (\(EvBind _ t) -> case t of
-      EvDelayedError{} -> False
-      _                -> True) b

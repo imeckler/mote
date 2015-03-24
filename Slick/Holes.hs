@@ -3,35 +3,44 @@
 module Slick.Holes where
 
 import qualified Bag
+import           BasicTypes          (isTopLevel)
 import           Control.Applicative
 import           Control.Monad.Error hiding (liftIO)
 import           Control.Monad.State hiding (liftIO)
 import qualified Data.Map            as M
 import           Data.Maybe
 import qualified Data.Set            as S
+import           DynFlags
+import           ErrUtils
 import           GHC
 import           GHC.Paths
 import           GhcMonad
+import           HscTypes            (HsParsedModule (..), HscEnv (..))
+import           Inst                (tyVarsOfCt)
 import qualified OccName
 import           Outputable
-
+import qualified PrelNames
+import           Slick.Types
 import           Slick.Util
-
--- TODO: In the future, I think it should be possible to actually get the
--- CHoleCan datastructure via runTcInteractive. Call getConstraintVar to
--- find the bag of constraints. CHoleCan's will be among them.
--- Getting "relevant bindings" seems to be a bit harder and it ends up
--- forcing ugly things like GetType (i.e., parsing types from strings)
--- since I can't get at the Type's any other way. Check relevantBindings
--- in TcErrors.hs to see how to get at the environment
-
-type M = ErrorT String Ghc
+import           TcMType             (zonkCt, zonkTcType)
+import           TcRnDriver          (tcTopSrcDecls)
+import           TcRnMonad           (TcM, captureConstraints, getConstraintVar,
+                                      readTcRef)
+import           TcRnTypes           (Ct (..), CtEvidence (..),
+                                      Implication (..), TcIdBinder (..),
+                                      TcLclEnv (..), WantedConstraints (..),
+                                      ctEvPred, ctEvidence, ctLoc, ctLocEnv,
+                                      ctLocSpan, isHoleCt)
+import           TcType              (tyVarsOfType)
+import           VarSet              (disjointVarSet)
 
 -- Be careful with guessTarget. It might grab a compiled version
 -- of a module instead of interpreting
 
-argHoles :: HsModule RdrName -> S.Set SrcSpan
-argHoles = S.fromList . goDecls . hsmodDecls where
+-- TODO: It's not only arg holes that matter. We need to put parens around
+-- non atomic expressions being applied to other things as well
+findArgHoles :: HsModule RdrName -> S.Set SrcSpan
+findArgHoles = S.fromList . goDecls . hsmodDecls where
   goDecls = concatMap (goDecl . unLoc)
 
   goDecl = \case
@@ -86,78 +95,6 @@ argHoles = S.fromList . goDecls . hsmodDecls where
     -- LetStmt bs                 -> goLocalBinds acc bs
     _                          -> []
 
-{-
--- Holes which are arguments to functions and so might need parens
-argHoles = S.fromList . goDecls . hsmodDecls where
-  goDecls = concatMap (goDecl . unLoc)
-
-  goDecl = \case
-    ValD b                                    -> goBind b
-    InstD (ClsInstD (ClsInstDecl{cid_binds})) -> concatMap (goBind . unLoc) $ Bag.bagToList cid_binds
-    _                                         -> []
-
-  goBind = \case
-    FunBind {fun_matches} -> goMatchGroup fun_matches
-    _                     -> []
-
-  goMatchGroup (MG {mg_alts}) = concatMap (goMatch . unLoc) mg_alts
-
-  goMatch (Match _ _ grhss) = goGRHSs grhss
-
-  goGRHSs (GRHSs {grhssGRHSs}) = concatMap (goGRHS . unLoc) grhssGRHSs
-
-  goGRHS (GRHS gs b) = goLExpr False b ++ concatMap (goStmt . unLoc) gs
-
-  -- isArg is a flag indicating that the hole
-  -- is an argument to a function and so might need parens upon being
-  -- replaced
-  goLExpr isArg (L l e) = case e of
-    HsVar (Unqual o)    -> case OccName.occNameString o of { '_':_ -> if isArg then [l] else []; _ -> [] }
-    HsLam mg            -> goMatchGroup mg
-    HsLamCase _ mg      -> goMatchGroup mg
-    HsApp a b           -> goLExpr False a ++ goLExpr True b
-    OpApp a b _ c       -> goLExpr False a ++ goLExpr False b ++ goLExpr False c
-    NegApp e' _         -> goLExpr False e'
-    HsPar e'            -> goLExpr False e'
-    SectionL a b        -> goLExpr False a ++ goLExpr False b
-    SectionR a b        -> goLExpr False a ++ goLExpr False b
-    ExplicitTuple ts _  -> concatMap (\case { Present e' -> goLExpr False e'; _ -> [] }) ts
-    HsCase scrut mg     -> goLExpr False scrut ++ goMatchGroup mg
-    HsIf _ a b c        -> goLExpr False a ++ goLExpr False b ++ goLExpr False c
-    HsMultiIf _ grhss   -> concatMap (goGRHS . unLoc) grhss
-    HsDo _ stmts _      -> concatMap (goStmt . unLoc) stmts
-    ExplicitList _ _ es -> concatMap (goLExpr False) es
-    ExplicitPArr _ es   -> concatMap (goLExpr False) es
-    _                   -> []
-
-  goStmt = \case
-    LastStmt e _synE           -> goLExpr False e -- TODO: figure out what the deal is with syntaxexpr
-    BindStmt _lhs rhs _se _se' -> goLExpr False rhs
-    BodyStmt e _se _se' _      -> goLExpr False e
-    LetStmt bs                 -> goLocalBinds bs
-    _                          -> []
-
-  goLocalBinds = \case
-    HsValBinds vals -> goValBinds vals
-    HsIPBinds ips   -> goIPBinds ips
-
-  goValBinds = \case
-    ValBindsIn bs _  -> goBinds bs
-    ValBindsOut ps _ -> concatMap (goBinds . snd) ps
-
-  goIPBinds _ = [] -- TODO: Figure out what this is
-
-  goBinds = Bag.foldrBag (\b r -> goBind (unLoc b) ++ r) []
--}
-runM :: M a -> IO (Either String a)
-runM = runGhc (Just libdir) . runErrorT
-
-printScope :: GhcMonad m => m ()
-printScope = liftIO . putStrLn =<< showSDocM . ppr =<< getNamesInScope
-
-localNames :: GhcMonad m => m [Name]
-localNames = getNamesInScope
-
 -- when we step under a binder, record the binding and it's
 -- purported type from a signature. Always in our map we must
 -- have
@@ -165,11 +102,12 @@ localNames = getNamesInScope
 -- TODO maintain a stack of "arg types". we pop off an arg and
 -- assign it to a variable when we find one, recording this
 -- in out writing
+type MS = ErrorT String Ghc
 setupContext
   :: (OutputableBndr id, Ord id) =>
      SrcSpan
      -> HsModule id
-     -> M ()
+     -> MS ()
 setupContext hole mod = goDecls decls where
   decls = hsmodDecls mod
 
@@ -205,7 +143,7 @@ setupContext hole mod = goDecls decls where
     AbsBinds {}   -> error "Expected FunBind but got AbsBinds"
     PatSynBind {} -> error "Expected FunBind but got PatSynBind"
 
-  goMatchGroup :: (OutputableBndr id) => MatchGroup id (LHsExpr id) -> StateT [HsType id] M ()
+  goMatchGroup :: (OutputableBndr id) => MatchGroup id (LHsExpr id) -> StateT [HsType id] MS ()
   goMatchGroup (MG {..}) =
     foldr (\(L l m) r -> if hole `isSubspanOf` l then goMatch m else r)
       (error "Where the hole?") mg_alts
@@ -220,11 +158,11 @@ setupContext hole mod = goDecls decls where
 
   goGRHS (GRHS gs (L _ rhs)) = maybe (goExpr rhs) goStmt (nextSubexpr' hole gs)
 
-  goGRHSs :: OutputableBndr id => GRHSs id (LHsExpr id) -> StateT [HsType id] M ()
+  goGRHSs :: OutputableBndr id => GRHSs id (LHsExpr id) -> StateT [HsType id] MS ()
   goGRHSs grhss = goGRHS $ nextSubexpr hole (grhssGRHSs grhss)
     -- TODO: use grhssLocalBinds ("the where clause")
 
-  goMatch :: (OutputableBndr id) => Match id (LHsExpr id) -> StateT [HsType id] M ()
+  goMatch :: (OutputableBndr id) => Match id (LHsExpr id) -> StateT [HsType id] MS ()
   goMatch (Match pats _ grhss) = do
     tys <- get
     (typedPats, untypedPats) <- case zipSplit pats tys of
@@ -279,9 +217,59 @@ setupContext hole mod = goDecls decls where
 
   setBinding lhs rhs = runStmt ("let " ++ lhs ++ " = " ++ rhs) RunToCompletion
 
+first f (x, y) = (f x, y)
 -- linearity ftw
-zipSplit :: [a] -> [b] -> ([(a,b)], Either [a] [b])
+
 zipSplit []     ys     = ([], Right ys)
 zipSplit xs     []     = ([], Left xs)
 zipSplit (x:xs) (y:ys) = let (ps, r) = zipSplit xs ys in ((x,y) : ps, r)
 
+type GHCHole = (CtEvidence, OccName.OccName)
+
+holeSpan :: HoleInfo -> SrcSpan
+holeSpan = ctLocSpan . ctLoc . holeCt
+
+holeType :: HoleInfo -> Type
+holeType = ctEvPred . ctEvidence . holeCt
+
+holeNameString :: HoleInfo -> String
+holeNameString = occNameToString . cc_occ . holeCt
+
+getRelevantBindings :: Ct -> TcM [(Id, Type)]
+getRelevantBindings ct = go 100 (tcl_bndrs lcl_env)
+  where
+  lcl_env = ctLocEnv $ ctLoc ct
+  ct_tvs  = tyVarsOfCt ct
+
+  go _      [] = return []
+  go n_left (TcIdBndr id top_lvl : tc_bndrs)
+    | isTopLevel top_lvl = go n_left tc_bndrs
+    | n_left == 0        = return []
+    | otherwise          = do
+      ty <- zonkTcType (idType id)
+      ((id, ty) :) <$> go (n_left - 1) tc_bndrs
+
+-- When you do anything in TcM, set TcGblEnv from the ParsedModule
+-- and TcLocalEnv from the Ct's. Make sure ScopedTypeVariables is on
+getHoleInfos :: TypecheckedModule -> M [HoleInfo]
+getHoleInfos tcmod = ErrorT $ do
+  let (_, mod_details) = tm_internals_ tcmod
+  case tm_renamed_source tcmod of
+    Nothing             -> return (Right []) -- TODO: Error
+    Just (grp, _, _, _) -> do
+      hsc_env <- getSession
+      -- TODO: this is a hack to fix a problem with an unknown cause
+      -- let hsc_env' = hsc_env { hsc_dflags = hsc_dflags hsc_env `xopt_set` Opt_OverlappingInstances }
+      -- Actually this didn't work.
+      ((_warningmsgs, errmsgs), mayHoles) <- liftIO . runTcInteractive hsc_env $ do
+        (_, wc) <- captureConstraints $ tcTopSrcDecls mod_details grp
+        let cts = filter isHoleCt $ wcCts wc
+        mapM (zonkCt >=> (\ct -> HoleInfo ct <$> getRelevantBindings ct)) cts
+
+      fs <- getSessionDynFlags
+      return $ case mayHoles of
+        Just holes -> Right holes
+        Nothing    -> Left . GHCError . ("Slick.Holes.getHoleInfos: " ++) . showSDoc fs . vcat $ pprErrMsgBag errmsgs
+  where
+  wcCts (WC {wc_insol, wc_impl}) =
+    Bag.bagToList wc_insol ++ Bag.foldrBag (\impl r -> wcCts (ic_wanted impl) ++ r) []  wc_impl

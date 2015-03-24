@@ -3,6 +3,7 @@ import threading
 import subprocess
 import json
 import os.path
+import select
 
 # This doesn't work in vim 7.3. Window doesn't have a "valid" attribute,
 # among other things
@@ -25,6 +26,24 @@ def find(p, xs):
       return x
   return None
 
+def insert(pos, path, s):
+  b = find(lambda b: b.name == path, vim.buffers)
+  if b is None: return
+
+  s = s.encode('utf-8')
+  lines = s.splitlines()
+  if not lines: return
+  
+  (l0, c0) = pos
+  l0 -= 1
+  c0 -= 1
+
+  l0start = b[l0][:c0]
+  l0end   = b[l0][c0:]
+  b[l0]   = l0start + lines[0]
+  b.append(lines[1:], l0 + 1)
+
+# pretty sure this is wrong
 def replace(span, path, s):
   s = s.encode('utf-8')
   b = find(lambda b: b.name == path, vim.buffers)
@@ -60,6 +79,10 @@ class SlickProcess:
 
   # returns a bool. False = stop, True = keep going
 
+  def append_to_info_window(self, s):
+    info_window = self.get_info_window()
+    info_window.buffer.append(s.splitlines())
+
   def set_info_window(self, s):
     info_window = self.get_info_window()
     log.write('in set info window\n')
@@ -67,21 +90,11 @@ class SlickProcess:
     log.write('set buffer\n')
     info_window.buffer[:] = s.encode('utf-8').splitlines()
 
-    #for line in s.splitlines():
-    #  log.write('settin dat info window\n')
-    #  log.write(str(type(line)) + '\n')
-    #  info_window.buffer.append(str(line))
-      #log.write('set dat info window\n')
-
   def handle(self, s):
     try:
       msg = json.loads(s)
     except:
       return False
-
-    # except:
-    #   print ("No bueno")
-    #   return True
 
     if msg[0] == 'Ok':
       pass
@@ -104,7 +117,19 @@ class SlickProcess:
     elif msg[0] == 'Stop':
       return False
 
+    elif msg[0] == 'Insert':
+      insert(msg[1], msg[2], msg[3])
+
     return True
+
+  def _send_message_dont_wait(self, x):
+    s = json.dumps(x) + '\n'
+    log.write('_send_message_dont_wait: ' + s)
+    if self.pipe.returncode == None:
+      self.pipe.stdin.write(s)
+      return True
+    else:
+      return False
 
   # synchronous for now.
   def _send_message(self, x):
@@ -115,6 +140,17 @@ class SlickProcess:
       s = self.pipe.stdout.readline()
       log.write('got message: ' + s + '\n')
       return self.handle(s)
+
+      # On load, slick may send multiple messages due to errors.
+      # Need some way of handling that. The below doesn't work.
+
+      #keepgoing = self.handle(s)
+      #while select.select([self.pipe.stdin], [], [], 0.0)[0]:
+      #  s = self.pipe.stdin.readline()
+      #  log.write('load got: ' + s + '\n') 
+      #  keepgoing = keepgoing and self.handle(s)
+      #return keepgoing
+
     else:
       log.write('send message: return code not none. heres stderr\n')
 
@@ -217,6 +253,9 @@ def prev_hole():
 
 def case_further(var):
   get_slick_process()._send_message(['CaseFurther', var, get_client_state()])
+
+def case_on(expr):
+  get_slick_process()._send_message(['CaseOn', expr, get_client_state()])
 
 def refine(expr):
   get_slick_process()._send_message(['Refine', expr, get_client_state()])

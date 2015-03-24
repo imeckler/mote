@@ -8,7 +8,7 @@ import           GHC
 import           Language.Haskell.GhcMod.Internal              hiding (getCompilerOptions,
                                                                 parseCabalFile)
 import           Outputable
-import qualified Slick.ParseHoleMessage
+import           Slick.Protocol (ToClient(Error))
 import           Slick.Types
 import           Slick.Util
 -- I had to write my own "getCompilerOptions" and "parseCabalFile"
@@ -17,11 +17,14 @@ import           Control.Applicative
 import qualified Control.Exception
 import           Control.Monad
 import           Control.Monad.Error
+import           Data.Aeson                                    (encode)
+import qualified Data.ByteString.Lazy.Char8 as LB8
 import qualified Data.Map                                      as M
 import qualified Data.Set                                      as S
 import           DynFlags
 import           GhcMonad
 import           Language.Haskell.GhcMod
+import ErrUtils
 
 import qualified Distribution.Package                          as C
 import qualified Distribution.PackageDescription               as P
@@ -142,14 +145,22 @@ setOptions stRef (Options {..}) (CompilerOptions{..}) = do
         { hscTarget  = HscInterpreted
         , ghcLink    = LinkInMemory
         , ghcMode    = CompManager
-        , log_action = \fs sev span sty msg -> do
-            -- Here be hacks
-            let s = showSDoc fs (withPprStyle sty msg)
-            logS stRef s
-            case Slick.ParseHoleMessage.parseHoleInfo s of
-              Nothing   -> return ()
-              Just info -> modifyIORef stRef (\s ->
-                s { holesInfo = M.insert span info (holesInfo s) })
+        , log_action = \dfs sev span pprsty msgdoc ->
+            let msg =
+                  showSDocForUser dfs neverQualify
+                  $ mkLocMessage sev span msgdoc
+                isHoleMsg = and . zipWith (==) "Found hole" $ showSDoc dfs msgdoc
+            in
+            if isHoleMsg
+            then return ()
+            else
+              gModifyIORef stRef (\s ->
+                s { loadErrors = msg : loadErrors s })
+        {- TODO: Debug
+        , traceLevel = 2
+        , log_action = \dfs sev span pprsty msgdoc ->
+            logS stRef $ showSDoc dfs msgdoc
+        -}
         }
 
   void $ setSessionDynFlags =<< addCmdOpts ghcOptions
