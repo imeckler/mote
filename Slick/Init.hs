@@ -243,8 +243,9 @@ getConfig cradle = do
   outOfDate <- liftIO $ isSetupConfigOutOfDate cradle
   when outOfDate configure
   liftIO (System.IO.Strict.readFile file `catch` \(_ :: SomeException) ->
-    readProcess "cabalparse" [file] "")
-    -- TODO: A lovely hack can be seen here
+    readProcessWithExitCode "cabalparse" [file] "" >>= \case
+      (ExitSuccess, stdout, _)   -> return stdout
+      (ExitFailure _, _, stderr) -> throwIO (ErrorCall stderr))
   where
   file   = setupConfigFile cradle
   prjDir = cradleRootDir cradle
