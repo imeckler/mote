@@ -301,7 +301,9 @@ main = do
     runGhc (Just libdir) $ do
       -- ghcInit stRef
       Slick.Init.init stRef >>= \case
-        Left err -> liftIO (putStrLn err >> exitWith (ExitFailure 1))
+        Left err -> liftIO $ do
+          LB8.putStrLn (encode (Error err))
+          exitWith (ExitFailure 1)
         Right () -> return ()
 
       logS stRef "init'd"
