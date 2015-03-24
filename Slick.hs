@@ -41,9 +41,6 @@ import           Slick.Suggest
 import           Slick.Types
 import           Slick.Util
 
--- TODO: Need better error messages. For now any load failure gives
--- "Cannot add module MODULENAME to context: not a home module"
-
 ghcInit :: GhcMonad m => IORef SlickState -> m ()
 ghcInit stRef = do
   dfs <- getSessionDynFlags
@@ -56,8 +53,6 @@ ghcInit stRef = do
   where
   withFlags fs dynFs = foldl DynFlags.gopt_set dynFs fs
 
--- tcl_lie should contain the CHoleCan's
-
 getEnclosingHole :: IORef SlickState -> (Int, Int) -> M (Maybe AugmentedHoleInfo)
 getEnclosingHole stRef pos =
   M.foldrWithKey (\k hi r -> if k `spans` pos then Just hi else r) Nothing
@@ -65,12 +60,6 @@ getEnclosingHole stRef pos =
   <$> getFileDataErr stRef
 -- TODO: access ghci cmomands from inside vim too. e.g., kind
 
-
-
--- handleSourceError (return . Left) . fmap Right $ do
-
--- TODO: This is throwing and it's not clear how to catch
--- the error properly
 loadFile :: IORef SlickState -> FilePath -> M ParsedModule
 loadFile stRef p = do
   pmod  <- eitherThrow =<< lift handled
@@ -92,9 +81,8 @@ loadFile stRef p = do
 
   loadModuleAt :: GhcMonad m => FilePath -> m (Either ErrorType ParsedModule)
   loadModuleAt p = do
-    -- TODO: Clear old names and stuff
-    -- TODO: I think we can actually do all the parsing and stuff ourselves
-    -- and then call GHC.loadMoudle to avoid duplicating work
+    -- TODO: I think we can used the parsed and tc'd module that we get
+    -- ourselves and then call GHC.loadMoudle to avoid duplicating work
     setTargets . (:[]) =<< guessTarget p Nothing
     load LoadAllTargets >>= \case
       Succeeded ->
@@ -152,7 +140,11 @@ setStateForData stRef path tcmod hsModule = do
         , hsModule
         , modifyTimeAtLastLoad
         , typecheckedModule=tcmod
-        , holesInfo = M.empty -- temporary
+         -- This emptiness is temporary. It gets filled in at the end of
+         -- loadFile. I had to separate this since I painted myself into
+         -- a bit of a monadic corner. "augment" (necessary for generating
+         -- the holesInfo value, runs in M rather than Ghc.
+        , holesInfo = M.empty
         }
     , currentHole = Nothing
     , argHoles
@@ -194,7 +186,6 @@ respond' stRef = \case
 
   EnterHole (ClientState {..}) -> do
     FileData {path=p} <- getFileDataErr stRef
-    -- maybe shouldn't autoload
     when (p /= path) (void $ loadFile stRef path)
 
     mh <- getEnclosingHole stRef cursorPos
@@ -206,7 +197,6 @@ respond' stRef = \case
   GetEnv (ClientState {..}) -> do
     AugmentedHoleInfo {holeInfo=hi, suggestions} <- getCurrentHoleErr stRef
     fs <- lift getSessionDynFlags
-    -- refining stops working after I call suggestions...
     let suggStr  = "Suggestions:\n" ++ replicate 40 '-'
         suggStrs = map (\(n, t) -> (occNameToString . occName) n ++ " :: " ++ showType fs t) suggestions
 
@@ -262,15 +252,14 @@ respond' stRef = \case
           SingleLambda _loc ->
             Error "TODO: SingleLambda"
 
-{-
   CaseOn exprStr (ClientState {..}) -> do
     expr <- parseExpr exprStr
     -- Should actually have general mechanism for getting the scope at
     -- a point...
-    wrap <- getEnclosingHoleInfo stRef cursorPos >>| \case
-      Nothing -> id
-      Just hi -> ErrorT . withBindings (holeEnv hi) . runErrorT
-    ty <- wrap $ hsExprType expr
+    FileData {..} <- getFileDataErr stRef
+    ty <- getEnclosingHole stRef cursorPos >>= \case
+      Nothing -> hsExprType expr
+      Just hi -> inHoleEnv typecheckedModule (holeInfo hi) $ tcRnExprTc expr
     ms <- matchesForType ty
     fs <- lift getSessionDynFlags
     let indent n  = (replicate n ' ' ++)
@@ -278,7 +267,7 @@ respond' stRef = \case
     return
       . Insert cursorPos path
       . unlines
-      $ ("case " ++ exprStr ++ " of") : map (indent 2 . showMatch) ms -}
+      $ ("case " ++ exprStr ++ " of") : map (indent 2 . showMatch) ms
 
   -- every message should really send current file name (ClientState) and
   -- check if it matches the currently loaded file

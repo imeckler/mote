@@ -74,23 +74,15 @@ locality n = case nameModule_maybe n of
   Nothing  -> if isInternalName n then Module else External
 
 -- TODO: push foralls in
+-- TODO: concatMap for tuple types
+-- We would like to recurse over args in which this tycon is
+-- covariantly functorial. The Haskell convention is for the TyCon to be
+-- so at least in the last argument if it's a functor at all.
 innerArgs :: Type -> [Type]
 innerArgs t = case splitAppTys t of
   (_, [])   -> [t]
-  (_, args) -> innerArgs (last args)
+  (_, args) -> innerArgs (last args) -- Proof search strategy is about finding ways to make this descent real
 
-{-
-innerArgs :: Type -> [Type]
-innerArgs t = case splitTyConApp_maybe t of
-  Just (tycon, args) ->
-    -- would like to recurse over args in which this tycon is functorial
-    if isTupleTyCon tycon
-    then concatMap innerArgs args
-    else maybe [t] innerArgs (lastMay args) -- It's about finding ways to make this descent real
-  Nothing -> [t]
-  where
-  lastMay = \case { [] -> Nothing; xs -> Just (last xs) }
--}
 matchInnerArgs :: Type -> Type -> TcRn [RefineMatch]
 matchInnerArgs goalTy ty = mapMaybeM (refineMatch goalTy) (innerArgs ty)
 
@@ -108,10 +100,6 @@ score hole goalTy ty n = do
   where
   maximumMay = \case { [] -> Nothing; xs -> Just (maximum xs) }
   
-{-
-  refineMatch goalTy ty >>= \case
-    Nothing -> matchInnerArgs goalTy ty
--}
 suggestions :: TypecheckedModule -> HoleInfo -> M [(Name, Type)]
 suggestions tcmod hi = do
   gblScope <- lift getNamesInScope
@@ -128,32 +116,9 @@ suggestions tcmod hi = do
     . List.sortBy (compare `on` fst)
     $ (gblSuggestions ++ lclSuggestions)
   where
-  goalTy             = holeType hi
-  discardConstraints = fmap fst . captureConstraints
-  maybeErr ex        = fmap Just ex `catchError` \_ -> return Nothing
-  -- TODO: delete debug fs argument
-  gblScore n = fmap join . maybeErr . inHoleEnv tcmod hi . discardConstraints $ do
+  goalTy      = holeType hi
+  maybeErr ex = fmap Just ex `catchError` \_ -> return Nothing
+  gblScore n  = fmap join . maybeErr . inHoleEnv tcmod hi . discardConstraints $ do
     ty <- tcRnExprTc . noLoc . HsVar $ Exact n
     score False goalTy ty n
---    refineMatch goalTy ty >>| fmap (\rm ->
---      ((vagueness rm, burdensomeness rm, locality n), (n, ty)))
-
---      logS stRef (showSDoc fs $ ppr (ty, refineEvBinds))
---      logS stRef . showSDocDebug fs $ ppr refineWrapper
---      logS stRef $ "And the wrapper is " ++ gshow refineWrapper
-
--- things are a bit bad without type signatures. It's possible that
--- a polymorphic type has been inferred without it being intended. Then in
--- refine we should treat locally bound type variables as potentially
--- unifiable with concrete types
-
---    mapM (\n -> fmap (n,) (tcRnExprTc . noLoc . HsVar $ Exact n)) gblScope
-
-  {-
-  inHoleEnv stRef $ do
-    mapM (_ . _) gblScope -- it wouldn't stick tcRnExprTc into that first hole 
--}
-  {-
-  inHoleEnv stRef
-    n -}
 
