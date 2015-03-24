@@ -12,8 +12,8 @@ import qualified Data.List                  as List
 import qualified Data.Map                   as M
 import           Data.Maybe                 (isNothing)
 import qualified Data.Set                   as S
-import qualified DynFlags
 
+import qualified DynFlags
 import           ErrUtils                   (pprErrMsgBag)
 import           Exception
 import           FastString                 (fsLit, unpackFS)
@@ -22,11 +22,13 @@ import           GHC.Paths
 import           HscTypes                   (srcErrorMessages)
 import           Name
 import           Outputable
+import           UniqSupply                 (mkSplitUniqSupply)
+
 import           System.Directory           (getHomeDirectory,
-                                            getModificationTime)
+                                             getModificationTime)
+import           System.Exit (exitWith, ExitCode(..))
 import           System.FilePath
 import           System.IO
-import           UniqSupply                 (mkSplitUniqSupply)
 
 import           Slick.Case
 import           Slick.GhcUtil
@@ -298,7 +300,10 @@ main = do
     hPutStrLn logFile "Testing, testing"
     runGhc (Just libdir) $ do
       -- ghcInit stRef
-      Slick.Init.init stRef
+      Slick.Init.init stRef >>= \case
+        Left err -> liftIO (putStrLn err >> exitWith (ExitFailure 1))
+        Right () -> return ()
+
       logS stRef "init'd"
       forever $ do
         ln <- liftIO B.getLine
