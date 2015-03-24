@@ -1,4 +1,5 @@
-{-# LANGUAGE LambdaCase, RecordWildCards, TupleSections #-}
+{-# LANGUAGE LambdaCase, RecordWildCards, TupleSections,
+             NoMonomorphismRestriction #-}
 module Slick.Suggest where
 
 import           Control.Applicative
@@ -8,7 +9,7 @@ import           Data.Function       (on)
 import           Data.IORef
 import qualified Data.List           as List
 import           Data.Maybe
-import           Data.Traversable    hiding (forM, mapM)
+import           Data.Traversable    hiding (forM, mapM, sequence)
 import           GHC
 import           GhcMonad
 import           HsExpr
@@ -72,25 +73,42 @@ locality n = case nameModule_maybe n of
     _      -> External
   Nothing  -> if isInternalName n then Module else External
 
+-- TODO: push foralls in
+innerArgs :: Type -> [Type]
+innerArgs t = case splitAppTys t of
+  (_, [])   -> [t]
+  (_, args) -> innerArgs (last args)
+
+{-
 innerArgs :: Type -> [Type]
 innerArgs t = case splitTyConApp_maybe t of
   Just (tycon, args) ->
     -- would like to recurse over args in which this tycon is functorial
     if isTupleTyCon tycon
     then concatMap innerArgs args
-    else innerArgs $ last args -- It's about finding ways to make this descent real
+    else maybe [t] innerArgs (lastMay args) -- It's about finding ways to make this descent real
   Nothing -> [t]
-
+  where
+  lastMay = \case { [] -> Nothing; xs -> Just (last xs) }
+-}
 matchInnerArgs :: Type -> Type -> TcRn [RefineMatch]
 matchInnerArgs goalTy ty = mapMaybeM (refineMatch goalTy) (innerArgs ty)
 
-score :: Bool -> Type -> Type -> Name -> TcRn Score
+score :: Bool -> Type -> Type -> Name -> TcRn (Maybe (Score, (Name, Type)))
 score hole goalTy ty n = do
   let loc       = if hole then Hole else locality n
       score' rm = (vagueness rm, burdensomeness rm, loc)
 
-  mapMaybeM (refineMatch goalTy) (ty : innerArgs ty)
-  undefined {-
+  let attempts = ty : innerArgs ty
+      goals    = goalTy : innerArgs goalTy
+
+  fmap (fmap (,(n,ty)) . maximumMay)
+    . fmap catMaybes
+    $ sequence (liftA2 (\t g -> fmap score' <$> refineMatch g t) attempts goals)
+  where
+  maximumMay = \case { [] -> Nothing; xs -> Just (maximum xs) }
+  
+{-
   refineMatch goalTy ty >>= \case
     Nothing -> matchInnerArgs goalTy ty
 -}
@@ -100,11 +118,10 @@ suggestions tcmod hi = do
   fs <- lift getSessionDynFlags
   -- not sure if it's stricly necessary to do this in Tc environment of the
   -- hole
-  gblSuggestions <- mapMaybeM nameType gblScope
+  gblSuggestions <- mapMaybeM gblScore gblScope
   lclSuggestions <- inHoleEnv tcmod hi $
     discardConstraints . fmap catMaybes . forM (holeEnv hi) $ \(id, ty) ->
-      refineMatch goalTy ty >>| fmap (\rm ->
-        ((vagueness rm, burdensomeness rm, Hole), (getName id, ty)))
+      score True goalTy ty (getName id)
 
   return
     . map snd
@@ -115,10 +132,11 @@ suggestions tcmod hi = do
   discardConstraints = fmap fst . captureConstraints
   maybeErr ex        = fmap Just ex `catchError` \_ -> return Nothing
   -- TODO: delete debug fs argument
-  nameType n = fmap join . maybeErr . inHoleEnv tcmod hi . discardConstraints $ do
+  gblScore n = fmap join . maybeErr . inHoleEnv tcmod hi . discardConstraints $ do
     ty <- tcRnExprTc . noLoc . HsVar $ Exact n
-    refineMatch goalTy ty >>| fmap (\rm ->
-      ((vagueness rm, burdensomeness rm, locality n), (n, ty)))
+    score False goalTy ty n
+--    refineMatch goalTy ty >>| fmap (\rm ->
+--      ((vagueness rm, burdensomeness rm, locality n), (n, ty)))
 
 --      logS stRef (showSDoc fs $ ppr (ty, refineEvBinds))
 --      logS stRef . showSDocDebug fs $ ppr refineWrapper

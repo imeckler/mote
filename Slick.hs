@@ -84,8 +84,9 @@ loadFile stRef p = do
   where
   augment :: TypecheckedModule -> HoleInfo -> M AugmentedHoleInfo
   augment tcmod hi = do
+    logS stRef "Getting them suggestions"
     suggs <- Slick.Suggest.suggestions tcmod hi
-    return $ AugmentedHoleInfo { holeInfo = hi, suggestions = suggs }
+    return (AugmentedHoleInfo { holeInfo = hi, suggestions = suggs })
 
   loadModuleAt :: GhcMonad m => FilePath -> m (Either ErrorType ParsedModule)
   loadModuleAt p = do
@@ -116,6 +117,7 @@ loadFile stRef p = do
           []   -> Right mod
           errs -> Left . GHCError . ("getModules: " ++) . unlines $ reverse errs
 
+  handled :: Ghc (Either ErrorType ParsedModule)
   handled = do
     fs <- getSessionDynFlags
     ghandle (\(e :: SomeException) -> Left (OtherError $ show e) <$ clearState stRef) $

@@ -150,8 +150,9 @@ setOptions stRef (Options {..}) (CompilerOptions{..}) = do
                   showSDocForUser dfs neverQualify
                   $ mkLocMessage sev span msgdoc
                 isHoleMsg = and . zipWith (==) "Found hole" $ showSDoc dfs msgdoc
+                isError = case sev of { SevError -> True; SevFatal -> True; _ -> False }
             in
-            if isHoleMsg
+            if isHoleMsg || not isError
             then return ()
             else
               gModifyIORef stRef (\s ->
