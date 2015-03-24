@@ -108,3 +108,5 @@ withBindings bs mx = do
   where
   mkBind (x, t) = "let " ++ x ++ " = undefined :: " ++ t
 
+discardConstraints :: TcRn a -> TcRn a
+discardConstraints = fmap fst . captureConstraints

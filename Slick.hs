@@ -4,7 +4,8 @@ module Main where
 
 import           Control.Applicative        ((<$), (<$>))
 import           Control.Monad.Error
-import           Data.Aeson                 (decodeStrict, encode)
+import           Data.Aeson                 (decodeStrict, encode, (.=))
+import qualified Data.Aeson as Aeson
 import qualified Data.ByteString            as B
 import qualified Data.ByteString.Lazy.Char8 as LB8
 import           Data.IORef
@@ -12,8 +13,8 @@ import qualified Data.List                  as List
 import qualified Data.Map                   as M
 import           Data.Maybe                 (isNothing)
 import qualified Data.Set                   as S
-import qualified DynFlags
 
+import qualified DynFlags
 import           ErrUtils                   (pprErrMsgBag)
 import           Exception
 import           FastString                 (fsLit, unpackFS)
@@ -22,11 +23,13 @@ import           GHC.Paths
 import           HscTypes                   (srcErrorMessages)
 import           Name
 import           Outputable
+import           UniqSupply                 (mkSplitUniqSupply)
+
 import           System.Directory           (getHomeDirectory,
-                                            getModificationTime)
+                                             getModificationTime)
+import           System.Exit (exitWith, ExitCode(..))
 import           System.FilePath
 import           System.IO
-import           UniqSupply                 (mkSplitUniqSupply)
 
 import           Slick.Case
 import           Slick.GhcUtil
@@ -35,12 +38,12 @@ import qualified Slick.Init
 import           Slick.Protocol
 import           Slick.ReadType
 import           Slick.Refine
-import           Slick.Suggest
+import qualified Slick.Suggest
 import           Slick.Types
 import           Slick.Util
 
--- TODO: Need better error messages. For now any load failure gives
--- "Cannot add module MODULENAME to context: not a home module"
+-- DEBUG
+import Data.Time.Clock
 
 ghcInit :: GhcMonad m => IORef SlickState -> m ()
 ghcInit stRef = do
@@ -54,8 +57,6 @@ ghcInit stRef = do
   where
   withFlags fs dynFs = foldl DynFlags.gopt_set dynFs fs
 
--- tcl_lie should contain the CHoleCan's
-
 getEnclosingHole :: IORef SlickState -> (Int, Int) -> M (Maybe AugmentedHoleInfo)
 getEnclosingHole stRef pos =
   M.foldrWithKey (\k hi r -> if k `spans` pos then Just hi else r) Nothing
@@ -63,15 +64,9 @@ getEnclosingHole stRef pos =
   <$> getFileDataErr stRef
 -- TODO: access ghci cmomands from inside vim too. e.g., kind
 
-
-
--- handleSourceError (return . Left) . fmap Right $ do
-
--- TODO: This is throwing and it's not clear how to catch
--- the error properly
-loadFile :: IORef SlickState -> FilePath -> M ParsedModule
+loadFile :: IORef SlickState -> FilePath -> M ()
 loadFile stRef p = do
-  pmod  <- eitherThrow =<< lift handled
+  pmod  <- eitherThrow =<< lift handled -- bulk of time is here
   fdata <- getFileDataErr stRef
   let tcmod = typecheckedModule fdata
   his   <- getHoleInfos tcmod
@@ -80,18 +75,22 @@ loadFile stRef p = do
       fileData = Just (fdata
         { holesInfo = M.fromList $ map (\hi -> (holeSpan $ holeInfo hi, hi)) augmentedHis })
     })
-  return pmod
   where
-  augment :: TypecheckedModule -> HoleInfo -> M AugmentedHoleInfo
-  augment tcmod hi = do
-    suggs <- Slick.Suggest.suggestions tcmod hi
-    return $ AugmentedHoleInfo { holeInfo = hi, suggestions = suggs }
+  logTimeSince t0 = liftIO $ do
+    t <- getCurrentTime
+    logS stRef . show $ diffUTCTime t t0
 
+  -- getting suggestions took far too long, so we only compute them if
+  -- they're explicitly requested later on
+  augment :: TypecheckedModule -> HoleInfo -> M AugmentedHoleInfo
+  augment tcmod hi =
+    return (AugmentedHoleInfo { holeInfo = hi, suggestions = Nothing })
+
+  -- bulk of time spent here unsurprisingly
   loadModuleAt :: GhcMonad m => FilePath -> m (Either ErrorType ParsedModule)
   loadModuleAt p = do
-    -- TODO: Clear old names and stuff
-    -- TODO: I think we can actually do all the parsing and stuff ourselves
-    -- and then call GHC.loadMoudle to avoid duplicating work
+    -- TODO: I think we can used the parsed and tc'd module that we get
+    -- ourselves and then call GHC.loadMoudle to avoid duplicating work
     setTargets . (:[]) =<< guessTarget p Nothing
     load LoadAllTargets >>= \case
       Succeeded ->
@@ -104,6 +103,7 @@ loadFile stRef p = do
         Left . GHCError . unlines . reverse . loadErrors <$> gReadIORef stRef
 
   getModules = do
+    t0 <- liftIO getCurrentTime
     clearOldHoles
     clearErrors
     _fs <- getSessionDynFlags
@@ -116,6 +116,7 @@ loadFile stRef p = do
           []   -> Right mod
           errs -> Left . GHCError . ("getModules: " ++) . unlines $ reverse errs
 
+  handled :: Ghc (Either ErrorType ParsedModule)
   handled = do
     fs <- getSessionDynFlags
     ghandle (\(e :: SomeException) -> Left (OtherError $ show e) <$ clearState stRef) $
@@ -148,7 +149,11 @@ setStateForData stRef path tcmod hsModule = do
         , hsModule
         , modifyTimeAtLastLoad
         , typecheckedModule=tcmod
-        , holesInfo = M.empty -- temporary
+         -- This emptiness is temporary. It gets filled in at the end of
+         -- loadFile. I had to separate this since I painted myself into
+         -- a bit of a monadic corner. "augment" (necessary for generating
+         -- the holesInfo value, runs in M rather than Ghc.
+        , holesInfo = M.empty
         }
     , currentHole = Nothing
     , argHoles
@@ -164,7 +169,12 @@ respond stRef msg = either (Error . show) id <$> runErrorT (respond' stRef msg)
 
 respond' :: IORef SlickState -> FromClient -> M ToClient
 respond' stRef = \case
-  Load p -> const Ok <$> loadFile stRef p
+  Load p -> do
+    t0 <- liftIO getCurrentTime
+    loadFile stRef p
+    t <- liftIO getCurrentTime
+    logS stRef $ show $ diffUTCTime t t0
+    return Ok
 
   NextHole (ClientState {path, cursorPos=(line,col)}) ->
     getHoles stRef >>= \holes ->
@@ -190,8 +200,7 @@ respond' stRef = \case
 
   EnterHole (ClientState {..}) -> do
     FileData {path=p} <- getFileDataErr stRef
-    -- maybe shouldn't autoload
-    when (p /= path) (void $ loadFile stRef path)
+    when (p /= path) (loadFile stRef path)
 
     mh <- getEnclosingHole stRef cursorPos
     gModifyIORef stRef (\st -> st { currentHole = mh })
@@ -199,20 +208,73 @@ respond' stRef = \case
       Nothing -> SetInfoWindow "No Hole found"
       Just _  -> Ok
 
-  GetEnv (ClientState {..}) -> do
-    AugmentedHoleInfo {holeInfo=hi, suggestions} <- getCurrentHoleErr stRef
+  GetHoleInfo (ClientState {..}) (HoleInfoOptions{..}) -> do
+    ahi@(AugmentedHoleInfo {holeInfo=hi}) <- getCurrentHoleErr stRef
     fs <- lift getSessionDynFlags
-    -- refining stops working after I call suggestions...
-    let suggStr  = "Suggestions:\n" ++ replicate 40 '-'
-        suggStrs = map (\(n, t) -> (occNameToString . occName) n ++ " :: " ++ showType fs t) suggestions
+    let env = map (\(id,t) -> (occNameToString (getOccName id), showType fs t)) (holeEnv hi)
+    case sendOutputAsData of
+      True -> do
+        suggsJSON <-
+          if withSuggestions
+          then mkSuggsJSON <$> getAndMemoizeSuggestions ahi
+          else return []
+        return $
+          JSON . Aeson.object $
+            [ "environment" .= map (\(x, t) -> Aeson.object ["name" .= x, "type" .= t]) env
+            , "goal" .= Aeson.object ["name" .= holeNameString hi, "type" .= showType fs (holeType hi) ]
+            ]
+            ++ suggsJSON
+        where
+        mkSuggJSON (n, t) = Aeson.object ["name" .= occNameToString (occName n), "type" .= showType fs t]
+        mkSuggsJSON suggs = [ "suggestions" .= map mkSuggJSON suggs ]
+
+      False -> do
+        suggsStr <- if withSuggestions then mkSuggsStr <$> getAndMemoizeSuggestions ahi else return ""
+        let goalStr = "Goal: " ++ holeNameString hi ++ " :: " ++ showType fs (holeType hi)
+                    ++ "\n" ++ replicate 40 '-'
+            envStr = unlines $ map (\(x, t) -> x ++ " :: " ++ t) env
+        return . SetInfoWindow $ unlines [goalStr, envStr, "", suggsStr]
+        where
+        mkSuggsStr suggs = 
+          let heading = "Suggestions:\n" ++ replicate 40 '-' in
+          unlines (heading : map (\(n, t) -> (occNameToString . occName) n ++ " :: " ++ showType fs t) suggs)
+
+    where
+    getAndMemoizeSuggestions ahi = 
+      case suggestions ahi of
+        Just suggs -> return suggs
+        Nothing -> do
+          fdata@(FileData {..}) <- getFileDataErr stRef
+          let hi = holeInfo ahi
+          suggs <- Slick.Suggest.suggestions typecheckedModule hi
+          fmap currentHole (gReadIORef stRef) >>= \case
+            Nothing  -> return ()
+            Just ahi' ->
+              if holeSpan (holeInfo ahi') == holeSpan hi
+                then gModifyIORef stRef (\s -> s { currentHole = Just (ahi' { suggestions = Just suggs }) })
+                else return ()
+          gModifyIORef stRef (\s ->
+            s {
+              fileData = Just (
+                fdata {
+                  holesInfo =
+                    M.update (\ahi' -> Just $ ahi' { suggestions = Just suggs })
+                        (holeSpan hi) holesInfo})})
+          return suggs
+  
+  {-
+  GetEnv (ClientState {..}) -> do
+    let suggStr  = 
+        suggStrs = 
 
     let tyStr       = showType fs $ holeType hi
-        goalStr     = "Goal: " ++ holeNameString hi ++ " :: " ++ tyStr ++ "\n" ++ replicate 40 '-'
+        goalStr     = 
         envVarTypes =
-          map (\(id,t) -> occNameToString (getOccName id) ++ " :: " ++ showType fs t)
+          map 
             (holeEnv hi)
 
     return (SetInfoWindow $ unlines (goalStr : envVarTypes ++ "" : suggStr : suggStrs))
+    -}
 
   Refine exprStr (ClientState {..}) -> do
     hi    <- getCurrentHoleErr stRef
@@ -258,15 +320,14 @@ respond' stRef = \case
           SingleLambda _loc ->
             Error "TODO: SingleLambda"
 
-{-
   CaseOn exprStr (ClientState {..}) -> do
     expr <- parseExpr exprStr
     -- Should actually have general mechanism for getting the scope at
     -- a point...
-    wrap <- getEnclosingHoleInfo stRef cursorPos >>| \case
-      Nothing -> id
-      Just hi -> ErrorT . withBindings (holeEnv hi) . runErrorT
-    ty <- wrap $ hsExprType expr
+    FileData {..} <- getFileDataErr stRef
+    ty <- getEnclosingHole stRef cursorPos >>= \case
+      Nothing -> hsExprType expr
+      Just hi -> inHoleEnv typecheckedModule (holeInfo hi) $ tcRnExprTc expr
     ms <- matchesForType ty
     fs <- lift getSessionDynFlags
     let indent n  = (replicate n ' ' ++)
@@ -274,7 +335,7 @@ respond' stRef = \case
     return
       . Insert cursorPos path
       . unlines
-      $ ("case " ++ exprStr ++ " of") : map (indent 2 . showMatch) ms -}
+      $ ("case " ++ exprStr ++ " of") : map (indent 2 . showMatch) ms
 
   -- every message should really send current file name (ClientState) and
   -- check if it matches the currently loaded file
@@ -296,13 +357,18 @@ main = do
     hPutStrLn logFile "Testing, testing"
     runGhc (Just libdir) $ do
       -- ghcInit stRef
-      Slick.Init.init stRef
+      Slick.Init.init stRef >>= \case
+        Left err -> liftIO $ do
+          LB8.putStrLn (encode (Error err))
+          exitWith (ExitFailure 1)
+        Right () -> return ()
+
       logS stRef "init'd"
       forever $ do
         ln <- liftIO B.getLine
         case decodeStrict ln of
           Nothing  ->
-            return ()
+            liftIO . LB8.putStrLn . encode $ Error "Could not parse message JSON"
           Just msg -> do
             logS stRef ("Got: " ++ show msg)
             resp <- respond stRef msg

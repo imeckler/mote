@@ -12,6 +12,7 @@ type Span = (Pos, Pos)
 
 data ToClient
   = Replace Span FilePath String
+  | JSON Value
   | Insert Pos FilePath String
   | SetInfoWindow String
   | SetCursor Pos
@@ -29,6 +30,7 @@ instance ToJSON ToClient where
     Error t         -> Array $ V.fromList [toJSON (str "Error"), toJSON t]
     Stop            -> Array $ V.fromList [toJSON (str "Stop")]
     Insert pos p t  -> Array $ V.fromList [toJSON (str "Insert"), toJSON pos, toJSON p, toJSON t]
+    JSON v          -> Array $ V.fromList [toJSON (str "JSON"), toJSON v]
     where
     str x = x :: String
 
@@ -41,22 +43,30 @@ instance FromJSON ClientState where
   parseJSON (Object v) = ClientState <$> v .: "path" <*> v .: "cursorPos"
   parseJSON _          = mzero
 
--- Things could be a bit more efficient if the client held on to which hole
--- they're in. Probably not necessary, but if things are slow, consider
--- it.
+data HoleInfoOptions = HoleInfoOptions
+  -- If this flag is true, the response to the GetHoleInfo message is
+  -- a json object with the following format
+  -- { "environment" : [ {"name" : String, "type" : String}* ]
+  -- , "suggestions" : [ {"name" : String, "type" : String}* ]
+  -- , "goal"        : {"name" : String, "type" : String}
+  -- }
+  { sendOutputAsData :: Bool
+  -- The suggestions field is only present if withSuggestions is true
+  , withSuggestions  :: Bool
+  }
+  deriving (Show)
 
--- next big thing: in hole suggestions.
--- let's say my goal type is SrcLoc.
--- Functions are suggested whose target type is SrcLoc
--- and whose arguments are in the environment. Perhaps
--- do something linear. Also maybe use hoogle
---
+instance FromJSON HoleInfoOptions where
+  parseJSON = \case
+    Object v -> HoleInfoOptions <$> v .: "sendOutputAsData" <*> v .: "withSuggestions"
+    _        -> mzero
+
 data FromClient
   = Load FilePath
   | EnterHole ClientState
   | NextHole ClientState
   | PrevHole ClientState
-  | GetEnv ClientState
+  | GetHoleInfo ClientState HoleInfoOptions
   | Refine String ClientState
   | GetType String
   | CaseFurther Var ClientState
@@ -73,7 +83,7 @@ instance FromJSON FromClient where
       [String "EnterHole", state]               -> EnterHole <$> parseJSON state
       [String "NextHole", state]                -> NextHole <$> parseJSON state
       [String "PrevHole", state]                -> PrevHole <$> parseJSON state
-      [String "GetEnv", state]                  -> GetEnv <$> parseJSON state
+      [String "GetHoleInfo", state, hiOpts]     -> GetHoleInfo <$> parseJSON state <*> parseJSON hiOpts
       [String "Refine", String expr, state]     -> Refine (T.unpack expr) <$> parseJSON state
       [String "GetType", String e]              -> return . GetType $ T.unpack e
       [String "SendStop"]                       -> return SendStop

@@ -30,10 +30,12 @@ data SlickState = SlickState
   , loadErrors  :: [String]
   }
 
-data AugmentedHoleInfo =
-  AugmentedHoleInfo
+data AugmentedHoleInfo = AugmentedHoleInfo
   { holeInfo    :: HoleInfo
-  , suggestions :: [(Name, Type)]
+  -- these are computed only when requested. I would like to rely on
+  -- Haskell's laziness for memoization here but the fact that suggestions
+  -- are computed in a monad makes it impossible.
+  , suggestions :: Maybe [(Name, Type)]
   }
 
 data HoleInfo = HoleInfo

@@ -102,7 +102,7 @@ LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
 ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 POSSIBILITY OF SUCH DAMAGE. -}
 
-init :: GhcMonad m => IORef SlickState -> m ()
+init :: GhcMonad m => IORef SlickState -> m (Either String ())
 init stRef = initializeWithCabal stRef defaultOptions
 
 runGhcModT'' opt mx = do
@@ -110,7 +110,7 @@ runGhcModT'' opt mx = do
   (orErr, _log) <- runGhcModT' env defaultState mx
   return $ fmap fst orErr
 
-initializeWithCabal :: GhcMonad m => IORef SlickState -> Options -> m ()
+initializeWithCabal :: GhcMonad m => IORef SlickState -> Options -> m (Either String ())
 initializeWithCabal stRef opt = do
   c <- liftIO findCradle
   case cradleCabalFile c of
@@ -123,15 +123,15 @@ initializeWithCabal stRef opt = do
             CompilerOptions (ghcOpts ++ pkgOpts)
               (if null pkgOpts then importDirs else [wdir, rdir]) []
       in
-      setOptions stRef opt compOpts
+      setOptions stRef opt compOpts >> return (Right ())
 
     Just cab -> do
       compOptsErr <- liftIO . runGhcModT'' opt $ do
         getCompilerOptions ghcOpts c =<< parseCabalFile c cab
 
       case compOptsErr of
-        Left err -> logS stRef $ "initializeWithCabal error: " ++ show err
-        Right compOpts -> setOptions stRef opt compOpts
+        Left err       -> return . Left $ "initializeWithCabal error: " ++ show err
+        Right compOpts -> setOptions stRef opt compOpts >> return (Right ())
 
   where
   ghcOpts = ghcUserOptions opt
@@ -150,8 +150,9 @@ setOptions stRef (Options {..}) (CompilerOptions{..}) = do
                   showSDocForUser dfs neverQualify
                   $ mkLocMessage sev span msgdoc
                 isHoleMsg = and . zipWith (==) "Found hole" $ showSDoc dfs msgdoc
+                isError = case sev of { SevError -> True; SevFatal -> True; _ -> False }
             in
-            if isHoleMsg
+            if isHoleMsg || not isError
             then return ()
             else
               gModifyIORef stRef (\s ->
@@ -242,8 +243,9 @@ getConfig cradle = do
   outOfDate <- liftIO $ isSetupConfigOutOfDate cradle
   when outOfDate configure
   liftIO (System.IO.Strict.readFile file `catch` \(_ :: SomeException) ->
-    readProcess "cabalparse" [file] "")
-    -- TODO: A lovely hack can be seen here
+    readProcessWithExitCode "cabalparse" [file] "" >>= \case
+      (ExitSuccess, stdout, _)   -> return stdout
+      (ExitFailure _, _, stderr) -> throwIO (ErrorCall stderr))
   where
   file   = setupConfigFile cradle
   prjDir = cradleRootDir cradle
