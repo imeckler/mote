@@ -22,6 +22,12 @@ type RuleChooser ms mp s p = s -> ms [ ([s], [p] -> mp p) ]
 
 identityFunction = undefined
 
+search = do
+  memo <- newIORef M.empty
+  go 1 prev
+  where
+  maxDepth = 10
+
 -- In the future, maybe we have a better way of finding applicable rules
 -- than testing all of them.
 search :: (Functor m, Monad m) => RuleChooser m m s p -> s -> m [p]
