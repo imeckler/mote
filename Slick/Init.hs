@@ -2,7 +2,6 @@
              ScopedTypeVariables #-}
 module Slick.Init where
 
-import           Data.IORef
 import           Data.List                                     (intercalate)
 import           GHC
 import           Language.Haskell.GhcMod.Internal              hiding (getCompilerOptions,
@@ -102,7 +101,7 @@ LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
 ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 POSSIBILITY OF SUCH DAMAGE. -}
 
-init :: GhcMonad m => IORef SlickState -> m (Either String ())
+init :: GhcMonad m => Ref SlickState -> m (Either String ())
 init stRef = initializeWithCabal stRef defaultOptions
 
 runGhcModT'' opt mx = do
@@ -110,7 +109,7 @@ runGhcModT'' opt mx = do
   (orErr, _log) <- runGhcModT' env defaultState mx
   return $ fmap fst orErr
 
-initializeWithCabal :: GhcMonad m => IORef SlickState -> Options -> m (Either String ())
+initializeWithCabal :: GhcMonad m => Ref SlickState -> Options -> m (Either String ())
 initializeWithCabal stRef opt = do
   c <- liftIO findCradle
   case cradleCabalFile c of
@@ -155,7 +154,7 @@ setOptions stRef (Options {..}) (CompilerOptions{..}) = do
             if isHoleMsg || not isError
             then return ()
             else
-              gModifyIORef stRef (\s ->
+              gModifyRef stRef (\s ->
                 s { loadErrors = msg : loadErrors s })
         {- TODO: Debug
         , traceLevel = 2

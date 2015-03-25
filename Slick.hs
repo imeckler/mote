@@ -3,12 +3,13 @@
 module Main where
 
 import           Control.Applicative        ((<$), (<$>))
+import Control.Concurrent (forkIO)
 import           Control.Monad.Error
 import           Data.Aeson                 (decodeStrict, encode, (.=))
 import qualified Data.Aeson as Aeson
 import qualified Data.ByteString            as B
 import qualified Data.ByteString.Lazy.Char8 as LB8
-import           Data.IORef
+import           Control.Concurrent.MVar
 import qualified Data.List                  as List
 import qualified Data.Map                   as M
 import           Data.Maybe                 (isNothing)
@@ -38,14 +39,14 @@ import qualified Slick.Init
 import           Slick.Protocol
 import           Slick.ReadType
 import           Slick.Refine
-import qualified Slick.Suggest
+import Slick.Suggest (getAndMemoizeSuggestions)
 import           Slick.Types
 import           Slick.Util
 
 -- DEBUG
 import Data.Time.Clock
 
-ghcInit :: GhcMonad m => IORef SlickState -> m ()
+ghcInit :: GhcMonad m => Ref SlickState -> m ()
 ghcInit stRef = do
   dfs <- getSessionDynFlags
   void . setSessionDynFlags . withFlags [DynFlags.Opt_DeferTypeErrors] $ dfs
@@ -57,21 +58,21 @@ ghcInit stRef = do
   where
   withFlags fs dynFs = foldl DynFlags.gopt_set dynFs fs
 
-getEnclosingHole :: IORef SlickState -> (Int, Int) -> M (Maybe AugmentedHoleInfo)
+getEnclosingHole :: Ref SlickState -> (Int, Int) -> M (Maybe AugmentedHoleInfo)
 getEnclosingHole stRef pos =
   M.foldrWithKey (\k hi r -> if k `spans` pos then Just hi else r) Nothing
   . holesInfo
   <$> getFileDataErr stRef
 -- TODO: access ghci cmomands from inside vim too. e.g., kind
 
-loadFile :: IORef SlickState -> FilePath -> M ()
+loadFile :: Ref SlickState -> FilePath -> M ()
 loadFile stRef p = do
   pmod  <- eitherThrow =<< lift handled -- bulk of time is here
   fdata <- getFileDataErr stRef
   let tcmod = typecheckedModule fdata
   his   <- getHoleInfos tcmod
   augmentedHis <- mapM (augment tcmod) his
-  gModifyIORef stRef (\s -> s {
+  gModifyRef stRef (\s -> s {
       fileData = Just (fdata
         { holesInfo = M.fromList $ map (\hi -> (holeSpan $ holeInfo hi, hi)) augmentedHis })
     })
@@ -100,7 +101,7 @@ loadFile stRef p = do
             Right <$> GHC.parseModule m
           Nothing -> error "Could not load module" -- TODO: Throw real error here
       Failed -> 
-        Left . GHCError . unlines . reverse . loadErrors <$> gReadIORef stRef
+        Left . GHCError . unlines . reverse . loadErrors <$> gReadRef stRef
 
   getModules = do
     t0 <- liftIO getCurrentTime
@@ -112,7 +113,7 @@ loadFile stRef p = do
       Right mod -> do
         tcmod <- typecheckModule mod
         setStateForData stRef p tcmod (unLoc $ parsedSource mod)
-        gReadIORef stRef >>| loadErrors >>| \case
+        gReadRef stRef >>| loadErrors >>| \case
           []   -> Right mod
           errs -> Left . GHCError . ("getModules: " ++) . unlines $ reverse errs
 
@@ -125,24 +126,24 @@ loadFile stRef p = do
         getModules
 
   clearOldHoles =
-    liftIO $ readIORef stRef >>= \s -> case fileData s of
+    liftIO $ readMVar stRef >>= \s -> case fileData s of
       Nothing                                         -> return ()
       Just (FileData {path, modifyTimeAtLastLoad}) -> do
         t <- getModificationTime path
         when (t /= modifyTimeAtLastLoad) (resetHolesInfo stRef)
 
-  clearErrors = gModifyIORef stRef (\s -> s { loadErrors = [] })
+  clearErrors = gModifyRef stRef (\s -> s { loadErrors = [] })
 
-  clearState stRef     = gModifyIORef stRef (\s -> s {fileData = Nothing, currentHole = Nothing})
+  clearState stRef     = gModifyRef stRef (\s -> s {fileData = Nothing, currentHole = Nothing})
   showErr fs           = showSDocForUser fs neverQualify . vcat . pprErrMsgBag
   resetHolesInfo stRef =
-    gModifyIORef stRef (\s -> s { fileData = fileData s >>| \fd -> fd { holesInfo = M.empty } })
+    gModifyRef stRef (\s -> s { fileData = fileData s >>| \fd -> fd { holesInfo = M.empty } })
 
-setStateForData :: GhcMonad m => IORef SlickState -> FilePath -> TypecheckedModule -> HsModule RdrName -> m ()
+setStateForData :: GhcMonad m => Ref SlickState -> FilePath -> TypecheckedModule -> HsModule RdrName -> m ()
 setStateForData stRef path tcmod hsModule = do
   modifyTimeAtLastLoad <- liftIO $ getModificationTime path
   let argHoles = findArgHoles hsModule
-  gModifyIORef stRef (\st -> st
+  gModifyRef stRef (\st -> st
     { fileData    = Just $
         FileData
         { path
@@ -164,16 +165,25 @@ srcLocPos :: SrcLoc -> (Int, Int)
 srcLocPos (RealSrcLoc l)  = (srcLocLine l, srcLocCol l)
 srcLocPos UnhelpfulLoc {} = error "srcLocPos: unhelpful loc"
 
-respond :: IORef SlickState -> FromClient -> Ghc ToClient
+respond :: Ref SlickState -> FromClient -> Ghc ToClient
 respond stRef msg = either (Error . show) id <$> runErrorT (respond' stRef msg)
 
-respond' :: IORef SlickState -> FromClient -> M ToClient
+respond' :: Ref SlickState -> FromClient -> M ToClient
 respond' stRef = \case
   Load p -> do
     t0 <- liftIO getCurrentTime
     loadFile stRef p
-    t <- liftIO getCurrentTime
-    logS stRef $ show $ diffUTCTime t t0
+    liftIO . forkIO $ do
+      fmap fileData (gReadRef stRef) >>= \case
+        Nothing -> return ()
+        Just (FileData {holesInfo}) ->
+          return ()
+          -- no idea if this is kosher
+          -- void . runGhc (Just libdir) $ runErrorT (mapM_ (getAndMemoizeSuggestions stRef) (M.elems holesInfo))
+
+    -- TODO: would like 
+    -- t <- liftIO getCurrentTime
+    -- logS stRef $ show $ diffUTCTime t t0
     return Ok
 
   NextHole (ClientState {path, cursorPos=(line,col)}) ->
@@ -203,7 +213,7 @@ respond' stRef = \case
     when (p /= path) (loadFile stRef path)
 
     mh <- getEnclosingHole stRef cursorPos
-    gModifyIORef stRef (\st -> st { currentHole = mh })
+    gModifyRef stRef (\st -> st { currentHole = mh })
     return $ case mh of
       Nothing -> SetInfoWindow "No Hole found"
       Just _  -> Ok
@@ -216,7 +226,7 @@ respond' stRef = \case
       True -> do
         suggsJSON <-
           if withSuggestions
-          then mkSuggsJSON <$> getAndMemoizeSuggestions ahi
+          then mkSuggsJSON <$> Slick.Suggest.getAndMemoizeSuggestions stRef ahi
           else return []
         return $
           JSON . Aeson.object $
@@ -229,7 +239,11 @@ respond' stRef = \case
         mkSuggsJSON suggs = [ "suggestions" .= map mkSuggJSON suggs ]
 
       False -> do
-        suggsStr <- if withSuggestions then mkSuggsStr <$> getAndMemoizeSuggestions ahi else return ""
+        suggsStr <-
+          if withSuggestions
+          then mkSuggsStr <$> Slick.Suggest.getAndMemoizeSuggestions stRef ahi
+          else return ""
+
         let goalStr = "Goal: " ++ holeNameString hi ++ " :: " ++ showType fs (holeType hi)
                     ++ "\n" ++ replicate 40 '-'
             envStr = unlines $ map (\(x, t) -> x ++ " :: " ++ t) env
@@ -238,43 +252,6 @@ respond' stRef = \case
         mkSuggsStr suggs = 
           let heading = "Suggestions:\n" ++ replicate 40 '-' in
           unlines (heading : map (\(n, t) -> (occNameToString . occName) n ++ " :: " ++ showType fs t) suggs)
-
-    where
-    getAndMemoizeSuggestions ahi = 
-      case suggestions ahi of
-        Just suggs -> return suggs
-        Nothing -> do
-          fdata@(FileData {..}) <- getFileDataErr stRef
-          let hi = holeInfo ahi
-          suggs <- Slick.Suggest.suggestions typecheckedModule hi
-          fmap currentHole (gReadIORef stRef) >>= \case
-            Nothing  -> return ()
-            Just ahi' ->
-              if holeSpan (holeInfo ahi') == holeSpan hi
-                then gModifyIORef stRef (\s -> s { currentHole = Just (ahi' { suggestions = Just suggs }) })
-                else return ()
-          gModifyIORef stRef (\s ->
-            s {
-              fileData = Just (
-                fdata {
-                  holesInfo =
-                    M.update (\ahi' -> Just $ ahi' { suggestions = Just suggs })
-                        (holeSpan hi) holesInfo})})
-          return suggs
-  
-  {-
-  GetEnv (ClientState {..}) -> do
-    let suggStr  = 
-        suggStrs = 
-
-    let tyStr       = showType fs $ holeType hi
-        goalStr     = 
-        envVarTypes =
-          map 
-            (holeEnv hi)
-
-    return (SetInfoWindow $ unlines (goalStr : envVarTypes ++ "" : suggStr : suggStrs))
-    -}
 
   Refine exprStr (ClientState {..}) -> do
     hi    <- getCurrentHoleErr stRef
@@ -289,7 +266,7 @@ respond' stRef = \case
 
   -- Precondition here: Hole has already been entered
   CaseFurther var ClientState {} -> do
-    SlickState {..} <- gReadIORef stRef
+    SlickState {..} <- gReadRef stRef
     FileData {path, hsModule} <- getFileDataErr stRef
     hi@(HoleInfo {holeEnv})   <- holeInfo <$> getCurrentHoleErr stRef
 
@@ -351,7 +328,7 @@ main :: IO ()
 main = do
   home <- getHomeDirectory
   withFile (home </> "slickserverlog") WriteMode $ \logFile -> do
-    stRef <- newIORef =<< initialState logFile
+    stRef <- newRef =<< initialState logFile
     hSetBuffering logFile NoBuffering
     hSetBuffering stdout NoBuffering
     hPutStrLn logFile "Testing, testing"
@@ -370,9 +347,9 @@ main = do
           Nothing  ->
             liftIO . LB8.putStrLn . encode $ Error "Could not parse message JSON"
           Just msg -> do
-            logS stRef ("Got: " ++ show msg)
+            liftIO $ hPutStrLn logFile ("Got: " ++ show msg)
             resp <- respond stRef msg
-            logS stRef ("Giving: " ++ show resp)
+            liftIO $ hPutStrLn logFile ("Giving: " ++ show resp)
             liftIO $ LB8.putStrLn (encode resp)
 
 initialState :: Handle -> IO SlickState
@@ -385,22 +362,22 @@ initialState logFile = mkSplitUniqSupply 'x' >>| \uniq -> SlickState
   , uniq
   }
 
-testStateRef :: IO (IORef SlickState)
+testStateRef :: IO (Ref SlickState)
 testStateRef = do
   h <- openFile "testlog" WriteMode
-  newIORef =<< initialState h
+  newRef =<< initialState h
 
-runWithTestRef :: (IORef SlickState -> Ghc b) -> IO b
+runWithTestRef :: (Ref SlickState -> Ghc b) -> IO b
 runWithTestRef x = do
   home <- getHomeDirectory
   withFile (home </> "prog/slick/testlog") WriteMode $ \logFile -> do
-    r <- newIORef =<< initialState logFile
+    r <- newRef =<< initialState logFile
     run $ do { ghcInit r; x r }
 
 runWithTestRef' x = do
   home <- getHomeDirectory
   withFile (home </> "prog/slick/testlog") WriteMode $ \logFile -> do
-    r <- newIORef =<< initialState logFile
+    r <- newRef =<< initialState logFile
     run $ do { Slick.Init.init r; x r }
 
 run :: Ghc a -> IO a
