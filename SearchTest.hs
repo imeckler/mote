@@ -6,9 +6,10 @@ import Data.Maybe
 import qualified Data.Map as M
 import qualified Data.PSQueue as P
 
-type EdgeName = String
-type Name = Char
-type Vertex = ([Name], [Name])
+type Program  = String
+type EdgeName = Program -> Program -- String
+type Name     = Char
+type Vertex   = ([Name], [Name])
 
 data Trans = Trans { from :: [Name], to :: [Name], transName :: String }
 
@@ -19,53 +20,65 @@ isApplicative = (`elem` "LMTG")
 transes :: [Trans]
 transes = 
   [ Trans { from = "LM", to = "L", transName = "catMaybes"}
-  , Trans { from = "", to = "L", transName = "map (\\_ -> x) ?" }
+  , Trans { from = "", to = "L", transName = "\\x -> map (const x) ?" }
+  , Trans { from = "LL", to = "L", transName = "concat" }
   , Trans { from = "T", to = "G", transName = "inHoleEnv" }
-  , Trans { from = "", to = "N", transName = "(?, _)" }
+  , Trans { from = "", to = "N", transName = "\\x -> (?, x)" }
   ]
 
-successors :: Vertex -> Maybe [(Vertex, EdgeName)]
+-- Really should do something special when they're equal.
+successors :: Vertex -> [(Vertex, EdgeName)]
 successors (s, t) =
-  if s == t
-  then Nothing
-  else fmapEdge ++ sequenceREdge ++ sequenceLEdge ++ transEdges
+  fmapEdge ++ sequenceREdge ++ sequenceLEdge ++ transEdges
   where
   fmapEdge
-    | (cs:s', ct:t') <- (s, t), cs == ct = [((s', t'), "fmap")]
+    | (cs:s', ct:t') <- (s, t), cs == ct
+    = [((s', t'), \p -> "fmap{" ++ [cs] ++ "}" ++ "(" ++ p ++ ")")]
     | otherwise = []
 
   sequenceREdge
     | ctf:ctt:t' <- t
     , isApplicative ctf && isTraversable ctt
-    = [((s, ctt:ctf:t'), "sequence-right")]
+    = [((s, ctt:ctf:t'), \p -> "sequenceA . " ++ p)] -- "sequence-right")]
     | otherwise = []
 
   sequenceLEdge
     | cst:csf:s' <- s
     , isTraversable cst && isApplicative csf
-    = [((csf:cst:s'), "sequence-left")]
+    = [((csf:cst:s', t), \p -> p ++ ". sequenceA")] -- "sequence-left")]
     | otherwise = []
 
   transEdges =
-    mapMaybe (\(Trans{..}) ->
-      case (leftFromRight from s, leftFromRight to t) of
-        (Just s', Just t') -> Just ((s', t'), transName)
-        _                  -> Nothing
-      ) transes
+    concatMap (\(Trans{..}) ->
+      let rrule =
+            case leftFromRight to t of
+              Just t' -> [((s, from ++ t'), \p -> transName ++ " . " ++ p)] -- transName ++ "-right")]
+              Nothing -> []
+          lrule =
+            case leftFromRight from s of
+              Just s' -> [((to ++ s', t), \p -> p ++ " . " ++ transName)] -- transName ++ "-left")]
+              Nothing -> []
+      in
+      rrule ++ lrule)
+      transes
 
-leftFromRight :: Eq a => u[a] -> [a] -> Maybe [a]
+leftFromRight :: Eq a => [a] -> [a] -> Maybe [a]
 leftFromRight (x : xs) [] = Nothing
 leftFromRight (x : xs) (y : ys)
   | x == y    = leftFromRight xs ys
   | otherwise = Nothing
 leftFromRight [] ys = Just ys
 
-dijkstra = undefined where
-  maxDist = 10
-  go :: M.Map Vertex (Int, (Vertex, EdgeName))
-     -> M.Map Vertex (Vertex, EdgeName) -- if only the psq supported additional decorative data
-     -> P.PSQ Vertex Int
-     -> M.Map Vertex (Int, (Vertex, EdgeName))
+dijkstra
+  :: Vertex -> M.Map Vertex (Int, (Vertex, EdgeName))
+dijkstra init = 
+  let nexts = successors init 
+  in
+  go M.empty
+    (M.fromList . map (\(v, en) -> (v, (init, en))) $ nexts)
+    (P.fromList . map (\(v, _) -> v P.:-> 1) $ nexts)
+  where
+  maxDist = 8
   go visited onDeckPreds onDeckDists =
     case P.minView onDeckDists of
       Just (u P.:-> dist, onDeckDists') ->
@@ -75,20 +88,30 @@ dijkstra = undefined where
             nexts = 
               if dist >= maxDist
               then []
+              else if let (s, t) = u in length s > 5 || length t > 5
+              then []
               else
-                filter (\(v, _) -> not (M.member v visited))
+                filter (\(v, _) -> not (M.member v visited'))
                 $ successors u
 
-            (onDeckPreds', onDeckDists') =
+            (onDeckPreds', onDeckDists'') =
               foldl (\(ps, ds) (v, en) ->
-                let ds' = P.insertWith min v (dist + 1) v ds 
+                let ds' = P.insertWith min v (dist + 1) ds 
                     ps' =
                       if P.lookup v ds' == Just (dist + 1)
                       then M.insert v (u,en) ps
                       else ps
                 in (ps', ds'))
-                (onDeckPreds, onDeckDists) nexts
+                (onDeckPreds, onDeckDists') nexts
         in
-        go visited' onDeckPreds' onDeckDists'
-      Nothing             -> visited
+        go visited' onDeckPreds' onDeckDists''
+      Nothing             -> visited -- visited
+
+prove :: Vertex -> Program
+prove init = go "id" ("", "") where
+  d        = dijkstra init
+  go acc v =
+    case M.lookup v d of
+      Just (_, (pre, en)) -> go (en acc) pre
+      Nothing             -> acc
 
