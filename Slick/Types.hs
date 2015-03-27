@@ -1,5 +1,5 @@
 module Slick.Types (Hole, FileData (..), SlickState (..),
-                    HoleInfo (..), ErrorType (..), AugmentedHoleInfo(..), M) where
+                    HoleInfo (..), ErrorType (..), AugmentedHoleInfo(..), M, Ref) where
 
 import           Control.Monad.Error
 import qualified Data.Map            as M
@@ -9,8 +9,11 @@ import           GHC
 import           System.IO
 import           UniqSupply
 import           TcRnTypes           (Ct (..))
+import Control.Concurrent.MVar
 
 type Hole = SrcSpan
+
+type Ref = MVar
 
 data FileData = FileData
   { path                 :: FilePath

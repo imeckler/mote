@@ -103,10 +103,10 @@ refineMatch goalTy rty = go [] [] [] rty where
 refineNumArgs :: Type -> Type -> TcRn (Maybe Int)
 refineNumArgs goalTy rty = fmap (length . refineArgTys) <$> refineMatch goalTy rty
 
-refine :: IORef SlickState -> String -> M (LHsExpr RdrName)
+refine :: Ref SlickState -> String -> M (LHsExpr RdrName)
 refine stRef eStr = do
   hi    <- holeInfo <$> getCurrentHoleErr stRef
-  isArg <- S.member (holeSpan hi) . argHoles <$> gReadIORef stRef
+  isArg <- S.member (holeSpan hi) . argHoles <$> gReadRef stRef
   fs    <- lift getSessionDynFlags
   let goalTy = holeType hi
 

@@ -29,6 +29,7 @@ import           Module              (packageIdString)
 import           Name                (isInternalName, nameModule_maybe)
 import           Outputable          (ppr, showSDoc, showSDocDebug)
 import           TcEvidence          (HsWrapper (..))
+import qualified Data.Map as M
 
 eitherToMaybe = either (const Nothing) Just
 
@@ -94,6 +95,7 @@ score hole goalTy ty n = do
   let attempts = ty : innerArgs ty
       goals    = goalTy : innerArgs goalTy
 
+  -- TODO: tlm style
   fmap (fmap (,(n,ty)) . maximumMay)
     . fmap catMaybes
     $ sequence (liftA2 (\t g -> fmap score' <$> refineMatch g t) attempts goals)
@@ -107,6 +109,7 @@ suggestions tcmod hi = do
   -- not sure if it's stricly necessary to do this in Tc environment of the
   -- hole
   gblSuggestions <- mapMaybeM gblScore gblScope
+  -- TODO: tlm style
   lclSuggestions <- inHoleEnv tcmod hi $
     discardConstraints . fmap catMaybes . forM (holeEnv hi) $ \(id, ty) ->
       score True goalTy ty (getName id)
@@ -121,4 +124,31 @@ suggestions tcmod hi = do
   gblScore n  = fmap join . maybeErr . inHoleEnv tcmod hi . discardConstraints $ do
     ty <- tcRnExprTc . noLoc . HsVar $ Exact n
     score False goalTy ty n
+
+getAndMemoizeSuggestions :: Ref SlickState -> AugmentedHoleInfo -> M [(Name, Type)]
+getAndMemoizeSuggestions stRef ahi = 
+  case Slick.Types.suggestions ahi of
+    Just suggs -> return suggs
+    Nothing -> do
+      fdata@(FileData {..}) <- getFileDataErr stRef
+      let hi = holeInfo ahi
+      suggs <- Slick.Suggest.suggestions typecheckedModule hi
+      saveInCurrentHole hi suggs
+      gModifyRef stRef (\s ->
+        s {
+          fileData = Just (
+            fdata {
+              holesInfo =
+                M.update (\ahi' -> Just $ ahi' { Slick.Types.suggestions = Just suggs })
+                    (holeSpan hi) holesInfo})})
+      return suggs
+  where
+  saveInCurrentHole hi suggs =
+    fmap currentHole (gReadRef stRef) >>= \case
+      Nothing  -> return ()
+      Just ahi' ->
+        if holeSpan (holeInfo ahi') == holeSpan hi
+          then gModifyRef stRef (\s ->
+                  s { currentHole = Just (ahi' { Slick.Types.suggestions = Just suggs }) })
+          else return ()
 

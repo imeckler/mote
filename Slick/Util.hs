@@ -3,7 +3,7 @@ module Slick.Util where
 import           Control.Applicative    ((<$>))
 import           Control.Monad          ((<=<), liftM)
 import           Control.Monad.IO.Class (MonadIO, liftIO)
-import           Data.IORef             (IORef, modifyIORef, readIORef)
+import           Control.Concurrent.MVar(modifyMVar_, readMVar, newMVar)
 import qualified Data.Map               as M
 import           Data.Maybe             (catMaybes)
 import           DynFlags               (DynFlags)
@@ -48,14 +48,17 @@ output = liftIO . putStrLn <=< showSDocM . ppr
 showSDocM :: GhcMonad m => SDoc -> m String
 showSDocM x = getSessionDynFlags >>| \fs -> showSDoc fs x
 
-gReadIORef :: MonadIO m => IORef a -> m a
-gReadIORef = liftIO . readIORef
+newRef :: MonadIO m => a -> m (Ref a)
+newRef = liftIO . newMVar
 
-gModifyIORef :: MonadIO m => IORef a -> (a -> a) -> m ()
-gModifyIORef x = liftIO . modifyIORef x
+gReadRef :: MonadIO m => Ref a -> m a
+gReadRef = liftIO . readMVar
 
-logS :: MonadIO m => IORef SlickState -> String -> m ()
-logS stRef s = liftIO $ flip hPutStrLn s . logFile =<< readIORef stRef
+gModifyRef :: MonadIO m => Ref a -> (a -> a) -> m ()
+gModifyRef x f = liftIO $ modifyMVar_ x (return . f)
+
+logS :: MonadIO m => Ref SlickState -> String -> m ()
+logS stRef s = liftIO $ flip hPutStrLn s . logFile =<< readMVar stRef
 
 nextSubexpr :: SrcSpan -> [GenLocated SrcSpan b] -> b
 nextSubexpr  hole       = foldr (\(L l x) r -> if hole `isSubspanOf` l then x else r) (error "nextSubexpr failure")
@@ -74,13 +77,13 @@ eitherThrow = either throwError return
 maybeThrow :: MonadError e m => e -> Maybe a -> m a
 maybeThrow err = maybe (throwError err) return
 
-getCurrentHoleErr :: IORef SlickState -> M AugmentedHoleInfo
-getCurrentHoleErr r = maybe (throwError NoHole) return . currentHole =<< gReadIORef r
+getCurrentHoleErr :: Ref SlickState -> M AugmentedHoleInfo
+getCurrentHoleErr r = maybe (throwError NoHole) return . currentHole =<< gReadRef r
 
-getFileDataErr :: IORef SlickState -> M FileData
-getFileDataErr = maybe (throwError NoFile) return . fileData <=< gReadIORef
+getFileDataErr :: Ref SlickState -> M FileData
+getFileDataErr = maybe (throwError NoFile) return . fileData <=< gReadRef
 
-getHoles :: IORef SlickState -> M [Hole]
+getHoles :: Ref SlickState -> M [Hole]
 getHoles = fmap (M.keys . holesInfo) . getFileDataErr
 
 occNameToString :: OccName -> String
