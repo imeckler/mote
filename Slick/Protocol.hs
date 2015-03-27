@@ -23,16 +23,16 @@ data ToClient
 
 instance ToJSON ToClient where
   toJSON = \case
-    Replace sp p t  -> Array $ V.fromList [toJSON (str "Replace"), toJSON sp, toJSON p, toJSON t]
-    SetInfoWindow t -> Array $ V.fromList [toJSON (str "SetInfoWindow"), toJSON t]
-    SetCursor pos   -> Array $ V.fromList [toJSON (str "SetCursor"), toJSON pos]
-    Ok              -> Array $ V.fromList [toJSON (str "Ok")]
-    Error t         -> Array $ V.fromList [toJSON (str "Error"), toJSON t]
-    Stop            -> Array $ V.fromList [toJSON (str "Stop")]
-    Insert pos p t  -> Array $ V.fromList [toJSON (str "Insert"), toJSON pos, toJSON p, toJSON t]
-    JSON v          -> Array $ V.fromList [toJSON (str "JSON"), toJSON v]
-    where
-    str x = x :: String
+    Replace sp p t  -> tag "Replace" [toJSON sp, toJSON p, toJSON t]
+    SetInfoWindow t -> tag "SetInfoWindow" [toJSON t]
+    SetCursor pos   -> tag "SetCursor" [toJSON pos]
+    Ok              -> tag "Ok" []
+    Error t         -> tag "Error" [toJSON t]
+    Stop            -> tag "Stop" []
+    Insert pos p t  -> tag "Insert" [toJSON pos, toJSON p, toJSON t]
+    JSON v          -> tag "JSON" [toJSON v]
+    where tag :: String -> [Value] -> Value
+          tag name values = Array . V.fromList $ toJSON name : values
 
 type Var = String
 
