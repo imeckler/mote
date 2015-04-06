@@ -115,3 +115,21 @@ prove init = go "id" ("", "") where
       Just (_, (pre, en)) -> go (en acc) pre
       Nothing             -> acc
 
+-- for prove ("TM", "GLN"), got
+-- inHoleEnv . fmap{T}(catMaybes . \x -> map (const x) ? . fmap{M}(\x -> (?, x) . id))
+-- wanted
+-- fmap catMaybes 
+-- . sequenceA
+-- . (\x -> map (fmap (fmap (cmap ?)) . inHoleEnv . const x) ?)
+-- ==
+-- fmap catMaybes 
+-- . sequenceA
+-- . (\x -> map (\_ -> fmap (fmap (cmap ?)) (inHoleEnv x)) ?)
+--
+-- or possibly
+-- inHoleEnv . fmap catMaybes . sequenceA . map (\x -> map (\_ -> (fmap (fmap (\y -> (?,y)))) x) ?)
+-- ==
+-- inHoleEnv . fmap catMaybes . sequenceA . (\x -> map (fmap (fmap (\y -> (?, y))) . const x) ?)
+--
+-- want cmaps close to the seed data (so that the data can depend on some
+-- stuff)

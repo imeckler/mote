@@ -1,20 +1,22 @@
 module Slick.Types (Hole, FileData (..), SlickState (..),
-                    HoleInfo (..), ErrorType (..), AugmentedHoleInfo(..), M, Ref) where
+                    HoleInfo (..), ErrorType (..), AugmentedHoleInfo(..), M, Ref, ScopeMap) where
 
+import           Control.Concurrent.MVar
 import           Control.Monad.Error
-import qualified Data.Map            as M
-import qualified Data.Set            as S
+import           Data.IntervalMap.FingerTree (IntervalMap)
+import qualified Data.Map                    as M
+import qualified Data.Set                    as S
 import           Data.Time.Clock
 import           GHC
 import           System.IO
+import           TcRnTypes                   (Ct (..))
 import           UniqSupply
-import           TcRnTypes           (Ct (..))
-import Control.Concurrent.MVar
 
 type Hole = SrcSpan
 
 type Ref = MVar
 
+type ScopeMap = IntervalMap SrcLoc RdrName
 data FileData = FileData
   { path                 :: FilePath
   -- This is apparently stored in the ModSummary. Check it out.
@@ -22,6 +24,7 @@ data FileData = FileData
   , hsModule             :: HsModule RdrName
   , typecheckedModule    :: TypecheckedModule
   , holesInfo            :: M.Map SrcSpan AugmentedHoleInfo
+  , scopeMap             :: ScopeMap
   }
 
 data SlickState = SlickState

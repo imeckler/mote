@@ -103,6 +103,11 @@ refineMatch goalTy rty = go [] [] [] rty where
 refineNumArgs :: Type -> Type -> TcRn (Maybe Int)
 refineNumArgs goalTy rty = fmap (length . refineArgTys) <$> refineMatch goalTy rty
 
+-- TODO: If the return type doesn't match, assume it's in the
+-- middle of a composition. Eg., if the user tries to refine with f
+-- and the type of f doesn't match, insert 
+-- _ $ f _ _ _ 
+-- for the number of args f has
 refine :: Ref SlickState -> String -> M (LHsExpr RdrName)
 refine stRef eStr = do
   hi    <- holeInfo <$> getCurrentHoleErr stRef

@@ -188,7 +188,7 @@ class SlickProcess:
   def get_env(self):
     hole_info_options = {
       'sendOutputAsData' : False,
-      'withSuggestions' : True }
+      'withSuggestions' : False }
     self._send_message(['GetHoleInfo', get_client_state(), hole_info_options])
 
   def get_type(self, expr):

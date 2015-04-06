@@ -37,8 +37,7 @@ executable slick
                        time >= 1.4,
                        process >= 1.2,
                        strict  >= 0.3.2,
-                       hashable >= 1.2,
-                       hashtables >= 1.2,
+                       fingertree >= 0.1,
                        -- debug
                        syb,
                        PSQueue >= 1.1,

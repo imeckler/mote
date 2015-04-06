@@ -32,6 +32,7 @@ import           System.Exit (exitWith, ExitCode(..))
 import           System.FilePath
 import           System.IO
 
+import Slick.Scope
 import           Slick.Case
 import           Slick.GhcUtil
 import           Slick.Holes
@@ -150,6 +151,7 @@ setStateForData stRef path tcmod hsModule = do
         , hsModule
         , modifyTimeAtLastLoad
         , typecheckedModule=tcmod
+        , scopeMap = makeScopeMap hsModule
          -- This emptiness is temporary. It gets filled in at the end of
          -- loadFile. I had to separate this since I painted myself into
          -- a bit of a monadic corner. "augment" (necessary for generating
@@ -246,7 +248,13 @@ respond' stRef = \case
 
         let goalStr = "Goal: " ++ holeNameString hi ++ " :: " ++ showType fs (holeType hi)
                     ++ "\n" ++ replicate 40 '-'
-            envStr = unlines $ map (\(x, t) -> x ++ " :: " ++ t) env
+            envStr =
+              -- TODO: Wow, this is total for the strangest reason. If env
+              -- is empty then maxIdentLength never gets used to pad so
+              -- maximum doesn't fail.
+              let maxIdentLength = maximum $ map (\(x,_) -> length x) env in
+              unlines $ map (\(x, t) ->
+                take maxIdentLength (x ++ repeat ' ') ++ " :: " ++ t) env
         return . SetInfoWindow $ unlines [goalStr, envStr, "", suggsStr]
         where
         mkSuggsStr suggs = 
@@ -273,7 +281,7 @@ respond' stRef = \case
     (id, ty) <- maybeThrow (NoVariable var) $
       List.find (\(id,_) -> var == occNameToString (getOccName id)) holeEnv
 
-    expansions (occNameToString (getOccName id)) ty (holeSpan hi) hsModule >>= \case
+    expansions stRef (occNameToString (getOccName id)) ty (holeSpan hi) hsModule >>= \case
       Nothing                        -> return (Error "Variable not found")
       Just ((L sp _mg, mi), matches) -> do
         fs <- lift getSessionDynFlags
@@ -305,7 +313,7 @@ respond' stRef = \case
     ty <- getEnclosingHole stRef cursorPos >>= \case
       Nothing -> hsExprType expr
       Just hi -> inHoleEnv typecheckedModule (holeInfo hi) $ tcRnExprTc expr
-    ms <- matchesForType ty
+    ms <- let (line,col) = cursorPos in matchesForTypeAt stRef ty (mkSrcLoc (fsLit "") line col)
     fs <- lift getSessionDynFlags
     let indent n  = (replicate n ' ' ++)
         showMatch = showSDocForUser fs neverQualify . pprMatch (CaseAlt :: HsMatchContext RdrName)
