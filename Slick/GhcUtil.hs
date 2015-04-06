@@ -56,13 +56,6 @@ withTyVarsInScope tvNames inner = do
     (extendLocalRdrEnvList lcl_rdr_env tvNames)
     inner
 
-{-
-withTyVarsInScope' :: [Name] -> TcRn a -> TcRn a
-withTyVarsInScope' tvNames inner = do
--- check out
--- RnTypes/bindHsTyVars
--}
-
 rdrNameToName :: HasOccName name => name -> IOEnv (Env gbl lcl) Name
 rdrNameToName rdrName = do
   u <- newUnique

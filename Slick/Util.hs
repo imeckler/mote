@@ -20,8 +20,8 @@ import           Type                   (Type)
 import           Control.Monad.Error    (MonadError, throwError)
 import           FastString             (fsLit, unpackFS)
 import           Lexer                  (P, ParseResult (..), mkPState, unP)
-import           SrcLoc                 (GenLocated (..), SrcSpan, isSubspanOf,
-                                         mkRealSrcLoc)
+import           SrcLoc                 (GenLocated (..), SrcSpan(..), isSubspanOf,
+                                         mkRealSrcLoc, RealSrcSpan)
 import           StringBuffer           (stringToStringBuffer)
 
 import           Slick.Types
@@ -69,6 +69,9 @@ nextLocatedSubexpr hole = foldr (\(L l x) r -> if hole `isSubspanOf` l then x el
 nextSubexpr' :: SrcSpan -> [GenLocated SrcSpan a] -> Maybe a
 nextSubexpr' hole       = foldr (\(L l x) r -> if hole `isSubspanOf` l then Just x else r) Nothing
 
+toRealSrcSpan :: SrcSpan -> RealSrcSpan
+toRealSrcSpan (UnhelpfulSpan _) = error "toRealSrcSpan: Got UnhelpfulSpan"
+toRealSrcSpan (RealSrcSpan x0) = x0
 -- foldExprs :: ([s] -> s) -> (LHsExpr id -> s -> Maybe s) -> HsModule id ->
 
 eitherThrow :: MonadError e m => Either e a -> m a

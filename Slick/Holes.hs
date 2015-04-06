@@ -39,6 +39,7 @@ import           VarSet              (disjointVarSet)
 
 -- TODO: It's not only arg holes that matter. We need to put parens around
 -- non atomic expressions being applied to other things as well
+-- TODO: appartently this isn't recursing into record fields
 findArgHoles :: HsModule RdrName -> S.Set SrcSpan
 findArgHoles = S.fromList . goDecls . hsmodDecls where
   goDecls = concatMap (goDecl . unLoc)
@@ -85,6 +86,7 @@ findArgHoles = S.fromList . goDecls . hsmodDecls where
     ExplicitList _ _ es -> concatMap goLExpr es
     ExplicitPArr _ es   -> concatMap goLExpr es
     -- TODO: let expr
+    -- TODO: Record exprs
     _                   -> []
 
   goStmt = \case
