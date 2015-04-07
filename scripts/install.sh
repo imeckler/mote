@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 set -e
 pushd /tmp
   git clone https://github.com/imeckler/cabalparse.git
