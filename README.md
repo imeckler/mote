@@ -6,10 +6,10 @@ The programmer's assistant. Discharge your burdens with style.
 1. If you trust me and are okay with programs being installed to `/usr/local/bin`,
    just do
    ```bash
-   curl https://raw.githubusercontent.com/imeckler/auto/master/scripts/install.sh | sh
+   curl https://raw.githubusercontent.com/imeckler/auto/master/scripts/install.sh | sudo bash
    ```
 
-2. If you don't, do what the script does:
+2. If you don't or aren't, do what the script does:
   - First install [cabalparse](https://github.com/imeckler/cabalparse) and
     make sure it's on your path.
   - Install `slick` via cabal install:

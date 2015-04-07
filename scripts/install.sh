@@ -1,9 +1,13 @@
-#!/bin/sh
+#!/bin/bash
 set -e
 pushd /tmp
+  if [ -d cabalparse ]; then
+    rm -rf cabalparse
+  fi
   git clone https://github.com/imeckler/cabalparse.git
   pushd cabalparse
     cabal sandbox init
+    cabal install --dependencies-only
     cabal configure
     cabal install
     mv .cabal-sandbox/bin/cabalparse /usr/local/bin
@@ -12,7 +16,11 @@ pushd /tmp
 
   git clone https://github.com/imeckler/auto.git
   pushd auto
+    if [ -d auto ]; then
+      rm -rf auto
+    fi
     cabal sandbox init
+    cabal install --dependencies-only
     cabal configure
     cabal install
     mv .cabal-sandbox/bin/slick /usr/local/bin
