@@ -6,7 +6,7 @@ The programmer's assistant. Discharge your burdens with style.
 1. If you trust me and are okay with programs being installed to `/usr/local/bin`,
    just do
    ```bash
-   curl https://raw.githubusercontent.com/imeckler/auto/master/scripts/install.sh | sudo bash
+   curl https://raw.githubusercontent.com/imeckler/auto/master/scripts/install.sh | bash
    ```
 
 2. If you don't or aren't, do what the script does:

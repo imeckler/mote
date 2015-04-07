@@ -10,7 +10,7 @@ pushd /tmp
     cabal install --dependencies-only
     cabal configure
     cabal install
-    mv .cabal-sandbox/bin/cabalparse /usr/local/bin
+    sudo mv .cabal-sandbox/bin/cabalparse /usr/local/bin
   popd
   rm -rf cabalparse
 
@@ -23,7 +23,7 @@ pushd /tmp
     cabal install --dependencies-only
     cabal configure
     cabal install
-    mv .cabal-sandbox/bin/slick /usr/local/bin
+    sudo mv .cabal-sandbox/bin/slick /usr/local/bin
     if [ -d "~/.vim/bundle" ]; then
       mv vim ~/.vim/bundle/slick-vim
     fi
