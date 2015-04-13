@@ -20,7 +20,7 @@ a notion of the "current hole": the unfinished expression currently being worked
 When you want to work on a particular hole, you *enter* the hole. The command in the
 slick vim plugin is `:call slick#nextHole()`, which jumps your cursor to the next
 hole.
-![](/images/3.png)
+![](/images/readme/3.png)
 
 You'll notice that there is now an `@` in the leftmost column, indicating the line
 of the current hole, and a new window has popped up displaying some information.
@@ -32,13 +32,13 @@ likely to be useful based on the hole type).
 
 We now decide to pattern match on `xs`, and so we type `Casex xs`, which expands a variable
 bound in a pattern
-![](/images/4.png)
+![](/images/readme/4.png)
 and we jump to the next hole after filling it with `_ : _`.
-![](/images/5.png)
+![](/images/readme/5.png)
 
 Since our goal type is `b`, and we have a function `f` that returns a value of type `b`,
 we can *refine* the hole with `f`.
-![](/images/6.png)
+![](/images/readme/6.png)
 by typing `:SlickRefine f`.
 
 In general, if you are in a hole of type `T`, you can refine with an arbitrary expression
@@ -46,7 +46,7 @@ of type `A1 -> ... -> An -> T`, which may itself contain holes.
 
 We can then blow through the rest of the definition, alternatingly
 calling `slick#nextHole()` and `SlickRefine` to finally get
-![](/images/10.png)
+![](/images/readme/10.png)
 
 # Installation
 1. If you trust me and are okay with programs being installed to `/usr/local/bin`,
