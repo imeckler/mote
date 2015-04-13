@@ -120,10 +120,15 @@ freshWithPrefix pre = do
     then pre <$ modify (S.insert pre)
     else freshWithPrefix (appendFS pre (fsLit "'"))
 
--- Should be a normalized type as argument
+-- Should be a normalized type as argument, though not with
+-- synonyms expanded
 typePrefix :: Type -> FastString
 typePrefix = \case
   AppTy x0 x1       -> fsLit "x"
+  -- TODO: This will probably break on infix tycons
+  -- TODO: Special case maybe
+  -- TODO: Special case either
+  -- TODO: Type variables
   TyConApp tc args ->
     if isListTyCon tc
     then typePrefix (head args) `appendFS` fsLit "s"

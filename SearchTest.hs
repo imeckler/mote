@@ -1,4 +1,4 @@
-{-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE RecordWildCards, NamedFieldPuns #-}
 module SearchTest where
 
 import qualified Data.Set as S
@@ -25,6 +25,24 @@ transes =
   , Trans { from = "T", to = "G", transName = "inHoleEnv" }
   , Trans { from = "", to = "N", transName = "\\x -> (?, x)" }
   ]
+
+type ListView a = (Int, [a], [a])
+
+rewrite :: Trans -> ListView String -> Maybe (String, EdgeName)
+rewrite (Trans {from, to, transName}) (pre, s) =
+  case leftFromRight from s of
+    Just cs -> (Just (reverse pre ++ cs), \p -> transName ++ " . " p)
+    Nothing -> Nothing
+
+successors' :: Vertex -> [(Vertex, EdgeName)]
+successors' (s, t) = _
+  -- naive algorithm for now
+
+listViews :: [a] -> [ListView a]
+listViews = go [] where
+  go pre l@(x:xs) = (pre, l) : listViews (x:pre) xs
+  go pre []       = [(pre, [])]
+
 
 -- Really should do something special when they're equal.
 successors :: Vertex -> [(Vertex, EdgeName)]
@@ -133,3 +151,5 @@ prove init = go "id" ("", "") where
 --
 -- want cmaps close to the seed data (so that the data can depend on some
 -- stuff)
+--
+--TODO: heuristic: never permit > 2 of the same letter in a row

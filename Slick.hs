@@ -182,10 +182,6 @@ respond' stRef = \case
           return ()
           -- no idea if this is kosher
           -- void . runGhc (Just libdir) $ runErrorT (mapM_ (getAndMemoizeSuggestions stRef) (M.elems holesInfo))
-
-    -- TODO: would like 
-    -- t <- liftIO getCurrentTime
-    -- logS stRef $ show $ diffUTCTime t t0
     return Ok
 
   NextHole (ClientState {path, cursorPos=(line,col)}) ->

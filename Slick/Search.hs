@@ -31,10 +31,13 @@ inHoleEnv' stRef tcx = do
   tcmod <- typecheckedModule <$> getFileDataErr stRef
   inHoleEnv tcmod hi tcx
 
+fmap f . g = g . fmap f
+
 matches :: IORef SlickState -> Type -> ProofState -> M [(Name, RefineMatch)]
 matches stRef goal = _ . clearOut where -- mapMaybeM (\(n, ty) -> fmap (fmap (n,)) . inHoleEnv' stRef $ refineMatch goal ty) . clearOut where
   clearOut = map (\(n, (_, ty)) -> (n, ty)) . filter ((> 0) . fst . snd) . M.toList
-
+-- mapMaybeM (\(n, ty) -> fmap (fmap (n,)) . inHoleEnv' stRef $ refineMatch goal ty) . clearOut where
+-- == map catMaybes . sequenceA . map (\(n, ty) -> fmap (fmap (n,)) . inHoleEnv' stRef $ refineMatch goal ty) where
 comm :: Maybe [a] -> [Maybe a]
 comm x = maybe mzero (fmap pure)
 

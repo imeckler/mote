@@ -16,6 +16,7 @@ py if not vim.eval("s:current_dir") in sys.path:
 py import slick
 
 function! slick#start()
+  sign define hole text=@ texthl=Search
   py slick.start()
 endfunction
 
@@ -25,11 +26,14 @@ endfunction
 
 function! slick#loadCurrentFile()
   py slick.load_current_file()
+  sign unplace 666
 endfunction
 
 function! slick#getEnv()
-  py cw = vim.current.window
-  py c  = cw.cursor
+  " py cw = vim.current.window
+  " py c  = cw.cursor
+  sign unplace 666
+  exe "sign place 666 line=" . line(".") . " name=hole file=" . expand("%:p")
   py slick.enter_hole()
   py slick.get_env()
   redraw!
@@ -69,6 +73,8 @@ endfunction
 function! slick#caseOn(e)
   py slick.case_on(vim.eval('a:e'))
   redraw!
+  write
+  call slick#loadCurrentFile()
 endfunction
 
 augroup slickGroup
