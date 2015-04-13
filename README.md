@@ -30,7 +30,7 @@ and the names and types of local variables, which are likely to be useful for fi
 the hole. (In the future, this window will also display non-local values which are
 likely to be useful based on the hole type).
 
-We now decide to pattern match on `xs`, and so we type `Casex xs`, which expands a variable
+We now decide to pattern match on `xs`, and so we type `:Casex xs`, which expands a variable
 bound in a pattern
 ![](/images/readme/4.png)
 and we jump to the next hole after filling it with `_ : _`.
