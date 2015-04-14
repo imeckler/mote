@@ -39,6 +39,7 @@ executable slick
                        strict  >= 0.3.2,
                        fingertree >= 0.1,
                        -- debug
+                       array >= 0.5,
                        syb,
                        PSQueue >= 1.1,
                        time >= 1.4
