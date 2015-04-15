@@ -366,11 +366,6 @@ initialState logFile = mkSplitUniqSupply 'x' >>| \uniq -> SlickState
   , uniq
   }
 
-testStateRef :: IO (Ref SlickState)
-testStateRef = do
-  h <- openFile "testlog" WriteMode
-  newRef =<< initialState h
-
 runWithTestRef :: (Ref SlickState -> Ghc b) -> IO b
 runWithTestRef x = do
   home <- getHomeDirectory

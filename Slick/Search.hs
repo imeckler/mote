@@ -1,138 +1,165 @@
-{-# LANGUAGE TupleSections, RecordWildCards #-}
+{-# LANGUAGE TupleSections, RecordWildCards, LambdaCase, NamedFieldPuns #-}
 
 module Slick.Search where
 
-import Control.Applicative
 import Slick.Types
-import qualified Data.Map as M
-import UniqSupply
-import Control.Monad.State
-import HsExpr
-import Type
-import Name
-import Slick.Refine
-import Slick.Suggest
 import Slick.Util
-import Slick.GhcUtil
-import Data.IORef
-import TcRnMonad hiding (mapMaybeM)
+import Search.Graph
+import Search.Types
+import Slick.Suggest
+import Slick.Holes
+import Control.Arrow (first)
 
-instance MonadUnique m => MonadUnique (StateT s m) where
-  getUniqueSupplyM = lift getUniqueSupplyM
+import TysPrim (funTyCon)
+import TypeRep
+import Type (splitForAllTys)
+import TyCon
+import Var
 
--- type Term = HsExpr RdrName
+-- search :: M [NaturalGraph f]
+search stRef = do
+  FileData {typecheckedModule} <- getFileDataErr stRef
+  ahi@(AugmentedHoleInfo {holeInfo}) <- getCurrentHoleErr stRef 
+  suggs <- getAndMemoizeSuggestions stRef ahi
+  (sug, startTy) <- headErr suggs
+  let goalTy = holeType holeInfo
+  return $ go _ startTy goalTy
+  where
+  go transes startTy goalTy  =
+    let (startFs, _) = extractFunctors startTy
+        (goalFs, _)  = extractFunctors goalTy
+    in
+    programsOfLengthAtMost transes 6 startFs goalFs
 
--- use Names for generated variables
-type ProofState = M.Map Name (Int, Type)
+-- Write a type t as (A1 * ... * An)F where
+-- each Ai and F are functors over a variable x
+normalForm :: Var -> Type -> Maybe ([Func], Func)
+normalForm x t = case t of
+  TyVarTy v        ->
+    if v == x then ([], SyntacticFuncs []) else ([], ConstFunc (WrappedType t))
+  TyConApp tc kots -> _
+  FunTy t t'       ->
+    let (
+        (fs, f) = normalForm x t'
 
-inHoleEnv' :: IORef SlickState -> TcRn a -> M a
-inHoleEnv' stRef tcx = do
-  hi <- holeInfo <$> getCurrentHoleErr stRef
-  tcmod <- typecheckedModule <$> getFileDataErr stRef
-  inHoleEnv tcmod hi tcx
+  LitTy tl         -> ([], ConstFunc (WrappedType t))
+  ForAllTy v t     -> Nothing -- TODO
+  AppTy t t'       -> Nothing -- TODO
 
-fmap f . g = g . fmap f
-
-matches :: IORef SlickState -> Type -> ProofState -> M [(Name, RefineMatch)]
-matches stRef goal = _ . clearOut where -- mapMaybeM (\(n, ty) -> fmap (fmap (n,)) . inHoleEnv' stRef $ refineMatch goal ty) . clearOut where
-  clearOut = map (\(n, (_, ty)) -> (n, ty)) . filter ((> 0) . fst . snd) . M.toList
--- mapMaybeM (\(n, ty) -> fmap (fmap (n,)) . inHoleEnv' stRef $ refineMatch goal ty) . clearOut where
--- == map catMaybes . sequenceA . map (\(n, ty) -> fmap (fmap (n,)) . inHoleEnv' stRef $ refineMatch goal ty) where
-comm :: Maybe [a] -> [Maybe a]
-comm x = maybe mzero (fmap pure)
-
--- fmap^n lets us touch the inner most letter without touching any others
-
--- Observations from looking at suggestions generated:
--- the actual correct term to refine with, mapMaybeM, is hopelessly far
--- down the list. However, refineMatch, which is contained in the final term we
--- want, is basically #3 on the list.
+-- Checks if the type can be thought of as being of the form
+-- forall a. F a -> G a
+-- perhaps after partially applying.
+-- (Of course F and G could be constant functors...but we don't
+-- consider that case now. Maybe later, I guess there's no reason
+-- not to.)
+-- So, we are looking for types of the form
+-- forall a. _ -> ... -> _ -> F a -> _ -> ... -> G a
+-- It's really not unique since we can view 
+-- forall a. F1 a -> F2 a -> G a as
+-- F1 -> G
+-- F2 -> G
+-- (F1 * F2) -> G
 --
--- The search has to work by trying to get the target type of refineMatch,
--- TcRn (Maybe RefineMatch), to match the goal type M [(Name, RefineMatch)]
--- (And first it has to greedily introduce variables)
+-- either :: (a -> c) -> (b -> c) -> Either a b -> c
+--  (^a * ^b) -> 1        (partially apply the Either argument)
+--  (^a * ^b) -> ^(a + b) (don't partially apply the either argument
+--
 
-ps | refineMatch _ _                :: [(Name, Type)] | TcRn (Maybe RefineMatch)
--- work from the outside in, start on turning TcRn into M
-ps | inHoleEnv' _ (refineMatch _ _) :: [(Name, Type)] | M (Maybe RefineMatch)
--- how do you know to use mapM? It has an argument where M (Maybe RefineMatch) occurs
--- positively and returns M [_], which is our current goal
-ps | mapM (\x -> inHoleEnv' _ (refineMatch _ _)) _ :: [(Name, Type)] | M [Maybe RefineMatch]
--- Now the environment has changed, try to go fill in old holes. When faced
--- with ambiguity, use naming conventions to help you decide. E.g.,
--- refineMatch's first argument should be goal since that was the name of
--- the parameter in the definition.
-ps | mapM (\x -> inHoleEnv' stRef (refineMatch goal (snd x))) _ :: [(Name, Type)] | M [Maybe RefineMatch]
+-- For simplicity, let's only do things which are really syntactically
+-- of the form forall a. F a -> G a for now.
+-- In fact, even this is wrong since extractFunctors pulls out the
+asTrans :: Type -> Maybe (Trans SyntacticFunc)
+asTrans t = case splitForAllTys t of
+  (vs@(_:_), FunTy t1 t2) ->
+    let (fs1, inner1) = extractFunctors t1
+        (fs2, inner2) = extractFunctors t2
+    in
+    _
+  _                       -> Nothing
 
--- better to hypothesize things that you can't immediately prove.
--- working inside out.
-ps | fmap (fmap (_name,)) refineMatch _ _  :: [(Name, Type)] | TcRn (Maybe RefineMatch)
-ps | fmap (fmap (_name,)) refineMatch _ _  :: [(Name, Type)] | TcRn (Maybe (Name, RefineMatch)) -- RefineMatch `turns into` (Name, RefineMatch)
-ps | mapMaybeM (\x -> fmap (fmap (_name,)) refineMatch _ _) _  :: [(Name, Type)] | TcRn [(Name, RefineMatch)] -- Maybe `turns into` []
+type SyntacticFunc = (TyCon, [WrappedType])
+data Func
+  = SyntacticFunc SyntacticFunc
+  | ConstFunc WrappedType
+  deriving (Eq)
 
-  -- or possibly
-  ps | mapM (\x -> fmap (fmap (_name,)) refineMatch _ _) _  :: [(Name, Type)] | TcRn (List (Maybe (Name, RefineMatch))) -- we throw a list on the barby
-  ps | fmap catMaybes (mapM (\x -> fmap (fmap (_name,)) refineMatch _ _) _)  :: [(Name, Type)] | TcRn (List (Maybe (Name, RefineMatch))) -- catMaybes lets us contract
-  ps | fmap catMaybes (mapM (\x -> fmap (fmap (_name,)) refineMatch _ _) _)  :: [(Name, Type)] | TcRn (List (Name, RefineMatch)) -- catMaybes lets us contract maybe
-  ps | inHoleEnv' _ (fmap catMaybes (mapM (\x -> fmap (fmap (_name,)) refineMatch _ _) _))  :: [(Name, Type)] | M (List (Name, RefineMatch)) -- catMaybes lets us contract maybe
-  -- this is incorrect but still pretty good.
-  -- Now we fill our debts
-  ps | inHoleEnv' stRef (fmap catMaybes (mapM (\x -> fmap (fmap (_name,)) refineMatch _ _) _))  :: [(Name, Type)] | M (List (Name, RefineMatch)) -- catMaybes lets us contract maybe
-  -- greedily deconstruct
-  ps | inHoleEnv' stRef (fmap catMaybes (mapM (\(n,t) -> fmap (fmap (n,)) refineMatch t t) ps))  :: [(Name, Type)] | M (List (Name, RefineMatch)) -- catMaybes lets us contract maybe
+extractFunctors :: Type -> ([SyntacticFunc], WrappedType)
+extractFunctors t = case t of
+  TyVarTy v        -> ([], WrappedType t)
+  TyConApp tc kots -> case splitLast kots of
+    Nothing          -> ([], WrappedType t)
+    Just (args, arg) -> first ((tc, map WrappedType args) :)
+                        $ extractFunctors arg
+  FunTy t t'       -> first ((funTyCon,[WrappedType t]) :) $ extractFunctors t'
+  ForAllTy v t     -> extractFunctors t
+  LitTy tl         -> ([], WrappedType t)
+  AppTy t t'       -> error "extractFunctors: TODO AppTy" -- TODO
+  where
+  splitLast' :: [a] -> ([a], a)
+  splitLast' [x]    = ([], x)
+  splitLast' (x:xs) = first (x:) (splitLast' xs)
 
-ps | mapMaybeM (\x -> fmap (fmap (_name,)) refineMatch _ _) _  :: [(Name, Type)] | TcRn [(Name, RefineMatch)] -- Maybe `turns into` []
+  splitLast :: [a] -> Maybe ([a], a)
+  splitLast [] = Nothing
+  splitLast xs = Just (splitLast' xs)
 
+newtype WrappedType = WrappedType Type
+instance Eq WrappedType where
+  (==) (WrappedType t) (WrappedType t') = eqTy t t'
 
-ps | (refineMatch _ _)  :: [(Name, Type)] | TcRn (Maybe RefineMatch)
-ps | fmap (fmap (_name,)) (refineMatch _ _)  :: [(Name, Type)] | TcRn (Maybe (Name, RefineMatch))
-ps | traverse (\x -> fmap (fmap (_name,)) (refineMatch _ _)) _ :: [(Name, Type)] | TcRn [Maybe (Name, RefineMatch)] -- justify this move
--- pull things you want to eliminate (like maybe) to the left.
--- "sequence" provides a commutation relation (albeit the wrong one in this
--- case. we should use the elimination relation catMaybes)
-ps | fmap sequence (traverse (\x -> fmap (fmap (_name,)) (refineMatch _ _)) _) :: [(Name, Type)] | TcRn (Maybe [(Name, RefineMatch)])
--- use elimination relation on Maybe
-ps | fmap (maybe _ id) $ fmap sequence (traverse (\x -> fmap (fmap (_name,)) (refineMatch _ _)) _) :: [(Name, Type)] | TcRn (Maybe [(Name, RefineMatch)])
--- I think we could use something like the levenstein algorithm in this
--- case since the size never increases
+instance Ord WrappedType where
+  compare (WrappedType t) (WrappedType t') = compareTy t t'
 
+-- Hacky syntactic equality for Type so that it can be used as the functor
+-- parameter in all the Search types
+eqTy :: Type -> Type -> Bool
+eqTy x y = case (x, y) of
+  (AppTy t1 t2, AppTy t1' t2')           -> eqTy t1 t1' && eqTy t2 t2'
+  (TyConApp tc kots, TyConApp tc' kots') -> tc == tc' && and (zipWith eqTy kots kots')
+  (FunTy t1 t2, FunTy t1' t2')           -> eqTy t1 t1' && eqTy t2 t2'
+  (ForAllTy v t, ForAllTy v' t')         -> v == v' && eqTy t t'
+  (LitTy tl, LitTy tl')                  -> tl == tl'
+  (TyVarTy v, TyVarTy v')                -> v == v'
+  _                                      -> False
+
+compareTy :: Type -> Type -> Ordering
+compareTy = \x y -> case compare (conOrd x) (conOrd y) of
+  EQ ->
+    case (x, y) of
+      (AppTy t1 t2, AppTy t1' t2') ->
+        lex [compareTy t1 t1', compareTy t2 t2']
+
+      (TyConApp tc kots, TyConApp tc' kots') ->
+        lex (compare tc tc' : zipWith compareTy kots kots')
+
+      (FunTy t1 t2, FunTy t1' t2') ->
+        lex [compareTy t1 t1', compareTy t2 t2']
+
+      (ForAllTy v t, ForAllTy v' t') ->
+        lex [compare v v', compareTy t t']
+
+      (LitTy tl, LitTy tl') -> compare tl tl'
+
+      (TyVarTy v, TyVarTy v') -> compare v v'
+
+  o -> o
+  where
+  conOrd :: Type -> Int
+  conOrd x = case x of
+    TyVarTy v        -> 0
+    AppTy t t'       -> 1
+    TyConApp tc kots -> 2
+    FunTy t t'       -> 3
+    ForAllTy v t     -> 4
+    LitTy tl         -> 5
+
+  lex :: [Ordering] -> Ordering
+  lex = (\case { [] -> EQ; (o:_) -> o } ) . dropWhile (== EQ)
 {-
-_ :: [(Name, Type)] -> M [(Name, RefineMatch)]
--- first check if there's anything in scope that really takes [(_, _)].
--- otherwise, we try to "level" the source and the target types.
--- traverse can peel off a level
-traverse _ :: (Name, Type) -> M (Name, RefineMatch)
--- cancel out name somehow
+TyConApp IO
+  [TyConApp Free
+    [ TyConApp "[]" []
+    , TyConApp Maybe [TyConApp Int]
+    ]
+  ]
 -}
-{-
-Want to construct
-a -> F b
-  find something of type
-  f :: a' -> b
-  can level to get
-  fmap f :: F a' -> F b
-
-  find something of type
-  f :: a' -> F b
-  can level to get
-  (>>= f) :: F a' -> F b
-
-  find something of type
-  f :: a' -> G b
-  k :: {G b, args*} -> F b
-  can get
-  k (f _) _ ... _ :: {a -> a', args*} -> F b
-
--}
-
-search stRef goal pst = do
-  ms <- matches stRef goal pst
-  undefined
-
--- should be a forward kind of proof search
--- if search can't proceed, then case on some shit
--- kind of a focusing dealy
-
--- search takes hypotheses 
-
--- search :: Hypeotheses -> 

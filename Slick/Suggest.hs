@@ -117,7 +117,7 @@ suggestions tcmod hi = do
   return
     . map snd
     . List.sortBy (compare `on` fst)
-    $ (gblSuggestions ++ lclSuggestions)
+    $ (lclSuggestions ++ gblSuggestions)
   where
   goalTy      = holeType hi
   maybeErr ex = fmap Just ex `catchError` \_ -> return Nothing

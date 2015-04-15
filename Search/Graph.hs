@@ -1,23 +1,21 @@
-{-# LANGUAGE RecordWildCards, NamedFieldPuns, LambdaCase #-}
-module SearchNew where
+{-# LANGUAGE RecordWildCards, NamedFieldPuns, LambdaCase, ScopedTypeVariables #-}
+module Search.Graph where
 
+import Prelude hiding (sequence)
 import Data.Maybe
 import qualified Data.Set as S
 import qualified Data.Map as M
 import Data.Map (Map)
 import qualified Data.PSQueue as P
 import Data.List
-import Control.Monad.State
+import Control.Monad.State hiding (sequence)
 import Data.Array.MArray
 import Data.Array.ST (STArray)
 import Control.Monad.ST (ST, runST)
+import Search.Types
 
-type Func      = String
-type TransName = String
-data Trans     = Trans { from :: [Func], to :: [Func], name :: TransName }
-  deriving (Show)
-type Move      = ([Func], Trans, [Func]) -- (fs, t, gs) = fmap_{fs} (t at gs)
-type Program   = [Move]
+type BraidState f = [f]
+type BraidView  f = ([f], [f])
 
 -- In our context, we work with digraphs where some subsets of the edges
 -- are detached at one of their terminals. Specifically, there is a set
@@ -31,21 +29,20 @@ type Vertex        = Int
 type DummyVertex   = Vertex
 -- One imagines the incoming dummys are labeled 0 to incomingCount - 1 and
 -- the outgoing dummys are labeled 0 to outgoingCount - 1
-data NaturalGraph  = NaturalGraph
---  { incomingLabeledDummys :: [(DummyVertex, Func)]
-  { incomingLabels :: [Func]
+data NaturalGraph f = NaturalGraph
+  { incomingLabels :: [f]
   , incomingSuccs  :: Map DummyVertex Vert
   , incomingCount  :: Int
 
   , outgoingPreds  :: Map DummyVertex Vert
   , outgoingCount  :: Int
 
-  , digraph        :: Map Vertex (TransName, Map Vertex Func)
+  , digraph        :: Map Vertex (TransName, Map Vertex f)
   }
 
-programToNaturalGraph :: Program -> NaturalGraph -- programs are composed in diagrammatic order, hence foldl1
-programToNaturalGraph = foldl1 compose . map moveToNaturalGraph where
-  moveToNaturalGraph :: Move -> NaturalGraph
+programToNaturalGraph :: Program f -> NaturalGraph f
+programToNaturalGraph = foldl1 (flip sequence) . map moveToNaturalGraph where
+  moveToNaturalGraph :: Move f -> NaturalGraph f
   moveToNaturalGraph (ls, t, rs) =
     NaturalGraph
     { incomingLabels = ls ++ from t ++ rs
@@ -69,30 +66,48 @@ programToNaturalGraph = foldl1 compose . map moveToNaturalGraph where
     nt_i = length (from t)
     nt_o = length (to t)
 
--- How to make the graph of a program?
+idGraph :: [f] -> NaturalGraph f
+idGraph fs =
+  NaturalGraph
+  { incomingLabels = fs
+  , incomingSuccs = M.fromList $ map (\i -> (i, Dummy i)) [0..n]
+  , incomingCount = n
+  , outgoingPreds = M.fromList $ map (\i -> (i, Dummy i)) [0..n]
+  , outgoingCount = n
+  , digraph = M.empty
+  }
+  where
+  n = length fs
+
+cutProofToNaturalGraph :: CutProof f -> NaturalGraph f
+cutProofToNaturalGraph cp0 = case cp0 of
+  FMap f cp  -> juxtapose (idGraph [f]) (cutProofToNaturalGraph cp)
+  At fs cp   -> juxtapose (cutProofToNaturalGraph cp) (idGraph fs)
+  Cut cp cp' -> sequence (cutProofToNaturalGraph cp) (cutProofToNaturalGraph cp')
+  Axiom t    -> programToNaturalGraph [([], t, [])]
+
+-- How to make the graph of a cut free proof?
 
 -- vertices S_i, T_i for each of the source and target functors
 -- vertices are created and destroyed
 -- vertex N for each natural transformation
 
-type BraidState = [Func]
-type BraidView = ([Func], [Func])
-
-tryRewrite :: Trans -> BraidView -> Maybe (BraidState, Move)
+tryRewrite :: Eq f => Trans f -> BraidView f -> Maybe (BraidState f, Move f)
 tryRewrite t@(Trans {from, to, name}) (pre, fs) = case leftFromRight from fs of
   Nothing  -> Nothing
   Just fs' -> Just (pre ++ to ++ fs', (pre, t, fs))
 
-braidViews :: BraidState -> [BraidView]
+braidViews :: BraidState f -> [BraidView f]
 braidViews = go [] where
-  go :: BraidState -> BraidState -> [BraidView]
+  go :: BraidState f -> BraidState f -> [BraidView f]
   go pre l@(f : fs) = (reverse pre, l) : go (f:pre) fs
   go pre [] = [(reverse pre, [])]
 
 -- can go either 
-branchOut :: [Trans] -> BraidState -> [(BraidState, Move)]
+branchOut :: Eq f => [Trans f] -> BraidState f -> [(BraidState f, Move f)]
 branchOut ts b = concatMap (\v -> mapMaybe (\t -> tryRewrite t v) ts) (braidViews b)
 
+{-
 transes :: [Trans]
 transes =
   [ Trans {from=["List","Maybe"], to=["List"], name="catMaybes"}
@@ -103,18 +118,19 @@ transes =
   , Trans {from=["List", "Maybe"], to=["Maybe", "List"], name="sequenceA"}
   , Trans {from=["Maybe", "List"], to=["List", "Maybe"], name="sequenceA"}
   ]
-
+-}
 -- TODO: Convert real Haskell programs into lists of moves
 
 -- TODO: Analyze program graphs
 
-programsOfLengthAtMost :: [Trans] -> Int -> BraidState -> BraidState -> [Program]
+programsOfLengthAtMost :: Ord f => [Trans f] -> Int -> BraidState f -> BraidState f -> [Program f]
 programsOfLengthAtMost ts n start end = runST $ do
-  arr <- newArray (0, n) M.empty
+  arr <- newSTArray (0, n) M.empty
   go arr n start
   where 
-  -- "go arr n b" is all programs of length 
-  go :: STArray s Int (Map BraidState [Program]) -> Int -> BraidState -> ST s [Program]
+  newSTArray :: (Int, Int) -> Map k v -> ST s (STArray s Int (Map k v))
+  newSTArray = newArray
+
   go arr 0 b = return $ if b == end then [[]] else []
   go arr n b = do
     memo <- readArray arr n
@@ -143,7 +159,7 @@ programsOfLengthAtMost ts n start end = runST $ do
         put (M.insert b progs' memo)
         return progs -}
 
-juxtapose :: NaturalGraph -> NaturalGraph -> NaturalGraph
+juxtapose :: NaturalGraph f -> NaturalGraph f -> NaturalGraph f
 juxtapose ng1 ng2 =
   NaturalGraph
   { incomingLabels = incomingLabels ng1 ++ incomingLabels ng2
@@ -175,8 +191,8 @@ juxtapose ng1 ng2 =
 
 shiftBy n g = M.map (\(t, adj) -> (t, M.mapKeysMonotonic (+ n) adj)) $ M.mapKeysMonotonic (+ n) g
 
-compose :: NaturalGraph -> NaturalGraph -> NaturalGraph
-compose ng1 ng2 =
+sequence :: NaturalGraph f -> NaturalGraph f -> NaturalGraph f
+sequence ng1 ng2 =
   NaturalGraph
   { incomingLabels = incomingLabels ng1
   , incomingSuccs  = incomingSuccs'
@@ -288,7 +304,8 @@ prove (s,t) = go "id" t where
         go ("(" ++ intercalate " . " (replicate i "fmap") ++ ")" ++ t ++ " . " ++ acc) b'
       Nothing                -> acc
 -}
-collect :: [Program] -> [Program]
+
+collect :: [Program f] -> [Program f]
 collect p = undefined
 
 leftFromRight :: Eq a => [a] -> [a] -> Maybe [a]
