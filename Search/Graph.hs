@@ -13,6 +13,14 @@ import Data.Array.MArray
 import Data.Array.ST (STArray)
 import Control.Monad.ST (ST, runST)
 import Search.Types
+import qualified Data.List as List
+import Control.Arrow (first, second)
+
+import Data.Aeson
+import Data.Monoid
+import qualified Data.ByteString.Lazy as BL
+import qualified Data.Text as T
+import Data.Char (ord)
 
 type BraidState f = [f]
 type BraidView  f = ([f], [f])
@@ -24,6 +32,7 @@ type BraidView  f = ([f], [f])
 data Vert 
   = Real Vertex
   | Dummy DummyVertex
+  deriving (Show, Eq, Ord)
 
 type Vertex        = Int
 type DummyVertex   = Vertex
@@ -37,28 +46,31 @@ data NaturalGraph f = NaturalGraph
   , outgoingPreds  :: Map DummyVertex Vert
   , outgoingCount  :: Int
 
-  , digraph        :: Map Vertex (TransName, Map Vertex f)
+  , digraph        :: Map Vertex (TransName, [(Vert, f)])
   }
+  deriving (Show)
 
+-- Transformations to and from the identity functor are not handled
+-- properly.
 programToNaturalGraph :: Program f -> NaturalGraph f
-programToNaturalGraph = foldl1 (flip sequence) . map moveToNaturalGraph where
+programToNaturalGraph = foldl1 (\acc g -> sequence acc g) . map moveToNaturalGraph where
   moveToNaturalGraph :: Move f -> NaturalGraph f
   moveToNaturalGraph (ls, t, rs) =
     NaturalGraph
     { incomingLabels = ls ++ from t ++ rs
     , incomingSuccs = M.fromList $
-        map (\i -> (i, Dummy i)) [0..(nr - 1)]
-        ++ map (\i -> (i, Real 0)) [nr..(nr + nt_i - 1)]
-        ++ map (\i -> (i, Dummy i)) [(nr + nt_i)..(nr + nt_i + nl - 1)]
+        map (\i -> (i, Dummy i)) [0..(nl - 1)]
+        ++ map (\i -> (nl + i, Real 0)) [0..(nt_i - 1)]
+        ++ map (\i -> (nl + nt_i + i, Dummy (nl + nt_o + i))) [0..(nr - 1)]
 
     , incomingCount = nl + nt_i + nr
 
     , outgoingPreds = M.fromList $
-        map (\i -> (i, Dummy i)) [0..(nr -1)]
-        ++ map (\i -> (i, Real 0)) [nr..(nr + nt_o - 1)]
-        ++ map (\i -> (i, Dummy i)) [(nr + nt_o)..(nr + nt_o + nl - 1)]
+        map (\i -> (i, Dummy i)) [0..(nl -1)]
+        ++ map (\i -> (nl + i, Real 0)) [0..(nt_o - 1)]
+        ++ map (\i -> (nl + nt_o + i, Dummy (nl + nt_i + i))) [0..(nr - 1)]
     , outgoingCount = nl + nt_o + nr
-    , digraph = M.fromList [(0, (name t, M.empty))]
+    , digraph = M.fromList [(0, (name t, zipWith (\i f -> (Dummy (i + nl), f)) [0..] (to t) ))]
     }
     where
     nl   = length ls
@@ -95,7 +107,7 @@ cutProofToNaturalGraph cp0 = case cp0 of
 tryRewrite :: Eq f => Trans f -> BraidView f -> Maybe (BraidState f, Move f)
 tryRewrite t@(Trans {from, to, name}) (pre, fs) = case leftFromRight from fs of
   Nothing  -> Nothing
-  Just fs' -> Just (pre ++ to ++ fs', (pre, t, fs))
+  Just fs' -> Just (pre ++ to ++ fs', (pre, t, fs'))
 
 braidViews :: BraidState f -> [BraidView f]
 braidViews = go [] where
@@ -186,11 +198,78 @@ juxtapose ng1 ng2 =
   g2 = digraph ng2
   n1 = M.size g1
 
+isomorphic :: NaturalGraph f -> NaturalGraph f -> Bool
+isomorphic ng1 ng2 = 
+  | incomingCount ng1 != incomingCount ng1 || outgoingCount ng1 != outgoingCount ng2 
+
+runErrorT . flip execState ([], S.empty)
+
 -- Es importante que no cambia (incomingDummys ng1) o
 -- (outgoingDummys ng2)
 
-shiftBy n g = M.map (\(t, adj) -> (t, M.mapKeysMonotonic (+ n) adj)) $ M.mapKeysMonotonic (+ n) g
+shiftBy n g =
+  M.map (\(t, es) -> (t, map (\(v,f) -> (case v of {Real r -> Real (r + n); _ -> v}, f)) es))
+  $ M.mapKeysMonotonic (+ n) g
 
+idName i = "net" ++ show i
+
+naturalGraphToJSON :: NaturalGraph String -> Value
+naturalGraphToJSON (NaturalGraph {..}) = 
+  object
+  [ T.pack "nodes" .= nodes
+  , T.pack "edges" .= edges
+  ]
+  where
+  nodeObj id lab col  = object [T.pack "id" .= id, T.pack "label" .= lab , T.pack "color" .= col ]
+  edgeObj from to lab =
+    object
+    [ T.pack "from" .= from
+    , T.pack "to" .= to
+    , T.pack "label" .= lab
+    , T.pack "style" .= "arrow"
+    ]
+  nodes =
+    map (\i -> nodeObj ("in" ++ show i) "" "green") [0..(incomingCount - 1)]
+    ++ map (\i -> nodeObj ("out" ++ show i) "" "red") [0..(outgoingCount - 1)]
+    ++ map (\(i, (t,_)) -> nodeObj ("real" ++ show i) t "gray") (M.toList digraph)
+  edges =
+    concatMap (\(v, (_,es)) -> map (\(u,f) ->
+      edgeObj ("real" ++ show v)
+        (case u of { Real r -> "real" ++ show r; Dummy d -> "out" ++ show d })
+        f) es)
+      (M.toList digraph)
+    ++ map (\(lab, (i, vert)) -> 
+        let v = case vert of {Dummy d -> "out" ++ show d; Real r -> "real" ++ show r} in
+        edgeObj ("in" ++ show i) v lab)
+        (zip incomingLabels $ M.toList incomingSuccs)
+
+naturalGraphToJS id ng = mconcat
+  [ "network = new vis.Network("
+  , "document.getElementById(" ,  show id , "),"
+  , map (toEnum . fromEnum) . BL.unpack $ encode (naturalGraphToJSON ng)
+  , ",{});"
+  ]
+
+naturalGraphsToHTML ngs =
+  let js = unlines $ zipWith naturalGraphToJS (map idName [0..]) ngs
+      n = length ngs
+  in
+  unlines
+  [ "<html>"
+  , "<head>"
+  ,   "<style type='text/css'>"
+  ,   ".network { width: 500px; height:500px; }"
+  ,   "</style>"
+  ,   "<script type='text/javascript' src='vis.min.js'></script>"
+  ,   "<script type='text/javascript'>" ++ "function draw(){" ++ js ++ "}" ++ "</script>"
+  , "</head>"
+  , "<body onload='draw()'>"
+  ,   unlines $ map (\i -> "<div class='network' id=" ++ show (idName i) ++ "></div>") [0..(n-1)]
+  , "</body>"
+  , "</html>"
+  ]
+
+-- ng1 -> ng2
 sequence :: NaturalGraph f -> NaturalGraph f -> NaturalGraph f
 sequence ng1 ng2 =
   NaturalGraph
@@ -207,27 +286,37 @@ sequence ng1 ng2 =
   g1  = digraph ng1
   g2  = digraph ng2
   g2' = shiftBy n1 g2
+--  M.map (\(t, es) -> (t, map (\(v, f) -> (case v of {Real r -> Real (r+n1); _ -> v}, f)) es)) g2
   n1  = M.size g1
 
   outPreds1 = outgoingPreds ng1
   inSuccs2  = incomingSuccs ng2
 
-  (digraph', incomingSuccs', outgoingPreds') =
-    foldl upd (M.union g1 g2', outgoingPreds ng2, incomingSuccs ng1)
-      (zip [0..] (incomingLabels ng1))
+  (digraph', outgoingPreds', incomingSuccs') =
+    foldl upd
+      ( M.union g1 g2'
+      , M.map (\case {Real v -> Real (n1+v); x -> x}) (outgoingPreds ng2)
+      , incomingSuccs ng1)
+      (zip [0..] (incomingLabels ng2))
+
+  updateSuccsAtDummy i v es
+    | ((Dummy j, f) : es') <- es, i == j = ((v, f) : es') 
+    | (e : es') <- es                    = e : updateSuccsAtDummy i v es'
+    | otherwise                          = []
 
   upd (g, outPreds, inSuccs) (i, func) =
     case (M.lookup i outPreds1, M.lookup i inSuccs2) of
       (Just x, Just y) -> case (x, y) of
         (Real u, Real v)    ->
           let v' = v + n1 in
-          (M.adjust (\(t, adj) -> (t, M.insert v' func adj)) u g, outPreds, inSuccs)
+          (M.adjust (\(t, es) -> (t, updateSuccsAtDummy i (Real v') es)) u g, outPreds, inSuccs)
 
         (Real u, Dummy d)   ->
-          (g, M.insert d (Real u) outPreds, inSuccs)
+          (M.adjust (second $ updateSuccsAtDummy i (Dummy d)) u g, M.insert d (Real u) outPreds, inSuccs)
 
         (Dummy d, Real v)   ->
-          (g, outPreds, M.insert d (Real v) inSuccs)
+          let v' = v + n1 in
+          (g, outPreds, M.insert d (Real v') inSuccs)
 
         (Dummy d, Dummy d') ->
           ( g
