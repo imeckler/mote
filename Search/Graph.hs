@@ -1,4 +1,5 @@
-{-# LANGUAGE RecordWildCards, NamedFieldPuns, LambdaCase, ScopedTypeVariables #-}
+{-# LANGUAGE RecordWildCards, NamedFieldPuns, LambdaCase,
+             ScopedTypeVariables, BangPatterns #-}
 module Search.Graph where
 
 import Prelude hiding (sequence)
@@ -9,18 +10,24 @@ import Data.Map (Map)
 import qualified Data.PSQueue as P
 import Data.List
 import Control.Monad.State hiding (sequence)
+import Control.Monad.Error hiding (sequence)
+import Control.Monad.Identity hiding (sequence)
 import Data.Array.MArray
 import Data.Array.ST (STArray)
 import Control.Monad.ST (ST, runST)
 import Search.Types
 import qualified Data.List as List
 import Control.Arrow (first, second)
+import Data.Either (isRight)
 
 import Data.Aeson
 import Data.Monoid
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.Text as T
 import Data.Char (ord)
+
+import Data.Hashable
+import qualified Data.HashSet as HashSet
 
 type BraidState f = [f]
 type BraidView  f = ([f], [f])
@@ -36,6 +43,15 @@ data Vert
 
 type Vertex        = Int
 type DummyVertex   = Vertex
+data VertexData f = VertexData
+  { label    :: TransName
+  -- We store both the incoming and the outgoing vertices (in the proper
+  -- order!) at every vertex to make traversal and obtaining the bimodal
+  -- ordering easier. 
+  , incoming :: [(Vert, f)]
+  , outgoing :: [(Vert, f)]
+  }
+  deriving (Show, Eq)
 -- One imagines the incoming dummys are labeled 0 to incomingCount - 1 and
 -- the outgoing dummys are labeled 0 to outgoingCount - 1
 data NaturalGraph f = NaturalGraph
@@ -46,37 +62,50 @@ data NaturalGraph f = NaturalGraph
   , outgoingPreds  :: Map DummyVertex Vert
   , outgoingCount  :: Int
 
-  , digraph        :: Map Vertex (TransName, [(Vert, f)])
+  , digraph        :: Map Vertex (VertexData f)
   }
   deriving (Show)
+
+instance Hashable f => Eq (NaturalGraph f) where
+  (==) g1 g2 = hashWithSalt 0 g1 == hashWithSalt 0 g2 && hashWithSalt 10 g1 == hashWithSalt 10 g2
+
+instance Hashable f => Hashable (NaturalGraph f) where
+  hashWithSalt = hashWithSaltGraph
 
 -- Transformations to and from the identity functor are not handled
 -- properly.
 programToNaturalGraph :: Program f -> NaturalGraph f
-programToNaturalGraph = foldl1 (\acc g -> sequence acc g) . map moveToNaturalGraph where
-  moveToNaturalGraph :: Move f -> NaturalGraph f
-  moveToNaturalGraph (ls, t, rs) =
-    NaturalGraph
-    { incomingLabels = ls ++ from t ++ rs
-    , incomingSuccs = M.fromList $
-        map (\i -> (i, Dummy i)) [0..(nl - 1)]
-        ++ map (\i -> (nl + i, Real 0)) [0..(nt_i - 1)]
-        ++ map (\i -> (nl + nt_i + i, Dummy (nl + nt_o + i))) [0..(nr - 1)]
+programToNaturalGraph = foldl1 (\acc g -> sequence acc g) . map moveToNaturalGraph
 
-    , incomingCount = nl + nt_i + nr
+moveToNaturalGraph :: Move f -> NaturalGraph f
+moveToNaturalGraph (ls, t, rs) =
+  NaturalGraph
+  { incomingLabels = ls ++ from t ++ rs
+  , incomingSuccs = M.fromList $
+      map (\i -> (i, Dummy i)) [0..(nl - 1)]
+      ++ map (\i -> (nl + i, Real 0)) [0..(nt_i - 1)]
+      ++ map (\i -> (nl + nt_i + i, Dummy (nl + nt_o + i))) [0..(nr - 1)]
 
-    , outgoingPreds = M.fromList $
-        map (\i -> (i, Dummy i)) [0..(nl -1)]
-        ++ map (\i -> (nl + i, Real 0)) [0..(nt_o - 1)]
-        ++ map (\i -> (nl + nt_o + i, Dummy (nl + nt_i + i))) [0..(nr - 1)]
-    , outgoingCount = nl + nt_o + nr
-    , digraph = M.fromList [(0, (name t, zipWith (\i f -> (Dummy (i + nl), f)) [0..] (to t) ))]
-    }
-    where
-    nl   = length ls
-    nr   = length rs
-    nt_i = length (from t)
-    nt_o = length (to t)
+  , incomingCount = nl + nt_i + nr
+
+  , outgoingPreds = M.fromList $
+      map (\i -> (i, Dummy i)) [0..(nl -1)]
+      ++ map (\i -> (nl + i, Real 0)) [0..(nt_o - 1)]
+      ++ map (\i -> (nl + nt_o + i, Dummy (nl + nt_i + i))) [0..(nr - 1)]
+  , outgoingCount = nl + nt_o + nr
+  , digraph = M.fromList
+    [ (0, VertexData
+        { label=name t
+        , outgoing=zipWith (\i f -> (Dummy (i + nl), f)) [0..] (to t) 
+        , incoming=zipWith (\i f -> (Dummy i, f)) [0..] (from t)
+        })
+    ]
+  }
+  where
+  nl   = length ls
+  nr   = length rs
+  nt_i = length (from t)
+  nt_o = length (to t)
 
 idGraph :: [f] -> NaturalGraph f
 idGraph fs =
@@ -104,36 +133,44 @@ cutProofToNaturalGraph cp0 = case cp0 of
 -- vertices are created and destroyed
 -- vertex N for each natural transformation
 
-tryRewrite :: Eq f => Trans f -> BraidView f -> Maybe (BraidState f, Move f)
-tryRewrite t@(Trans {from, to, name}) (pre, fs) = case leftFromRight from fs of
-  Nothing  -> Nothing
-  Just fs' -> Just (pre ++ to ++ fs', (pre, t, fs'))
-
 braidViews :: BraidState f -> [BraidView f]
 braidViews = go [] where
   go :: BraidState f -> BraidState f -> [BraidView f]
   go pre l@(f : fs) = (reverse pre, l) : go (f:pre) fs
   go pre [] = [(reverse pre, [])]
 
+tryRewrite :: Eq f => Trans f -> BraidView f -> Maybe (BraidState f, Move f)
+tryRewrite t@(Trans {from, to, name}) (pre, fs) = case leftFromRight from fs of
+  Nothing  -> Nothing
+  Just fs' -> Just (pre ++ to ++ fs', (pre, t, fs'))
+
 -- can go either 
 branchOut :: Eq f => [Trans f] -> BraidState f -> [(BraidState f, Move f)]
 branchOut ts b = concatMap (\v -> mapMaybe (\t -> tryRewrite t v) ts) (braidViews b)
 
-{-
-transes :: [Trans]
-transes =
-  [ Trans {from=["List","Maybe"], to=["List"], name="catMaybes"}
-  , Trans {from=["List", "List"], to=["List"], name="concat"}
-  , Trans {from=["Maybe", "Maybe"], to=["Maybe"], name="join"}
-  , Trans {from=["List", "IO"], to=["IO", "List"], name="sequenceA"}
-  , Trans {from=["Maybe", "IO"], to=["IO", "Maybe"], name="sequenceA"}
-  , Trans {from=["List", "Maybe"], to=["Maybe", "List"], name="sequenceA"}
-  , Trans {from=["Maybe", "List"], to=["List", "Maybe"], name="sequenceA"}
-  ]
--}
 -- TODO: Convert real Haskell programs into lists of moves
-
 -- TODO: Analyze program graphs
+
+graphsOfSizeAtMost :: (Hashable f, Ord f) => [Trans f] -> Int -> BraidState f -> BraidState f -> HashSet.HashSet (NaturalGraph f)
+graphsOfSizeAtMost ts n start end = runST $ do
+  arr <- newSTArray (0, n) M.empty
+  go arr n start
+  where 
+  newSTArray :: (Int, Int) -> Map k v -> ST s (STArray s Int (Map k v))
+  newSTArray = newArray
+
+  go arr 0 b = return $ if b == end then HashSet.singleton (idGraph end) else HashSet.empty
+  go arr n b = do
+    memo <- readArray arr n
+    case M.lookup b memo of
+      Nothing -> do
+        progs <- fmap HashSet.unions . forM (branchOut ts b) $ \(b', move) ->
+          fmap (HashSet.map (sequence (moveToNaturalGraph move))) (go arr (n - 1) b')
+        let progs' = if b == end then HashSet.insert (idGraph end) progs else progs
+        writeArray arr n (M.insert b progs' memo)
+        return progs'
+
+      Just ps -> return ps
 
 programsOfLengthAtMost :: Ord f => [Trans f] -> Int -> BraidState f -> BraidState f -> [Program f]
 programsOfLengthAtMost ts n start end = runST $ do
@@ -155,21 +192,6 @@ programsOfLengthAtMost ts n start end = runST $ do
         return progs'
 
       Just ps -> return ps
-  
-  -- evalState (go n start) M.empty where
-  -- go :: Int -> BraidState -> State (M.Map BraidState [Program]) [Program]
-{-
-  go 0 b = return (if b == end then [[]] else [])
-  go n b = do
-    memo <- get 
-    case M.lookup b memo of
-      Just ps -> return ps
-      Nothing -> do
-        progs <- fmap concat . forM (branchOut ts b) $ \(b', move) -> do
-          fmap (map (move :)) $ go (n - 1) b'
-        let progs' = if b == end then [] : progs else progs
-        put (M.insert b progs' memo)
-        return progs -}
 
 juxtapose :: NaturalGraph f -> NaturalGraph f -> NaturalGraph f
 juxtapose ng1 ng2 =
@@ -198,18 +220,103 @@ juxtapose ng1 ng2 =
   g2 = digraph ng2
   n1 = M.size g1
 
-isomorphic :: NaturalGraph f -> NaturalGraph f -> Bool
-isomorphic ng1 ng2 = 
-  | incomingCount ng1 != incomingCount ng1 || outgoingCount ng1 != outgoingCount ng2 
+-- isomorphic graphs will hash to the same value
+-- TODO: There's either a bug in this or in isomorphic. There are more
+-- unique hashes then the length of the nub by isomorphic
+hashWithSaltGraph :: Hashable f => Int -> NaturalGraph f -> Int
+hashWithSaltGraph s ng =
+  let vs         = M.elems $ incomingSuccs ng
+      (s', _, _) = execState go (s, S.fromList vs, vs)
+  in s'
+  where
+  g  = digraph ng
+  go = do
+    (s, pushed, next) <- get
+    case next of
+      []                -> return ()
 
-runErrorT . flip execState ([], S.empty)
+      (Dummy d : next') ->
+        put (s `hashWithSalt` d, pushed, next') >> go
+
+      (Real v : next') -> do
+        let Just vd    = M.lookup v g
+            s'         = s `hashWithSalt` label vd
+            (s'', new) = foldl f' (foldl f (s',[]) (incoming vd)) (outgoing vd)
+            pushed'    = foldl (\s x -> S.insert x s) pushed new
+        put (s'', pushed', new ++ next')
+        go
+        where
+        f (!salt, !xs) (x,lab) =
+          ( salt `hashWithSalt` lab
+          , case x of { Dummy _ -> xs; _ -> if x `S.member` pushed then xs else (x:xs) })
+
+        f' (!salt, !xs) (x,lab) =
+          ( salt `hashWithSalt` lab
+          , if x `S.member` pushed then xs else (x:xs) )
+
+-- all we need to do is use something more canonical for Vertex IDs and
+-- isomorphism becomes equality. perhaps some coordinates involving the
+-- length of the shortest path to the vertex?
+isomorphic :: NaturalGraph f -> NaturalGraph f -> Bool
+isomorphic ng1 ng2
+  | incomingCount ng1 /= incomingCount ng1 || outgoingCount ng1 /= outgoingCount ng2  = False
+  | otherwise =
+    isRight . runIdentity . runErrorT $
+      let vs1 = M.elems (incomingSuccs ng1)
+          vs2 = M.elems (incomingSuccs ng2)
+      in
+      evalStateT go
+        ( S.fromList vs1
+        , zip vs1 vs2
+        )
+  where
+  g1 = digraph ng1
+  g2 = digraph ng2
+  -- Sometimes I am an imperative programmer
+  go :: StateT (S.Set Vert, [(Vert,Vert)]) (ErrorT String Identity) ()
+  go = do
+    (inQueue, next) <- get
+    case next of
+      [] -> return ()
+
+      -- Have to make sure never to put an incoming dummy in the queue
+      -- since there's no way to distinguish it from an outgoing dummy.
+      -- Come to think of it, is there ever any need to actually do
+      -- anything with outgoing Dummys? I don't think so. Just need to
+      -- check that real vertices have Dummys in the right places.
+      ((Dummy v1, Dummy v2) : next') -> do
+        case (M.lookup v1 (outgoingPreds ng1), M.lookup v2 (outgoingPreds ng2)) of
+          (Just (Dummy _), Just (Dummy _)) -> put (inQueue, next') >> go
+          -- This seems wrong. I think it should never push anything.
+          (Just v1', Just v2')             -> put (S.insert v1' inQueue, (v1', v2') : next') >> go
+          _                                -> throwError "Something fishy"
+
+      ((Real v1,Real v2) : next') -> do
+        let Just vd1 = M.lookup v1 g1
+            Just vd2 = M.lookup v2 g2
+        when (label vd1 /= label vd2) $ throwError "Different transes"
+        ins  <- zipErr (map fst $ incoming vd1) (map fst $ incoming vd2)
+        outs <- zipErr (map fst $ outgoing vd1) (map fst $ outgoing vd2)
+        let new =
+              filter (\(x, _) -> case x of {Dummy _ -> False; _ -> not (x `S.member` inQueue)}) ins
+              ++ filter (\(x, _) -> not (x `S.member` inQueue)) outs
+            inQueue' = foldl (\s (x,_) -> S.insert x s) inQueue new
+        put (inQueue', new ++ next')
+        go
+
+      _ -> throwError "Expected both real or both dummy"
+    where
+    zipErr xs ys =
+      if length xs == length ys then return (zip xs ys) else throwError "zipErr"
 
 -- Es importante que no cambia (incomingDummys ng1) o
 -- (outgoingDummys ng2)
 
 shiftBy n g =
-  M.map (\(t, es) -> (t, map (\(v,f) -> (case v of {Real r -> Real (r + n); _ -> v}, f)) es))
+  M.map (\vd -> vd { incoming = shiftEs (incoming vd), outgoing = shiftEs (outgoing vd) })
   $ M.mapKeysMonotonic (+ n) g
+  where
+  shiftEs = map (\(v,f) -> (case v of {Real r -> Real (r + n); _ -> v}, f))
 
 idName i = "net" ++ show i
 
@@ -231,12 +338,13 @@ naturalGraphToJSON (NaturalGraph {..}) =
   nodes =
     map (\i -> nodeObj ("in" ++ show i) "" "green") [0..(incomingCount - 1)]
     ++ map (\i -> nodeObj ("out" ++ show i) "" "red") [0..(outgoingCount - 1)]
-    ++ map (\(i, (t,_)) -> nodeObj ("real" ++ show i) t "gray") (M.toList digraph)
+    ++ map (\(i, vd) -> nodeObj ("real" ++ show i) (label vd) "gray") (M.toList digraph)
+
   edges =
-    concatMap (\(v, (_,es)) -> map (\(u,f) ->
+    concatMap (\(v, vd) -> map (\(u,f) ->
       edgeObj ("real" ++ show v)
         (case u of { Real r -> "real" ++ show r; Dummy d -> "out" ++ show d })
-        f) es)
+        f) (outgoing vd))
       (M.toList digraph)
     ++ map (\(lab, (i, vert)) -> 
         let v = case vert of {Dummy d -> "out" ++ show d; Real r -> "real" ++ show r} in
@@ -299,29 +407,43 @@ sequence ng1 ng2 =
       , incomingSuccs ng1)
       (zip [0..] (incomingLabels ng2))
 
-  updateSuccsAtDummy i v es
-    | ((Dummy j, f) : es') <- es, i == j = ((v, f) : es') 
-    | (e : es') <- es                    = e : updateSuccsAtDummy i v es'
-    | otherwise                          = []
+  updateNeighborListAt x v es = case es of
+    (e@(y, f) : es') -> if x == y then (v, f) : es' else e : updateNeighborListAt x v es'
+    []                -> []
 
+  updateIncomingAt i v vd = vd { incoming = updateNeighborListAt i v (incoming vd) }
+  updateOutgoingAt i v vd = vd { outgoing = updateNeighborListAt i v (outgoing vd) }
+
+  -- There should really be a few pictures describing what this code does.
   upd (g, outPreds, inSuccs) (i, func) =
     case (M.lookup i outPreds1, M.lookup i inSuccs2) of
       (Just x, Just y) -> case (x, y) of
         (Real u, Real v)    ->
           let v' = v + n1 in
-          (M.adjust (\(t, es) -> (t, updateSuccsAtDummy i (Real v') es)) u g, outPreds, inSuccs)
+          ( M.adjust (updateOutgoingAt (Dummy i) (Real v')) u 
+            $ M.adjust (updateIncomingAt (Dummy i) (Real u)) v' g
+          , outPreds
+          , inSuccs
+          )
 
         (Real u, Dummy d)   ->
-          (M.adjust (second $ updateSuccsAtDummy i (Dummy d)) u g, M.insert d (Real u) outPreds, inSuccs)
+          ( M.adjust (updateOutgoingAt (Dummy i) (Dummy d)) u g
+          , M.insert d (Real u) outPreds
+          , inSuccs
+          )
 
         (Dummy d, Real v)   ->
           let v' = v + n1 in
-          (g, outPreds, M.insert d (Real v') inSuccs)
+          ( M.adjust (updateIncomingAt (Dummy i) (Dummy d)) v' g
+          , outPreds
+          , M.insert d (Real v') inSuccs
+          )
 
         (Dummy d, Dummy d') ->
           ( g
           , M.insert d' (Dummy d) outPreds
-          , M.insert d (Dummy d') inSuccs)
+          , M.insert d (Dummy d') inSuccs
+          )
 
       _ -> (g, outPreds, inSuccs)
 

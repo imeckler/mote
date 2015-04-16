@@ -1,5 +1,5 @@
 {-# LANGUAGE LambdaCase #-}
-module Search.Test where
+module Main where
 
 import Control.Monad.Error
 import Search.Types
@@ -9,6 +9,8 @@ import TyCon
 import TypeRep
 import Slick.ReadType
 import Control.Applicative
+import qualified Data.List as List
+import Data.Either (isRight)
 
 type F = String
 
@@ -43,4 +45,14 @@ transes =
   , Trans { from = [list], to = [mm], name = "headErr" }
   , Trans { from = [tcrn], to = [mm], name = "inHoleEnv _ _" }
   ]
+
+main :: IO ()
+main =
+  mapM_ (print . f) [1..]
+  where
+  f n =
+    let { gs = map programToNaturalGraph $ programsOfLengthAtMost transes n [list, may,tcrn] [io,list]
+        ; a = List.genericLength (List.nubBy isomorphic gs)
+        ; b = List.genericLength gs }
+    in (a, b)
 
