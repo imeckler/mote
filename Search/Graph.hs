@@ -32,6 +32,9 @@ import qualified Data.HashSet as HashSet
 type BraidState f = [f]
 type BraidView  f = ([f], [f])
 
+-- TODO: Perhaps add the ability to filter the results by those which
+-- satisfy some test cases.
+
 -- In our context, we work with digraphs where some subsets of the edges
 -- are detached at one of their terminals. Specifically, there is a set
 -- of "incoming" edges which have no source, and "outgoing" edges which
@@ -39,6 +42,17 @@ type BraidView  f = ([f], [f])
 data Vert 
   = Real Vertex
   | Dummy DummyVertex
+  deriving (Show, Eq, Ord)
+
+-- We occasionally require this representation. Notably in
+-- connectedComponents (and we could have used it in
+-- isomorphic/hashWithSaltGraph).
+data UnambiguousVert
+  = UReal Vert
+  | UDummy InOrOut DummyVertex
+  deriving (Show, Eq, Ord)
+
+data InOrOut = In | Out
   deriving (Show, Eq, Ord)
 
 type Vertex        = Int
@@ -71,6 +85,13 @@ instance Hashable f => Eq (NaturalGraph f) where
 
 instance Hashable f => Hashable (NaturalGraph f) where
   hashWithSalt = hashWithSaltGraph
+
+connectedComponents :: NaturalGraph f -> Int
+connectedComponents ng = go (S.fromList vs)
+  where
+  vs = map UReal [0..(M.size (digraph ng) - 1)]
+    ++ map (UDummy In) [0..(incomingCount ng - 1)]
+    ++ map (UDummy Out) [0..(outgoingCount ng - 1)]
 
 -- Transformations to and from the identity functor are not handled
 -- properly.
@@ -144,13 +165,16 @@ tryRewrite t@(Trans {from, to, name}) (pre, fs) = case leftFromRight from fs of
   Nothing  -> Nothing
   Just fs' -> Just (pre ++ to ++ fs', (pre, t, fs'))
 
--- can go either 
+-- Consider using hash table to jump to possible moves rather than trying all
+-- of them. Note that this essentially requires looping over all substrings
+-- of the current BraidState. If the BraidState is small compared to the
+-- number of Transes (which it likely will be in practice), this should be
+-- a win.
 branchOut :: Eq f => [Trans f] -> BraidState f -> [(BraidState f, Move f)]
 branchOut ts b = concatMap (\v -> mapMaybe (\t -> tryRewrite t v) ts) (braidViews b)
 
 -- TODO: Convert real Haskell programs into lists of moves
 -- TODO: Analyze program graphs
-
 graphsOfSizeAtMost :: (Hashable f, Ord f) => [Trans f] -> Int -> BraidState f -> BraidState f -> HashSet.HashSet (NaturalGraph f)
 graphsOfSizeAtMost ts n start end = runST $ do
   arr <- newSTArray (0, n) M.empty

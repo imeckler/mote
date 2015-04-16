@@ -10,7 +10,9 @@ import TypeRep
 import Slick.ReadType
 import Control.Applicative
 import qualified Data.List as List
-import Data.Either (isRight)
+import System.Environment (getArgs)
+
+import qualified Data.HashSet as HashSet
 
 type F = String
 
@@ -44,15 +46,20 @@ transes =
   , Trans { from = [may], to = [mm], name = "maybeErr" }
   , Trans { from = [list], to = [mm], name = "headErr" }
   , Trans { from = [tcrn], to = [mm], name = "inHoleEnv _ _" }
+  , Trans { from = [eithererr], to = [may], name = "either (const Nothing) Just" }
   ]
 
 main :: IO ()
-main =
-  mapM_ (print . f) [1..]
+main = do
+  (nStr:args) <- getArgs
+  case args of
+    "f":_ -> print (f (read nStr))
+    _     -> print (g (read nStr))
   where
+  from = [list, may, mm]
+  to   = [io,list]
+  g n = HashSet.size $ graphsOfSizeAtMost transes n from to
   f n =
-    let { gs = map programToNaturalGraph $ programsOfLengthAtMost transes n [list, may,tcrn] [io,list]
-        ; a = List.genericLength (List.nubBy isomorphic gs)
-        ; b = List.genericLength gs }
-    in (a, b)
+    HashSet.size . HashSet.fromList . map programToNaturalGraph
+    $ programsOfLengthAtMost transes n from to
 
