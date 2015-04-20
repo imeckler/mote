@@ -285,8 +285,11 @@ instance Show Term where
     Simple s   -> s
     Compound s -> s
 
-toTerm :: NaturalGraph f -> Term
-toTerm ng0 = case findGoodVertex 0 (M.toList $ incomingSuccs ng) of
+toTerm :: Show f => NaturalGraph f -> Term
+toTerm = toTerm' . compressPaths
+
+toTerm' :: Show f => NaturalGraph f -> Term
+toTerm' ng0 = case findGoodVertex 0 (M.toList $ incomingSuccs ng) of
   Nothing                        -> Id
   -- TODO: When we rip out vGood, we don't fix up outgoingPreds,
   -- but that's fine as it's never really used by this function
@@ -304,7 +307,7 @@ toTerm ng0 = case findGoodVertex 0 (M.toList $ incomingSuccs ng) of
       M.unions
       [ before
       , M.fromList $ zipWith (\i (v,_) -> (i, v)) [d0..] (outgoing vGoodData)
-      , M.mapKeysMonotonic (\k -> k + (dummyOutCount - dummyInCount)) after
+      , M.mapKeysMonotonic (\k -> k + (1 + dummyOutCount - dummyInCount)) after
       ]
 
     g' =
@@ -362,8 +365,9 @@ toTerm ng0 = case findGoodVertex 0 (M.toList $ incomingSuccs ng) of
     let inSuccs        = incomingSuccs ng
         k              =
           length . takeWhile (\(_,v) -> case v of { Dummy _ -> True; _ -> False }) $ M.toAscList inSuccs
-        (_, incoming') = M.split (fst (M.findMin inSuccs) + k - 1) inSuccs
-        (_, outgoing') = let o = outgoingPreds ng in M.split (fst (M.findMin o) + k - 1) o
+        incoming' = if M.null inSuccs then M.empty else snd $ M.split (fst (M.findMin inSuccs) + k - 1) inSuccs
+        outgoing' = let o = outgoingPreds ng in
+          if M.null o then M.empty else snd $ M.split (fst (M.findMin o) + k - 1) o
     in
     (k, ng { incomingSuccs = incoming', outgoingPreds = outgoing' })
 
@@ -372,7 +376,6 @@ compressPaths :: NaturalGraph f -> NaturalGraph f
 compressPaths ng = let g' = evalState (go $ digraph ng) (S.empty, []) in ng { digraph = g' }
   where
   outPreds = outgoingPreds ng
---  go :: Map Vertex (VertexData f) -> State 
   go g = do
     (_, next) <- get
     case next of
