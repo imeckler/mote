@@ -369,7 +369,7 @@ initialState logFile = mkSplitUniqSupply 'x' >>| \uniq -> SlickState
 runWithTestRef :: (Ref SlickState -> Ghc b) -> IO b
 runWithTestRef x = do
   home <- getHomeDirectory
-  withFile (home </> "prog/slick/testlog") WriteMode $ \logFile -> do
+  withFile (home </> "testlog") WriteMode $ \logFile -> do
     r <- newRef =<< initialState logFile
     run $ do { ghcInit r; x r }
 

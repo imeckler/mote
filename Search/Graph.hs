@@ -1,5 +1,5 @@
 {-# LANGUAGE RecordWildCards, NamedFieldPuns, LambdaCase,
-             ScopedTypeVariables, BangPatterns #-}
+             ScopedTypeVariables, BangPatterns, ViewPatterns #-}
 module Search.Graph where
 
 import Prelude hiding (sequence)
@@ -48,7 +48,7 @@ data Vert
 -- connectedComponents (and we could have used it in
 -- isomorphic/hashWithSaltGraph).
 data UnambiguousVert
-  = UReal Vert
+  = UReal Vertex
   | UDummy InOrOut DummyVertex
   deriving (Show, Eq, Ord)
 
@@ -87,11 +87,12 @@ instance Hashable f => Hashable (NaturalGraph f) where
   hashWithSalt = hashWithSaltGraph
 
 connectedComponents :: NaturalGraph f -> Int
-connectedComponents ng = go (S.fromList vs)
+connectedComponents ng = undefined -- go (S.fromList vs)
   where
   vs = map UReal [0..(M.size (digraph ng) - 1)]
     ++ map (UDummy In) [0..(incomingCount ng - 1)]
     ++ map (UDummy Out) [0..(outgoingCount ng - 1)]
+
 
 -- Transformations to and from the identity functor are not handled
 -- properly.
@@ -117,8 +118,8 @@ moveToNaturalGraph (ls, t, rs) =
   , digraph = M.fromList
     [ (0, VertexData
         { label=name t
+        , incoming=zipWith (\i f -> (Dummy (i + nl), f)) [0..] (from t)
         , outgoing=zipWith (\i f -> (Dummy (i + nl), f)) [0..] (to t) 
-        , incoming=zipWith (\i f -> (Dummy i, f)) [0..] (from t)
         })
     ]
   }
@@ -243,6 +244,169 @@ juxtapose ng1 ng2 =
   g1 = digraph ng1
   g2 = digraph ng2
   n1 = M.size g1
+
+findMap :: (a -> Maybe b) -> [a] -> Maybe b
+findMap f = foldr (\x r -> case f x of { Just y -> Just y; _ -> r }) Nothing
+
+-- TODO: Remove incomingCount. It's just M.size incomingSuccs
+
+-- There are two cases.
+-- 1. There is a "good" vertex which is the succsessor of an incoming
+--    dummy. A "good" vertex is one whose only incoming vertices are
+--    dummys or orphans.
+-- 2. The graph represents the identity.
+-- Proof.
+-- Fact: Any non-good vertex has a predecessor which is neither an orphan
+--       nor a dummy.
+-- Assume (1) does not hold.
+-- Pick any vertex v0 which is the successor of an incoming dummy.
+-- By the fact, v0 has a predecessor v1 which is neither an orphan nor a
+-- dummy. v1 has
+-- a predecessor v2, and so on. We thus obtain an infinitely regressing
+-- chain of vertices (infinite because the graph is acyclic) which is
+-- impossible since our graph is finite.
+-- 
+data Term
+  = Id
+  | Simple String
+  | Compound String
+
+instance Monoid Term where
+  mempty = Id
+
+  mappend Id x = x
+  mappend x Id = x
+  mappend x y  = Compound (extract x ++ " . " ++ extract y) where
+    extract = \case { Simple s -> s; Compound s -> s }
+
+instance Show Term where
+  show = \case
+    Id         -> "id"
+    Simple s   -> s
+    Compound s -> s
+
+toTerm :: NaturalGraph f -> Term
+toTerm ng0 = case findGoodVertex 0 (M.toList $ incomingSuccs ng) of
+  Nothing                        -> Id
+  -- TODO: When we rip out vGood, we don't fix up outgoingPreds,
+  -- but that's fine as it's never really used by this function
+  Just (n, d0, vGood, vGoodData) ->
+    case toTerm (ng { incomingSuccs = incomingSuccs', digraph = g' }) of
+      Id -> fmapped (n + k) goodProgram
+      p  -> fmapped k (p <> fmapped n goodProgram)
+    where
+    dummyInCount   = length . filter (\case {(Dummy _,_) -> True; _ -> False}) $ incoming vGoodData
+    dummyOutCount  = length . filter (\case {(Dummy _,_) -> True; _ -> False}) $ outgoing vGoodData
+    incomingSuccs' = 
+      let (before, y) = M.split d0 (incomingSuccs ng)
+          (_, after)  = M.split (d0 + dummyInCount - 1) y
+      in
+      M.unions
+      [ before
+      , M.fromList $ zipWith (\i (v,_) -> (i, v)) [d0..] (outgoing vGoodData)
+      , M.mapKeysMonotonic (\k -> k + (dummyOutCount - dummyInCount)) after
+      ]
+
+    g' =
+      foldl (\digY'all (i, (v,_)) -> case v of
+        Real r -> M.adjust (updateIncomingAt (Real vGood) (Dummy i)) r digY'all 
+        _      -> digY'all)
+        (M.delete vGood g)
+        (zip [d0..] $ outgoing vGoodData)
+
+    goodProgram = makeGoodProgram vGoodData
+  where
+  (k, ng) = countAndDropFMapStraights ng0
+  g       = digraph ng
+  inSuccs = incomingSuccs ng
+  -- The input to this is "map snd $ M.toList (incomingSuccs ng)" with all
+  -- the left straights stripped. Thus, all Vert's are Real.
+  findGoodVertex _ []             = Nothing
+  findGoodVertex !n ((d, Real r) : vs) =
+    let Just vd = M.lookup r g in
+    if all (\(v,_) -> isOrphanOrDummy v) (incoming vd)
+    then Just (n, d, r, vd)
+    else findGoodVertex (n + 1) vs
+    where
+    isOrphanOrDummy (Dummy _) = True
+    isOrphanOrDummy (Real r)  = null . incoming $ fromJust (M.lookup r g)
+
+  makeGoodProgram vd = case loop (map fst (incoming vd)) of
+    Nothing -> Simple (label vd)
+    Just s  -> Compound (label vd ++ " . " ++ s)
+    where
+    loop = \case
+      []             -> Nothing
+      (Dummy d : vs) -> fmap (\p -> "fmap (" ++ p ++ ")") (loop vs)
+      (Real r : vs)  -> Just $ label (fromJust (M.lookup r g)) ++ case loop vs of
+        Nothing -> ""
+        Just s  -> " . " ++ s
+
+  fmapped n f = case n of
+    0 -> f
+    1 -> Compound ("fmap " ++ wrapped)
+    _ -> Compound (parens (intercalate " . " $ replicate n "fmap") ++ wrapped)
+    where wrapped = case f of { Simple x -> x; Compound x -> parens x }
+
+  parens x = "(" ++ x ++ ")"
+  dropComponentStraights ng =
+    let incoming       = incomingSuccs ng
+        k              =
+          length . takeWhile (\(_,v) -> case v of { Dummy _ -> True; _ -> False }) $ M.toDescList incoming
+        (incoming', _) = M.split (fst (M.findMax incoming) + 1 - k) incoming
+        (outgoing', _) = let o = outgoingPreds ng in M.split (fst (M.findMax o) + 1 - k) o
+    in
+    ng { incomingSuccs = incoming', outgoingPreds = outgoing' }
+
+  countAndDropFMapStraights ng =
+    let inSuccs        = incomingSuccs ng
+        k              =
+          length . takeWhile (\(_,v) -> case v of { Dummy _ -> True; _ -> False }) $ M.toAscList inSuccs
+        (_, incoming') = M.split (fst (M.findMin inSuccs) + k - 1) inSuccs
+        (_, outgoing') = let o = outgoingPreds ng in M.split (fst (M.findMin o) + k - 1) o
+    in
+    (k, ng { incomingSuccs = incoming', outgoingPreds = outgoing' })
+
+-- TODO: This breaks the assumption that the vertices are labelled 1..n.
+compressPaths :: NaturalGraph f -> NaturalGraph f
+compressPaths ng = let g' = evalState (go $ digraph ng) (S.empty, []) in ng { digraph = g' }
+  where
+  outPreds = outgoingPreds ng
+--  go :: Map Vertex (VertexData f) -> State 
+  go g = do
+    (_, next) <- get
+    case next of
+      []       -> return g
+      (Dummy d : vs) -> do
+        let Just v = M.lookup d outPreds
+        case v of
+          Dummy _ -> return g
+          Real r  -> slurpBackFrom r g
+
+      (Real r : vs) -> slurpBackFrom r g
+
+  slurpBackFrom = \v g -> do
+    (seen, next) <- get
+    let Just vd            = M.lookup v g
+        (vdInit, labs, g') = slurp vd g
+        vsNext             = filter (`S.member` seen) (map fst (incoming vdInit))
+        lab'               = label vd ++ intercalate " . " labs
+        g''                = M.insert v (vd { incoming = incoming vdInit, label = lab' }) g'
+
+    put (foldl' (flip S.insert) seen vsNext, vsNext ++ next)
+    go g''
+    where
+    slurp vd g =
+      case incoming vd of
+        [(Real v',_)] ->
+          let (vd', g')              = lookupDelete v' g
+              (vdInit, labs, gFinal) = slurp vd' g'
+          in
+          (vdInit, label vd' : labs, gFinal)
+        _ -> (vd, [], g)
+
+  lookupDelete k m =
+    let (Just x, m') = M.updateLookupWithKey (\_ _ -> Nothing) k m in (x, m')
 
 -- isomorphic graphs will hash to the same value
 -- TODO: There's either a bug in this or in isomorphic. There are more
@@ -431,12 +595,6 @@ sequence ng1 ng2 =
       , incomingSuccs ng1)
       (zip [0..] (incomingLabels ng2))
 
-  updateNeighborListAt x v es = case es of
-    (e@(y, f) : es') -> if x == y then (v, f) : es' else e : updateNeighborListAt x v es'
-    []                -> []
-
-  updateIncomingAt i v vd = vd { incoming = updateNeighborListAt i v (incoming vd) }
-  updateOutgoingAt i v vd = vd { outgoing = updateNeighborListAt i v (outgoing vd) }
 
   -- There should really be a few pictures describing what this code does.
   upd (g, outPreds, inSuccs) (i, func) =
@@ -471,6 +629,12 @@ sequence ng1 ng2 =
 
       _ -> (g, outPreds, inSuccs)
 
+updateNeighborListAt x v es = case es of
+  (e@(y, f) : es') -> if x == y then (v, f) : es' else e : updateNeighborListAt x v es'
+  []                -> []
+
+updateIncomingAt i v vd = vd { incoming = updateNeighborListAt i v (incoming vd) }
+updateOutgoingAt i v vd = vd { outgoing = updateNeighborListAt i v (outgoing vd) }
 -- maybe (Just x) f = fmap f
 
 
