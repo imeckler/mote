@@ -40,7 +40,6 @@ executable searchtest
                        strict  >= 0.3.2,
                        fingertree >= 0.1,
                        -- debug
-                       criterion >= 1,
                        unordered-containers >= 0.2,
                        hashable >= 1.2,
                        array >= 0.5,
