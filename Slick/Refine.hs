@@ -154,9 +154,6 @@ withNHoles n e = app e $ replicate n hole where
   app f args = foldl (\f' x -> noLoc $ HsApp f' x) f args
   hole       = noLoc $ HsVar (Unqual (mkVarOcc "_"))
 
-splitPredTys (FunTy t1 t2) | isPredTy t1 = let (ps, t) = splitPredTys t2 in (t1:ps, t)
-splitPredTys t                           = ([], t)
-
 -- TODO: There's a bug where goal type [a_a2qhr] doesn't accept refinement
 -- type [HoleInfo]
 -- TODO: Refinement for record constructors

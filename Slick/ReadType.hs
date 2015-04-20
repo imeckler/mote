@@ -22,6 +22,8 @@ import           TcRnMonad           (setXOptM)
 import           TcType              (UserTypeCtxt (GhciCtxt))
 import           UniqSet             (uniqSetToList)
 import           Var                 (mkTyVar)
+import Outputable (showSDoc, vcat)
+import ErrUtils (pprErrMsgBag)
 
 import           Slick.GhcUtil       (withTyVarsInScope)
 import           Slick.Types
@@ -73,10 +75,11 @@ tcGetType rdr_type = do
     return ty'
 
 readType :: String -> M Type
-readType str =
+readType str = do
+  fs <- lift getSessionDynFlags
   lift (runParserM parseType str) >>= \case
     Left s  -> throwError $ ParseError s
     Right t -> do
-      (_, mt) <- lift (tcGetType t)
-      maybe (throwError (OtherError "hi")) return mt
+      ((_warns, errs), mt) <- lift (tcGetType t)
+      maybe (throwError (OtherError . showSDoc fs . vcat $ pprErrMsgBag errs)) return mt
 

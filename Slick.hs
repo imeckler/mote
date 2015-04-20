@@ -46,6 +46,8 @@ import           Slick.Util
 
 -- DEBUG
 import Data.Time.Clock
+import Slick.Search
+import Search.Types
 
 ghcInit :: GhcMonad m => Ref SlickState -> m ()
 ghcInit stRef = do
@@ -78,10 +80,6 @@ loadFile stRef p = do
         { holesInfo = M.fromList $ map (\hi -> (holeSpan $ holeInfo hi, hi)) augmentedHis })
     })
   where
-  logTimeSince t0 = liftIO $ do
-    t <- getCurrentTime
-    logS stRef . show $ diffUTCTime t t0
-
   -- getting suggestions took far too long, so we only compute them if
   -- they're explicitly requested later on
   augment :: TypecheckedModule -> HoleInfo -> M AugmentedHoleInfo

@@ -1,22 +1,50 @@
 {-# LANGUAGE TupleSections, RecordWildCards, LambdaCase, NamedFieldPuns #-}
 
-module Slick.Search where
+module Slick.Search
+  ( transesInScope
+  , WrappedType(..)
+  , SyntacticFunc
+  -- DEBUG
+  , search
+  , showTrans
+  , traversables
+  , monads
+  , applicatives
+  ) where
 
 import Slick.Types
 import Slick.Util
+import Slick.GhcUtil (discardConstraints, splitPredTys)
 import Search.Graph
 import Search.Types
 import Slick.Suggest
+import Slick.Refine (tcRnExprTc)
 import Slick.Holes
-import Control.Arrow (first)
+import Slick.ReadType
 
+import Control.Monad.Error
+import Control.Arrow (first)
+import Control.Applicative
+import Data.Maybe
+import qualified Data.HashSet as HashSet
+
+import InstEnv (ClsInst(..))
+import GHC
 import TysPrim (funTyCon)
+import qualified PrelNames
 import TypeRep
-import Type (splitForAllTys)
+import Type (splitForAllTys, splitFunTys, tyVarsOfTypes, dropForAlls)
+import TcRnDriver (runTcInteractive)
 import TyCon
 import Var
+import Name
+import RdrName
+import HsExpr
+import SrcLoc (noLoc)
+import Outputable
+import UniqSet (elementOfUniqSet)
 
--- search :: M [NaturalGraph f]
+{-
 search stRef = do
   FileData {typecheckedModule} <- getFileDataErr stRef
   ahi@(AugmentedHoleInfo {holeInfo}) <- getCurrentHoleErr stRef 
@@ -30,21 +58,10 @@ search stRef = do
         (goalFs, _)  = extractFunctors goalTy
     in
     programsOfLengthAtMost transes 6 startFs goalFs
+-}
 
 -- Write a type t as (A1 * ... * An)F where
 -- each Ai and F are functors over a variable x
-normalForm :: Var -> Type -> Maybe ([Func], Func)
-normalForm x t = case t of
-  TyVarTy v        ->
-    if v == x then ([], SyntacticFuncs []) else ([], ConstFunc (WrappedType t))
-  TyConApp tc kots -> _
-  FunTy t t'       ->
-    let (
-        (fs, f) = normalForm x t'
-
-  LitTy tl         -> ([], ConstFunc (WrappedType t))
-  ForAllTy v t     -> Nothing -- TODO
-  AppTy t t'       -> Nothing -- TODO
 
 -- Checks if the type can be thought of as being of the form
 -- forall a. F a -> G a
@@ -65,35 +82,98 @@ normalForm x t = case t of
 --  (^a * ^b) -> ^(a + b) (don't partially apply the either argument
 --
 
--- For simplicity, let's only do things which are really syntactically
--- of the form forall a. F a -> G a for now.
--- In fact, even this is wrong since extractFunctors pulls out the
-asTrans :: Type -> Maybe (Trans SyntacticFunc)
-asTrans t = case splitForAllTys t of
-  (vs@(_:_), FunTy t1 t2) ->
-    let (fs1, inner1) = extractFunctors t1
-        (fs2, inner2) = extractFunctors t2
-    in
-    _
-  _                       -> Nothing
-
+-- TODO: SyntacticFuncs should be bundled with the variables that they're
+-- universally quantified over
 type SyntacticFunc = (TyCon, [WrappedType])
-data Func
-  = SyntacticFunc SyntacticFunc
-  | ConstFunc WrappedType
-  deriving (Eq)
+data TransInterpretation = TransInterpretation
+  { numArguments            :: Int
+  , functorArgumentPosition :: Int
+  , name                    :: Name
+  , from                    :: [SyntacticFunc]
+  , to                      :: [SyntacticFunc]
+  }
+
+showTrans :: Trans SyntacticFunc -> M String
+showTrans (Trans {from, to, name}) = do
+  from' <- lift $ mapM showPprM from
+  to' <- lift $ mapM showPprM to
+  return (show $ Trans {from=from', to=to', name})
+
+transes :: (Name, Type) -> [Trans SyntacticFunc]
+transes b = map toTrans (transInterpretations b)
+  where
+  toTrans :: TransInterpretation -> Trans SyntacticFunc
+  toTrans (TransInterpretation {..}) = Trans {from, to, name=name'}
+    where
+    ident = occNameString $ occName name
+    name' =
+      if numArguments == 1 
+      then Simple ident 
+      else if functorArgumentPosition == numArguments - 1
+      then Compound (ident ++ " " ++ underscores (numArguments - 1))
+      else Simple ("(\\x -> " ++ ident ++ " " ++ underscores functorArgumentPosition ++ " x " ++ underscores (numArguments - functorArgumentPosition - 1) ++ ")")
+
+    underscores n = unwords $ replicate n "_"
+
+traversables :: GhcMonad m => m [SyntacticFunc]
+traversables = instancesOneParamFunctorClass PrelNames.traversableClassName
+
+monads :: GhcMonad m => m [SyntacticFunc]
+monads = instancesOneParamFunctorClass PrelNames.monadClassName
+
+applicatives :: GhcMonad m => m [SyntacticFunc]
+applicatives = instancesOneParamFunctorClass PrelNames.applicativeClassName
+
+instancesOneParamFunctorClass name =
+  getInfo False name >>| \case
+    Just (_,_,insts,_) -> mapMaybe (extractUnapplied . head . is_tys) insts
+    Nothing            -> []
+
+extractUnapplied :: Type -> Maybe SyntacticFunc
+extractUnapplied t = case t of
+  AppTy t t'       -> Nothing
+  TyConApp tc kots -> Just (tc, map WrappedType kots)
+  FunTy t t'       -> Nothing
+  ForAllTy v t     -> Nothing
+  LitTy tl         -> Nothing
+  TyVarTy v        -> Nothing
+
+search :: [String] -> [String] -> Int ->  M (HashSet.HashSet (NaturalGraph String))
+search src trg n = do
+  fs      <- lift getSessionDynFlags
+  let showSyntacticFunc = showSDoc fs . ppr
+  from    <- fmap catMaybes $ mapM (fmap (fmap showSyntacticFunc . extractUnapplied . dropForAlls) . readType) src
+  to      <- fmap catMaybes $ mapM (fmap (fmap showSyntacticFunc . extractUnapplied . dropForAlls) . readType) trg
+  transes <- fmap (map (fmap showSyntacticFunc)) transesInScope
+  return $ graphsOfSizeAtMost transes n from to
+
+transesInScope :: M [Trans SyntacticFunc]
+transesInScope = do
+  namedTys <- fmap catMaybes . mapM typeName =<< lift getNamesInScope
+  ts <- lift traversables
+  as <- lift applicatives
+  ms <- lift monads
+  let joins     = map (\m -> Trans { from = [m,m], to = [m], name = Simple "join" }) ms
+      traverses = liftA2 (\t f -> Trans { from = [t,f], to = [f,t], name = Simple "sequenceA" }) ts as
+  return $
+    concatMap transes namedTys ++ traverses ++ joins
+  where
+  typeName n = do
+    hsc_env <- lift getSession
+    (_errs, mayTy) <- liftIO $
+      runTcInteractive hsc_env . discardConstraints . tcRnExprTc . noLoc . HsVar . Exact $ n
+    return $ fmap (n,) mayTy
 
 extractFunctors :: Type -> ([SyntacticFunc], WrappedType)
 extractFunctors t = case t of
   TyVarTy v        -> ([], WrappedType t)
-  TyConApp tc kots -> case splitLast kots of
-    Nothing          -> ([], WrappedType t)
-    Just (args, arg) -> first ((tc, map WrappedType args) :)
-                        $ extractFunctors arg
-  FunTy t t'       -> first ((funTyCon,[WrappedType t]) :) $ extractFunctors t'
+  FunTy _ _        -> ([], WrappedType t)
   ForAllTy v t     -> extractFunctors t
-  LitTy tl         -> ([], WrappedType t)
-  AppTy t t'       -> error "extractFunctors: TODO AppTy" -- TODO
+  LitTy _          -> ([], WrappedType t)
+  AppTy t t'       -> ([], WrappedType t) -- TODO
+  TyConApp tc kots -> case splitLast kots of
+    Nothing -> ([], WrappedType t)
+    Just (args, arg) -> first ((tc, map WrappedType args) :) (extractFunctors arg)
   where
   splitLast' :: [a] -> ([a], a)
   splitLast' [x]    = ([], x)
@@ -103,12 +183,71 @@ extractFunctors t = case t of
   splitLast [] = Nothing
   splitLast xs = Just (splitLast' xs)
 
+-- TODO: This is, of course, a first approximation since
+-- we assume all TyCons other than (->) are covariant in all
+-- arguments.
+occursStrictlyPositively :: TyVar -> Type -> Bool
+occursStrictlyPositively v = not . bad where
+  bad t = case t of
+    AppTy t' t''     -> bad t' || bad t''
+    TyConApp tc kots -> any bad kots
+    FunTy t' t''     -> occurs t' || bad t''
+    ForAllTy v' t'   -> bad t'
+    LitTy tl         -> False
+    TyVarTy v'       -> False
+
+  occurs t = case t of
+    AppTy t' t''     -> occurs t' || occurs t''
+    TyConApp tc kots -> any occurs kots
+    FunTy t' t''     -> occurs t' || occurs t''
+    ForAllTy v' t'   -> occurs t'
+    LitTy tl         -> False
+    TyVarTy v'       -> v' == v
+
+transInterpretations :: (Name, Type) -> [TransInterpretation]
+transInterpretations (n, t0) =
+  case targInner of
+    WrappedType (TyVarTy polyVar) ->
+      if polyVar `elementOfUniqSet` forbiddenVars
+      then []
+      else if any (not . occursStrictlyPositively polyVar) args
+      then []
+      else catMaybes $ zipWith interp [0..] args
+      where
+      interp :: Int -> Type -> Maybe TransInterpretation
+      interp i argty =
+        if inner == targInner
+        then Just trans
+        else Nothing
+        where
+        (sfs, inner) = extractFunctors argty
+        trans        = TransInterpretation
+          { numArguments            = numArguments
+          , functorArgumentPosition = i
+          , name                    = n
+          , from                    = sfs
+          , to                      = sfsTarg
+          }
+
+    _ -> []
+  where
+  (polyVars, t1)       = splitForAllTys t0
+  (predTys, t)         = splitPredTys t1
+  forbiddenVars        = tyVarsOfTypes predTys
+  (args, targ)         = splitFunTys t
+  (sfsTarg, targInner) = extractFunctors targ
+  numArguments         = length args
+
 newtype WrappedType = WrappedType Type
 instance Eq WrappedType where
   (==) (WrappedType t) (WrappedType t') = eqTy t t'
 
 instance Ord WrappedType where
   compare (WrappedType t) (WrappedType t') = compareTy t t'
+
+instance Outputable WrappedType where
+  ppr (WrappedType t) = ppr t
+  pprPrec r (WrappedType t) = pprPrec r t
 
 -- Hacky syntactic equality for Type so that it can be used as the functor
 -- parameter in all the Search types

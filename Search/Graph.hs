@@ -265,25 +265,6 @@ findMap f = foldr (\x r -> case f x of { Just y -> Just y; _ -> r }) Nothing
 -- a predecessor v2, and so on. We thus obtain an infinitely regressing
 -- chain of vertices (infinite because the graph is acyclic) which is
 -- impossible since our graph is finite.
--- 
-data Term
-  = Id
-  | Simple String
-  | Compound String
-
-instance Monoid Term where
-  mempty = Id
-
-  mappend Id x = x
-  mappend x Id = x
-  mappend x y  = Compound (extract x ++ " . " ++ extract y) where
-    extract = \case { Simple s -> s; Compound s -> s }
-
-instance Show Term where
-  show = \case
-    Id         -> "id"
-    Simple s   -> s
-    Compound s -> s
 
 toTerm :: Show f => NaturalGraph f -> Term
 toTerm = toTerm' . compressPaths
@@ -324,9 +305,9 @@ toTerm' ng0 = case findGoodVertex 0 (M.toList $ incomingSuccs ng) of
   inSuccs = incomingSuccs ng
   -- The input to this is "map snd $ M.toList (incomingSuccs ng)" with all
   -- the left straights stripped. Thus, all Vert's are Real.
-  findGoodVertex _ []             = Nothing
+  findGoodVertex _ []                  = Nothing
   findGoodVertex !n ((d, Real r) : vs) =
-    let Just vd = M.lookup r g in
+    let vd = lookupExn r g in
     if all (\(v,_) -> isOrphanOrDummy v) (incoming vd)
     then Just (n, d, r, vd)
     else findGoodVertex (n + 1) vs
@@ -334,16 +315,18 @@ toTerm' ng0 = case findGoodVertex 0 (M.toList $ incomingSuccs ng) of
     isOrphanOrDummy (Dummy _) = True
     isOrphanOrDummy (Real r)  = null . incoming $ fromJust (M.lookup r g)
 
-  makeGoodProgram vd = case loop (map fst (incoming vd)) of
-    Nothing -> Simple (label vd)
-    Just s  -> Compound (label vd ++ " . " ++ s)
+  findGoodVertex !n ((d,Dummy _):vs) = error "findGoodVertex: Impossible case hit"
+
+  makeGoodProgram vd = label vd <> loop (map fst (incoming vd))
     where
     loop = \case
-      []             -> Nothing
-      (Dummy d : vs) -> fmap (\p -> "fmap (" ++ p ++ ")") (loop vs)
-      (Real r : vs)  -> Just $ label (fromJust (M.lookup r g)) ++ case loop vs of
-        Nothing -> ""
-        Just s  -> " . " ++ s
+      []             -> Id
+      (Dummy d : vs) -> case loop vs of
+        Id         -> Id
+        Simple s   -> Compound ("fmap (" ++ s ++ ")")
+        Compound s -> Compound ("fmap (" ++ s ++ ")")
+
+      (Real r : vs)  -> label (fromJust (M.lookup r g)) <> loop vs
 
   fmapped n f = case n of
     0 -> f
@@ -393,7 +376,7 @@ compressPaths ng = let g' = evalState (go $ digraph ng) (S.empty, []) in ng { di
     let Just vd            = M.lookup v g
         (vdInit, labs, g') = slurp vd g
         vsNext             = filter (`S.member` seen) (map fst (incoming vdInit))
-        lab'               = label vd ++ intercalate " . " labs
+        lab'               = label vd <> mconcat labs
         g''                = M.insert v (vd { incoming = incoming vdInit, label = lab' }) g'
 
     put (foldl' (flip S.insert) seen vsNext, vsNext ++ next)
@@ -707,9 +690,6 @@ prove (s,t) = go "id" t where
       Nothing                -> acc
 -}
 
-collect :: [Program f] -> [Program f]
-collect p = undefined
-
 leftFromRight :: Eq a => [a] -> [a] -> Maybe [a]
 leftFromRight (x : xs) [] = Nothing
 leftFromRight (x : xs) (y : ys)
@@ -717,3 +697,6 @@ leftFromRight (x : xs) (y : ys)
   | otherwise = Nothing
 leftFromRight [] ys = Just ys
 
+-- UTIL
+lookupExn :: Ord k => k -> M.Map k v -> v
+lookupExn k = fromMaybe (error "M.lookup failed") . M.lookup k
