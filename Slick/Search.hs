@@ -27,8 +27,10 @@ import Control.Arrow (first)
 import Control.Applicative
 import Data.Maybe
 import qualified Data.HashSet as HashSet
+import qualified Data.List as List
 
 import InstEnv (ClsInst(..))
+import FastString
 import GHC
 import TysPrim (funTyCon)
 import qualified PrelNames
@@ -43,7 +45,11 @@ import HsExpr
 import SrcLoc (noLoc)
 import Outputable
 import UniqSet (elementOfUniqSet)
-
+import Unique (getKey, getUnique)
+import Data.Hashable
+-- TODO: Debug imports. Delete
+import Slick.LoadFile
+import Slick.Debug
 
 {-
 search stRef = do
@@ -139,13 +145,13 @@ extractUnapplied t = case t of
   LitTy tl         -> Nothing
   TyVarTy v        -> Nothing
 
-search :: [String] -> [String] -> Int ->  M [NaturalGraph String]
+search :: [String] -> [String] -> Int ->  M [NaturalGraph (Int, Int)]
 search src trg n = do
   fs      <- lift getSessionDynFlags
-  let showSyntacticFunc = showSDoc fs . ppr
-  from    <- fmap catMaybes $ mapM (fmap (fmap showSyntacticFunc . extractUnapplied . dropForAlls) . readType) src
-  to      <- fmap catMaybes $ mapM (fmap (fmap showSyntacticFunc . extractUnapplied . dropForAlls) . readType) trg
-  transes <- fmap (map (fmap showSyntacticFunc)) transesInScope
+  let renderSyntacticFunc (tc, args) = (getKey (getUnique tc), hash args)
+  from    <- fmap catMaybes $ mapM (fmap (fmap renderSyntacticFunc . extractUnapplied . dropForAlls) . readType) src
+  to      <- fmap catMaybes $ mapM (fmap (fmap renderSyntacticFunc . extractUnapplied . dropForAlls) . readType) trg
+  transes <- fmap (fmap (fmap renderSyntacticFunc)) transesInScope
   return $ graphsOfSizeAtMost transes n from to
 
 transesInScope :: M [Trans SyntacticFunc]
@@ -261,6 +267,22 @@ eqTy x y = case (x, y) of
   (LitTy tl, LitTy tl')                  -> tl == tl'
   (TyVarTy v, TyVarTy v')                -> v == v'
   _                                      -> False
+
+instance Hashable WrappedType where
+  hashWithSalt s (WrappedType t) = hashTypeWithSalt s t
+
+hashTypeWithSalt :: Int -> Type -> Int
+hashTypeWithSalt s t = case t of
+  TyVarTy v        -> (0::Int) `hashWithSalt` getKey (getUnique v)
+  AppTy t t'       -> ((1::Int) `hashTypeWithSalt` t) `hashTypeWithSalt` t'
+  TyConApp tc kots -> List.foldl' hashTypeWithSalt ((2::Int) `hashWithSalt` getKey (getUnique tc)) kots
+  FunTy t t'       -> (3::Int) `hashTypeWithSalt` t `hashTypeWithSalt` t'
+  ForAllTy v t     -> ((4::Int) `hashWithSalt` getKey (getUnique v)) `hashTypeWithSalt` t
+  LitTy tl         -> (5::Int) `hashTyLitWithSalt` tl
+
+hashTyLitWithSalt s tl = case tl of
+  NumTyLit n  -> s `hashWithSalt` n
+  StrTyLit fs -> s `hashWithSalt` getKey (getUnique fs)
 
 compareTy :: Type -> Type -> Ordering
 compareTy = \x y -> case compare (conOrd x) (conOrd y) of
