@@ -28,6 +28,9 @@ import Data.Char (ord)
 
 import Data.Hashable
 import qualified Data.HashSet as HashSet
+import qualified Data.HashMap.Strict as HashMap
+
+import Debug.Trace
 
 type BraidState f = [f]
 type BraidView  f = ([f], [f])
@@ -155,11 +158,13 @@ cutProofToNaturalGraph cp0 = case cp0 of
 -- vertices are created and destroyed
 -- vertex N for each natural transformation
 
-braidViews :: BraidState f -> [BraidView f]
-braidViews = go [] where
-  go :: BraidState f -> BraidState f -> [BraidView f]
+splittings :: [f] -> [([f],[f])]
+splittings = go [] where
   go pre l@(f : fs) = (reverse pre, l) : go (f:pre) fs
   go pre [] = [(reverse pre, [])]
+
+fineViews :: [f] -> [([f], [f], [f])]
+fineViews = concatMap (\(pre, post) -> map (\(x,y) -> (pre,x,y)) (splittings post)) . splittings
 
 tryRewrite :: Eq f => Trans f -> BraidView f -> Maybe (BraidState f, Move f)
 tryRewrite t@(Trans {from, to, name}) (pre, fs) = case leftFromRight from fs of
@@ -171,18 +176,28 @@ tryRewrite t@(Trans {from, to, name}) (pre, fs) = case leftFromRight from fs of
 -- of the current BraidState. If the BraidState is small compared to the
 -- number of Transes (which it likely will be in practice), this should be
 -- a win.
+{-
 branchOut :: Eq f => [Trans f] -> BraidState f -> [(BraidState f, Move f)]
 branchOut ts b = concatMap (\v -> mapMaybe (\t -> tryRewrite t v) ts) (braidViews b)
+-}
+branchOut :: (Eq f, Hashable f) => HashMap.HashMap [f] [Trans f] -> BraidState f -> [(BraidState f, Move f)]
+branchOut ts = concatMap possibilities . fineViews where
+  possibilities (pre, foc, post) =
+    let matches = fromMaybe [] (HashMap.lookup foc ts) in
+    map (\t -> (pre ++ to t ++ post, (pre, t, post))) matches
+-- concatMap (\v -> mapMaybe (\t -> tryRewrite t v) ts) (braidViews b)
 
 -- TODO: Convert real Haskell programs into lists of moves
 -- TODO: Analyze program graphs
-graphsOfSizeAtMost :: (Hashable f, Ord f) => [Trans f] -> Int -> BraidState f -> BraidState f -> HashSet.HashSet (NaturalGraph f)
-graphsOfSizeAtMost ts n start end = runST $ do
+graphsOfSizeAtMost :: (Hashable f, Ord f) => [Trans f] -> Int -> BraidState f -> BraidState f -> [NaturalGraph f]
+graphsOfSizeAtMost tsList n start end = HashSet.toList $ runST $ do
   arr <- newSTArray (0, n) M.empty
   go arr n start
   where 
   newSTArray :: (Int, Int) -> Map k v -> ST s (STArray s Int (Map k v))
   newSTArray = newArray
+
+  ts = HashMap.fromListWith (++) (map (\t -> (from t, [t])) tsList)
 
   go arr 0 b = return $ if b == end then HashSet.singleton (idGraph end) else HashSet.empty
   go arr n b = do
@@ -197,11 +212,13 @@ graphsOfSizeAtMost ts n start end = runST $ do
 
       Just ps -> return ps
 
-programsOfLengthAtMost :: Ord f => [Trans f] -> Int -> BraidState f -> BraidState f -> [Program f]
-programsOfLengthAtMost ts n start end = runST $ do
+programsOfLengthAtMost :: (Hashable f, Ord f) => [Trans f] -> Int -> BraidState f -> BraidState f -> [Program f]
+programsOfLengthAtMost tsList n start end = runST $ do
   arr <- newSTArray (0, n) M.empty
   go arr n start
   where 
+  ts = HashMap.fromListWith (++) (map (\t -> (from t, [t])) tsList)
+
   newSTArray :: (Int, Int) -> Map k v -> ST s (STArray s Int (Map k v))
   newSTArray = newArray
 
@@ -266,11 +283,17 @@ findMap f = foldr (\x r -> case f x of { Just y -> Just y; _ -> r }) Nothing
 -- chain of vertices (infinite because the graph is acyclic) which is
 -- impossible since our graph is finite.
 
+renderTerm :: Term -> String
+renderTerm = \case
+  Id         -> "id"
+  Simple s   -> s
+  Compound s -> s
+
 toTerm :: Show f => NaturalGraph f -> Term
 toTerm = toTerm' . compressPaths
 
 toTerm' :: Show f => NaturalGraph f -> Term
-toTerm' ng0 = case findGoodVertex 0 (M.toList $ incomingSuccs ng) of
+toTerm' ng0 = case traceShow ng $ findGoodVertex 0 (M.toList $ incomingSuccs ng) of
   Nothing                        -> Id
   -- TODO: When we rip out vGood, we don't fix up outgoingPreds,
   -- but that's fine as it's never really used by this function
@@ -335,24 +358,25 @@ toTerm' ng0 = case findGoodVertex 0 (M.toList $ incomingSuccs ng) of
     where wrapped = case f of { Simple x -> x; Compound x -> parens x }
 
   parens x = "(" ++ x ++ ")"
-  dropComponentStraights ng =
-    let incoming       = incomingSuccs ng
-        k              =
-          length . takeWhile (\(_,v) -> case v of { Dummy _ -> True; _ -> False }) $ M.toDescList incoming
-        (incoming', _) = M.split (fst (M.findMax incoming) + 1 - k) incoming
-        (outgoing', _) = let o = outgoingPreds ng in M.split (fst (M.findMax o) + 1 - k) o
-    in
-    ng { incomingSuccs = incoming', outgoingPreds = outgoing' }
 
   countAndDropFMapStraights ng =
-    let inSuccs        = incomingSuccs ng
-        k              =
-          length . takeWhile (\(_,v) -> case v of { Dummy _ -> True; _ -> False }) $ M.toAscList inSuccs
-        incoming' = if M.null inSuccs then M.empty else snd $ M.split (fst (M.findMin inSuccs) + k - 1) inSuccs
+    let inSuccs        = traceShowId $ incomingSuccs ng
+        (k, lastMay) =
+          lengthAndLast . takeWhile (\(_,v) -> case v of { Dummy _ -> True; _ -> False }) $ M.toAscList inSuccs
+        incoming' =
+          case lastMay of
+            Nothing          -> M.empty
+            Just (_, Dummy dlast) -> snd $ M.split dlast inSuccs
+
         outgoing' = let o = outgoingPreds ng in
           if M.null o then M.empty else snd $ M.split (fst (M.findMin o) + k - 1) o
     in
     (k, ng { incomingSuccs = incoming', outgoingPreds = outgoing' })
+
+  lengthAndLast [] = (0, Nothing)
+  lengthAndLast l = loop 0 l where
+    loop !n [x]    = (n + 1, Just x)
+    loop !n (x:xs) = loop (n + 1) xs
 
 -- TODO: This breaks the assumption that the vertices are labelled 1..n.
 compressPaths :: NaturalGraph f -> NaturalGraph f
@@ -494,8 +518,8 @@ shiftBy n g =
 
 idName i = "net" ++ show i
 
-naturalGraphToJSON :: NaturalGraph String -> Value
-naturalGraphToJSON (NaturalGraph {..}) = 
+graphToJSON :: NaturalGraph String -> Value
+graphToJSON (NaturalGraph {..}) = 
   object
   [ T.pack "nodes" .= nodes
   , T.pack "edges" .= edges
@@ -525,16 +549,15 @@ naturalGraphToJSON (NaturalGraph {..}) =
         edgeObj ("in" ++ show i) v lab)
         (zip incomingLabels $ M.toList incomingSuccs)
 
-naturalGraphToJS id ng = mconcat
+graphToJS id ng = mconcat
   [ "network = new vis.Network("
   , "document.getElementById(" ,  show id , "),"
-  , map (toEnum . fromEnum) . BL.unpack $ encode (naturalGraphToJSON ng)
+  , map (toEnum . fromEnum) . BL.unpack $ encode (graphToJSON ng)
   , ",{});"
   ]
 
-naturalGraphsToHTML ngs =
-  let js = unlines $ zipWith naturalGraphToJS (map idName [0..]) ngs
-      n = length ngs
+graphsToHTML ngs =
+  let js = unlines $ zipWith graphToJS (map idName [0..]) ngs
   in
   unlines
   [ "<html>"
@@ -546,7 +569,12 @@ naturalGraphsToHTML ngs =
   ,   "<script type='text/javascript'>" ++ "function draw(){" ++ js ++ "}" ++ "</script>"
   , "</head>"
   , "<body onload='draw()'>"
-  ,   unlines $ map (\i -> "<div class='network' id=" ++ show (idName i) ++ "></div>") [0..(n-1)]
+  ,   unlines $ zipWith (\i ng ->
+        "<div>"
+        ++ "<div class='network' id=" ++ show (idName i) ++ "></div>" 
+        ++ "<div>" ++ renderTerm (toTerm ng) ++ "</div>"
+        ++ "</div>"
+        ) [0..] ngs
   , "</body>"
   , "</html>"
   ]

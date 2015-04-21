@@ -44,6 +44,7 @@ import SrcLoc (noLoc)
 import Outputable
 import UniqSet (elementOfUniqSet)
 
+
 {-
 search stRef = do
   FileData {typecheckedModule} <- getFileDataErr stRef
@@ -138,7 +139,7 @@ extractUnapplied t = case t of
   LitTy tl         -> Nothing
   TyVarTy v        -> Nothing
 
-search :: [String] -> [String] -> Int ->  M (HashSet.HashSet (NaturalGraph String))
+search :: [String] -> [String] -> Int ->  M [NaturalGraph String]
 search src trg n = do
   fs      <- lift getSessionDynFlags
   let showSyntacticFunc = showSDoc fs . ppr
@@ -155,7 +156,7 @@ transesInScope = do
   ms <- lift monads
   let joins     = map (\m -> Trans { from = [m,m], to = [m], name = Simple "join" }) ms
       traverses = liftA2 (\t f -> Trans { from = [t,f], to = [f,t], name = Simple "sequenceA" }) ts as
-  return $
+  return . filter (\Trans {..} -> not (from == to)) $
     concatMap transes namedTys ++ traverses ++ joins
   where
   typeName n = do

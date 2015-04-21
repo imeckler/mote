@@ -10,7 +10,7 @@ data Term
   = Id
   | Simple String
   | Compound String
-  deriving (Eq, Ord)
+  deriving (Eq, Ord, Show)
 
 instance Monoid Term where
   mempty = Id
@@ -19,12 +19,6 @@ instance Monoid Term where
   mappend x Id = x
   mappend x y  = Compound (extract x ++ " . " ++ extract y) where
     extract = \case { Simple s -> s; Compound s -> s }
-
-instance Show Term where
-  show = \case
-    Id         -> "id"
-    Simple s   -> s
-    Compound s -> s
 
 instance Hashable Term where
   hashWithSalt s Id           = s `hashWithSalt` (0 :: Int)
