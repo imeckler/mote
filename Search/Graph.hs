@@ -343,7 +343,7 @@ lastMay (_:xs) = lastMay xs
 -- There are no incoming vertices but there are outgoing vertices
 -- There are no 
 -- there are no incoming vertices or outgoing vertices.
-data TopOrBottom = Top | Bottom
+data TopOrBottom = Top | Bottom deriving (Eq, Show)
 toTerm' :: Show f => NaturalGraph f -> Term
 toTerm' ng0 = case findGoodVertex ng of
   Nothing -> Id
@@ -379,12 +379,12 @@ toTerm' ng0 = case findGoodVertex ng of
         (M.delete vGood g)
         (zip [d0..] $ outgoing vGoodData)
 
-    goodProgram = makeGoodProgram vGoodData
+    goodProgram = makeTopGoodProgram vGoodData
 
   -- d0 is the leftmost dummy child of vGood
   Just (Bottom, (n, d0, vGood, vGoodData)) ->
     case toTerm (ng { incomingSuccs = incomingSuccs', digraph = g', outgoingPreds = outgoingPreds' }) of
-      Id -> fmapped (n + k) -- I think n will always be 0 in this case
+      Id -> fmapped (n + k) goodProgram -- I think n will always be 0 in this case
       p  -> fmapped k (fmapped n goodProgram <> p)
     where
     dummyInCount   = length . filter (\case {(Dummy _,_) -> True; _ -> False}) $ incoming vGoodData
@@ -395,7 +395,7 @@ toTerm' ng0 = case findGoodVertex ng of
       in
       M.unions
       [ before
-      , M.fromList $ zipWith (\i (v,_) -> (i, v)) (incoming vGoodData)
+      , M.fromList $ zipWith (\i (v,_) -> (i, v)) [d0..] (incoming vGoodData)
       , M.mapKeysMonotonic (\k -> k + (dummyInCount - dummyOutCount)) after
       ]
 
@@ -412,7 +412,9 @@ toTerm' ng0 = case findGoodVertex ng of
         Real r -> M.adjust (updateOutgoingAt (Real vGood) (Dummy i)) r digY'all
         _      -> digY'all)
         (M.delete vGood g)
-        (zip [d0..] outgoing vGoodData)
+        (zip [d0..] (incoming vGoodData))
+
+    goodProgram = makeBottomGoodProgram vGoodData
   where
   -- TODO: This algorithm is a bit complicated. We could actually just use
   -- the rightmost good vertex rule and that would simplify this a bit.
@@ -423,6 +425,7 @@ toTerm' ng0 = case findGoodVertex ng of
   g       = digraph ng
   inSuccs = incomingSuccs ng
 
+{-
   rightmostGoodVertex ng =
     case M.findMax (outgoingPreds ng) of
       Nothing            -> error "rightmostGoodVertex: Expected non-empty outgoingPreds"
@@ -436,33 +439,13 @@ toTerm' ng0 = case findGoodVertex ng of
       -- predecessor.
       case lastMay (filter (\case { Dummy _ -> False; _ -> True }) (incoming vd)) of
         Nothing -> (r, vd)
-        Just r' -> goFrom r'
-
-  -- If there is a vertex emanating from an incoming port, then
-  -- findGoodVertex will find a good vertex if the graph is non-identity,
-  -- and will return nothing if the graph is the identity.
+        Just r' -> goFrom r' -}
 
   -- If there are no vertices emanating from the incoming ports, then
   -- the graph is a natural transformation from the identity, but there
   -- are of course non-trivial such things. So, we must just pick a vertex
   -- in the graph which has no incoming vertices. It is best to pick the
   -- rightmost such vertex to prevent unnecessary fmapping.
-
-  -- Precondition: The graph ng which this has been passed has had its
-  -- componentStraights dropped and has some outgoingPreds, so the pred
-  -- of the rightmost dummy has as its ancestor the rightmost good vertex.
-  rightmostGoodVertex' ng =
-    case M.findMax (outgoingPreds ng) of 
-      Nothing            -> error "rightmostGoodVertex: Expected non-empty outgoingPreds"
-      Just (dum, Real r) -> goFrom r
-      Just (_, Dummy _)  -> error "rightmostGoodVertex: Rightmost outgoing dummy had a dummy as its predecessor"
-    where
-    goFrom r =
-      let vd = lookupExn r g in
-      case lastMay (incoming vd) of
-        Just (Real r',_) -> goFrom r'
-        Nothing          -> (vd, r)
-        _                -> error "rightmostGoodVertex: Impossible case hit"
 
   -- A vertex is top-good if all of its predecessors are dummys or orphans.
   -- A vertex is bottom-good if all of its all of its successors are dummys or childless.
@@ -486,14 +469,14 @@ toTerm' ng0 = case findGoodVertex ng of
       Nothing -> fmap (Bottom,) (findGoodVertexFrom Bottom ng)
       x       -> fmap (Top,) x
 
-  findGoodVertexFrom dir ng = go 0 (M.elems verts) where
+  findGoodVertexFrom dir ng = go 0 (M.toList verts) where
     go !n [] = Nothing
     go !n ((d, Real r) : vs) =
       let vd = lookupExn r g in
-      if isGood vd
+      if traceShow n (isGood vd)
       then Just (n, d, r, vd)
       else go (n + 1) vs
-    go _ ((_, Dummy):_) = error "findGoodVertexFromTop Impossible case"
+    go _ ((_, Dummy _):_) = error ("findGoodVertexFrom " ++ show dir ++ ": Impossible case")
 
     isGood = case dir of { Top -> isTopGood; Bottom -> isBottomGood }
     verts  = case dir of { Top -> incomingSuccs ng; Bottom -> outgoingPreds ng }
@@ -502,7 +485,7 @@ toTerm' ng0 = case findGoodVertex ng of
     isChildlessOrDummy (Dummy _) = True
     isChildlessOrDummy (Real r)  = null . outgoing . fromJust $ M.lookup r g
 
-    isTopGood vd              = all (\(v, _) -> isOrphanOrDummy v) (outgoing vd)
+    isTopGood vd              = all (\(v, _) -> isOrphanOrDummy v) (incoming vd)
     isOrphanOrDummy (Dummy _) = True
     isOrphanOrDummy (Real r)  = null . incoming . fromJust $ M.lookup r g
 
@@ -511,7 +494,7 @@ toTerm' ng0 = case findGoodVertex ng of
     let vd = lookupExn r g in
     if all (\(v,_) -> isOrphanOrDummy v) (trace ("vd at " ++ show n ++ ":" ++ show vd ) $ incoming vd)
     then Just (n, d, r, vd)
-    else findGoodVertex (n + 1) vs
+    else findGoodVertexFromTop' (n + 1) vs
     where
     isOrphanOrDummy (Dummy _) = True
     isOrphanOrDummy (Real r)  = null . incoming $ fromJust (M.lookup r g)
@@ -547,23 +530,40 @@ toTerm' ng0 = case findGoodVertex ng of
 
   parens x = "(" ++ x ++ ")"
 
-  dropComponentStraights ng =
-    let (length -> k, M.fromDescList -> incoming') =
-          span (\(_, v) -> case v of { Dummy _ -> True; _ -> False })
-            (M.toDescList $ incomingSuccs ng)
+dropComponentStraights ng =
+  let numComponentStraights =
+        length $ takeWhile (\((dumIn,inSucc), (dumOut, outPred)) -> case (inSucc, outPred) of
+          (Dummy dumOut', Dummy dumIn') -> dumOut' == dumOut
+          _ -> False)
+          (zip (M.toDescList (incomingSuccs ng)) (M.toDescList (outgoingPreds ng)))
 
-        outgoing' = M.fromDescList . drop k . M.toDescList $ outgoingPreds ng
-    in
-    ng { incomingSuccs = incoming', outgoingPreds = outgoing' }
+      incoming' = M.fromList . drop numComponentStraights $ M.toDescList (incomingSuccs ng)
+      outgoing' = M.fromList . drop numComponentStraights $ M.toDescList (outgoingPreds ng)
+  in
+  ng { incomingSuccs = incoming', outgoingPreds = outgoing' }
 
-  countAndDropFMapStraights ng =
-    let inSuccs = incomingSuccs ng
-        (length -> k, M.fromAscList -> incoming') = span (\(_,v) -> case v of { Dummy _ -> True; _ -> False }) $ M.toAscList inSuccs
-        outgoing' = let o = outgoingPreds ng in
-          if M.null o then M.empty else snd $ M.split (fst (M.findMin o) + k - 1) o
-    in
-    (k, ng { incomingSuccs = incoming' , outgoingPreds = outgoing'})
+countAndDropFMapStraights :: NaturalGraph f -> (Int, NaturalGraph f)
+countAndDropFMapStraights ng =
+  let numFMapStraights =
+        length $ takeWhile (\((dumIn,inSucc), (dumOut, outPred)) -> case (inSucc, outPred) of
+          (Dummy dumOut', Dummy dumIn') -> dumOut' == dumOut
+          _ -> False)
+          (zip (M.toAscList (incomingSuccs ng)) (M.toAscList (outgoingPreds ng)))
 
+      incoming' = M.fromList . drop numFMapStraights $ M.toAscList (incomingSuccs ng)
+      outgoing' = M.fromList . drop numFMapStraights $ M.toAscList (outgoingPreds ng)
+  in
+  (numFMapStraights, ng { incomingSuccs = incoming', outgoingPreds = outgoing' })
+
+{-
+countAndDropFMapStraights ng =
+  let inSuccs = incomingSuccs ng
+      (length -> k, M.fromAscList -> incoming') = span (\(_,v) -> case v of { Dummy _ -> True; _ -> False }) $ M.toAscList inSuccs
+      outgoing' = let o = outgoingPreds ng in
+        if M.null o then M.empty else snd $ M.split (fst (M.findMin o) + k - 1) o
+  in
+  (k, ng { incomingSuccs = incoming' , outgoingPreds = outgoing'})
+-}
 -- TODO: This breaks the assumption that the vertices are labelled 1..n.
 compressPaths :: NaturalGraph f -> NaturalGraph f
 compressPaths ng = let g' = evalState (go $ digraph ng) (S.empty, []) in ng { digraph = g' }
@@ -829,10 +829,12 @@ sequence ng1 ng2 =
 
       _ -> (g, outPreds, inSuccs)
 
--- THIS HANDLES PARALLEL EDGES TOTALLY INCORRECTLY
-updateNeighborListAt x v es = case es of
-  (e@(y, f) : es') -> if x == y then (v, f) : es' else e : updateNeighborListAt x v es'
-  []                -> []
+-- TODO: Does this handle parallel edges properly?
+updateNeighborListAt x v es = map (\e@(y,f) -> if x == y then (v, f) else e) es
+
+{-- case es of
+  (e@(y, f) : es') -> if x == y then (v, f) : updateNeighborListAt x v es' else e : updateNeighborListAt x v es'
+  []                -> [] --}
 
 updateIncomingAt i v vd = vd { incoming = updateNeighborListAt i v (incoming vd) }
 updateOutgoingAt i v vd = vd { outgoing = updateNeighborListAt i v (outgoing vd) }
