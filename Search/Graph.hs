@@ -338,13 +338,16 @@ lastMay []     = Nothing
 lastMay [x]    = Just x
 lastMay (_:xs) = lastMay xs
 
+-- Three cases:
+-- There are incoming vertices
+-- There are no incoming vertices but there are outgoing vertices
+-- There are no 
+-- there are no incoming vertices or outgoing vertices.
+data TopOrBottom = Top | Bottom
 toTerm' :: Show f => NaturalGraph f -> Term
-toTerm' ng0 = traceShow ("ngis",ng) $ case findGoodVertex 0 (M.toList $ incomingSuccs ng) of
-  Nothing                        -> Id
-  -- TODO: We have to make sure outgoingPreds is accurate.
-  -- TODO: When we rip out vGood, we don't fix up outgoingPreds,
-  -- but that's fine as it's never really used by this function
-  Just (n, d0, vGood, vGoodData) ->
+toTerm' ng0 = case findGoodVertex ng of
+  Nothing -> Id
+  Just (Top, (n, d0, vGood, vGoodData)) ->
     case toTerm (ng { incomingSuccs = incomingSuccs', digraph = g', outgoingPreds = outgoingPreds' }) of
       Id -> fmapped (n + k) goodProgram
       p  -> fmapped k (p <> fmapped n goodProgram)
@@ -358,6 +361,7 @@ toTerm' ng0 = traceShow ("ngis",ng) $ case findGoodVertex 0 (M.toList $ incoming
       M.unions
       [ before
       , M.fromList $ zipWith (\i (v,_) -> (i, v)) [d0..] (outgoing vGoodData)
+      -- Why is there 1 here?
       , M.mapKeysMonotonic (\k -> k + (1 + dummyOutCount - dummyInCount)) after
       ]
 
@@ -376,12 +380,63 @@ toTerm' ng0 = traceShow ("ngis",ng) $ case findGoodVertex 0 (M.toList $ incoming
         (zip [d0..] $ outgoing vGoodData)
 
     goodProgram = makeGoodProgram vGoodData
+
+  -- d0 is the leftmost dummy child of vGood
+  Just (Bottom, (n, d0, vGood, vGoodData)) ->
+    case toTerm (ng { incomingSuccs = incomingSuccs', digraph = g', outgoingPreds = outgoingPreds' }) of
+      Id -> fmapped (n + k) -- I think n will always be 0 in this case
+      p  -> fmapped k (fmapped n goodProgram <> p)
+    where
+    dummyInCount   = length . filter (\case {(Dummy _,_) -> True; _ -> False}) $ incoming vGoodData
+    dummyOutCount  = length . filter (\case {(Dummy _,_) -> True; _ -> False}) $ outgoing vGoodData
+    outgoingPreds' =
+      let (before, y) = M.split d0 (incomingSuccs ng)
+          (_, after)  = M.split (d0 + dummyOutCount - 1) y
+      in
+      M.unions
+      [ before
+      , M.fromList $ zipWith (\i (v,_) -> (i, v)) (incoming vGoodData)
+      , M.mapKeysMonotonic (\k -> k + (dummyInCount - dummyOutCount)) after
+      ]
+
+    -- TODO: This and g' should sort of be done in one pass.
+    incomingSuccs' =
+      foldl (\m (i, (v, _)) -> case v of
+        Dummy dum -> M.adjust (\_ -> Dummy i) dum m
+        _         -> m)
+      (incomingSuccs ng)
+      (zip [d0..] (incoming vGoodData))
+
+    g' =
+      foldl (\digY'all (i, (v, _)) -> case v of
+        Real r -> M.adjust (updateOutgoingAt (Real vGood) (Dummy i)) r digY'all
+        _      -> digY'all)
+        (M.delete vGood g)
+        (zip [d0..] outgoing vGoodData)
   where
-  (k, ng) = countAndDropFMapStraights ng0
+  -- TODO: This algorithm is a bit complicated. We could actually just use
+  -- the rightmost good vertex rule and that would simplify this a bit.
+  -- It's essentially an optimization to start by examining the successors
+  -- of the incoming ports.
+
+  (k, ng) = countAndDropFMapStraights $ dropComponentStraights ng0
   g       = digraph ng
   inSuccs = incomingSuccs ng
-  -- The input to this is "map snd $ M.toList (incomingSuccs ng)" with all
-  -- the left straights stripped. Thus, all Vert's are Real.
+
+  rightmostGoodVertex ng =
+    case M.findMax (outgoingPreds ng) of
+      Nothing            -> error "rightmostGoodVertex: Expected non-empty outgoingPreds"
+      Just (dum, Real r) -> goFrom r
+      Just (_, Dummy _)  -> error "rightmostGoodVertex: Rightmost outgoing dummy had a dummy as its predecessor"
+    where
+    goFrom r =
+      let vd = lookupExn r g in
+      -- check if this vertex has any non-dummy predecessors. If it
+      -- doesn't, we're done. Otherwise, recurse on the last such
+      -- predecessor.
+      case lastMay (filter (\case { Dummy _ -> False; _ -> True }) (incoming vd)) of
+        Nothing -> (r, vd)
+        Just r' -> goFrom r'
 
   -- If there is a vertex emanating from an incoming port, then
   -- findGoodVertex will find a good vertex if the graph is non-identity,
@@ -392,15 +447,67 @@ toTerm' ng0 = traceShow ("ngis",ng) $ case findGoodVertex 0 (M.toList $ incoming
   -- are of course non-trivial such things. So, we must just pick a vertex
   -- in the graph which has no incoming vertices. It is best to pick the
   -- rightmost such vertex to prevent unnecessary fmapping.
-  rightmostGoodVertex =
-    outgoingPreds 
 
+  -- Precondition: The graph ng which this has been passed has had its
+  -- componentStraights dropped and has some outgoingPreds, so the pred
+  -- of the rightmost dummy has as its ancestor the rightmost good vertex.
+  rightmostGoodVertex' ng =
+    case M.findMax (outgoingPreds ng) of 
+      Nothing            -> error "rightmostGoodVertex: Expected non-empty outgoingPreds"
+      Just (dum, Real r) -> goFrom r
+      Just (_, Dummy _)  -> error "rightmostGoodVertex: Rightmost outgoing dummy had a dummy as its predecessor"
+    where
+    goFrom r =
+      let vd = lookupExn r g in
+      case lastMay (incoming vd) of
+        Just (Real r',_) -> goFrom r'
+        Nothing          -> (vd, r)
+        _                -> error "rightmostGoodVertex: Impossible case hit"
 
-  -- If there are no vertices eman
-  -- then there could still be another connected component of the graph
+  -- A vertex is top-good if all of its predecessors are dummys or orphans.
+  -- A vertex is bottom-good if all of its all of its successors are dummys or childless.
+  -- If a graph is non-trival (i.e., not a bunch of straights) then either there is
+  -- a top-good vertex which is a successor of an incoming dummy, or
+  -- a bottom-good vertex which is a predecessor of an outgoing dummy.
+  -- More specifically, after stripping straights, the situation breaks up into the following cases.
+  -- 1. There are incoming dummys.
+  --    In this case, there must be a topgood vertex and it will be
+  --    a successor of an incoming dummy. findGoodVertexFromTop will find it
+  --    and we can pull it up "offscreen"
+  -- 2. There are no incoming dummys.
+  --    In this case, there must be a bottomgood vertex. Furthermore, it
+  --    will be the predecessor of an outgoing dummy.
+  --    findGoodVertexFromBottom will find it and we can pull it down
+  --    "offscreen"
   --
-  findGoodVertex _ []                  = trace "eyo" $ Nothing
-  findGoodVertex !n ((d, Real r) : vs) =
+
+  findGoodVertex ng =
+    case findGoodVertexFrom Top ng of
+      Nothing -> fmap (Bottom,) (findGoodVertexFrom Bottom ng)
+      x       -> fmap (Top,) x
+
+  findGoodVertexFrom dir ng = go 0 (M.elems verts) where
+    go !n [] = Nothing
+    go !n ((d, Real r) : vs) =
+      let vd = lookupExn r g in
+      if isGood vd
+      then Just (n, d, r, vd)
+      else go (n + 1) vs
+    go _ ((_, Dummy):_) = error "findGoodVertexFromTop Impossible case"
+
+    isGood = case dir of { Top -> isTopGood; Bottom -> isBottomGood }
+    verts  = case dir of { Top -> incomingSuccs ng; Bottom -> outgoingPreds ng }
+
+    isBottomGood vd = all (\(v, _) -> isChildlessOrDummy v) (outgoing vd)
+    isChildlessOrDummy (Dummy _) = True
+    isChildlessOrDummy (Real r)  = null . outgoing . fromJust $ M.lookup r g
+
+    isTopGood vd              = all (\(v, _) -> isOrphanOrDummy v) (outgoing vd)
+    isOrphanOrDummy (Dummy _) = True
+    isOrphanOrDummy (Real r)  = null . incoming . fromJust $ M.lookup r g
+
+  findGoodVertexFromTop' _ []                  = trace "eyo" $ Nothing
+  findGoodVertexFromTop' !n ((d, Real r) : vs) =
     let vd = lookupExn r g in
     if all (\(v,_) -> isOrphanOrDummy v) (trace ("vd at " ++ show n ++ ":" ++ show vd ) $ incoming vd)
     then Just (n, d, r, vd)
@@ -409,9 +516,9 @@ toTerm' ng0 = traceShow ("ngis",ng) $ case findGoodVertex 0 (M.toList $ incoming
     isOrphanOrDummy (Dummy _) = True
     isOrphanOrDummy (Real r)  = null . incoming $ fromJust (M.lookup r g)
 
-  findGoodVertex !n ((d,Dummy _):vs) = error "findGoodVertex: Impossible case hit"
+  findGoodVertexFromTop' !n ((d,Dummy _):vs) = error "findGoodVertex: Impossible case hit"
 
-  makeGoodProgram vd = label vd <> loop (map fst (incoming vd))
+  makeTopGoodProgram vd = label vd <> loop (map fst (incoming vd))
     where
     loop = \case
       []             -> Id
@@ -422,6 +529,16 @@ toTerm' ng0 = traceShow ("ngis",ng) $ case findGoodVertex 0 (M.toList $ incoming
 
       (Real r : vs)  -> label (fromJust (M.lookup r g)) <> loop vs
 
+  -- All children of the given vertex are dummys or childless
+  makeBottomGoodProgram vd = loop (map fst (outgoing vd)) <> label vd where
+    loop = \case
+      []             -> Id
+      (Dummy d : vs) -> case loop vs of
+        Id         -> Id
+        Simple s   -> Compound ("fmap (" ++ s ++ ")")
+        Compound s -> Compound ("fmap (" ++ s ++ ")")
+      (Real r : vs) -> loop vs <> label (lookupExn r g)
+
   fmapped n f = case n of
     0 -> f
     1 -> Compound ("fmap " ++ wrapped)
@@ -430,6 +547,15 @@ toTerm' ng0 = traceShow ("ngis",ng) $ case findGoodVertex 0 (M.toList $ incoming
 
   parens x = "(" ++ x ++ ")"
 
+  dropComponentStraights ng =
+    let (length -> k, M.fromDescList -> incoming') =
+          span (\(_, v) -> case v of { Dummy _ -> True; _ -> False })
+            (M.toDescList $ incomingSuccs ng)
+
+        outgoing' = M.fromDescList . drop k . M.toDescList $ outgoingPreds ng
+    in
+    ng { incomingSuccs = incoming', outgoingPreds = outgoing' }
+
   countAndDropFMapStraights ng =
     let inSuccs = incomingSuccs ng
         (length -> k, M.fromAscList -> incoming') = span (\(_,v) -> case v of { Dummy _ -> True; _ -> False }) $ M.toAscList inSuccs
@@ -437,11 +563,6 @@ toTerm' ng0 = traceShow ("ngis",ng) $ case findGoodVertex 0 (M.toList $ incoming
           if M.null o then M.empty else snd $ M.split (fst (M.findMin o) + k - 1) o
     in
     (k, ng { incomingSuccs = incoming' , outgoingPreds = outgoing'})
-
-  lengthAndLast [] = (0, Nothing)
-  lengthAndLast l = loop 0 l where
-    loop !n [x]    = (n + 1, Just x)
-    loop !n (x:xs) = loop (n + 1) xs
 
 -- TODO: This breaks the assumption that the vertices are labelled 1..n.
 compressPaths :: NaturalGraph f -> NaturalGraph f
@@ -708,6 +829,7 @@ sequence ng1 ng2 =
 
       _ -> (g, outPreds, inSuccs)
 
+-- THIS HANDLES PARALLEL EDGES TOTALLY INCORRECTLY
 updateNeighborListAt x v es = case es of
   (e@(y, f) : es') -> if x == y then (v, f) : es' else e : updateNeighborListAt x v es'
   []                -> []
