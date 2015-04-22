@@ -28,6 +28,7 @@ import Control.Applicative
 import Data.Maybe
 import qualified Data.HashSet as HashSet
 import qualified Data.List as List
+import qualified Data.Set as Set
 
 import InstEnv (ClsInst(..))
 import FastString
@@ -106,11 +107,34 @@ showTrans (Trans {from, to, name}) = do
   to' <- lift $ mapM showPprM to
   return (show $ Trans {from=from', to=to', name})
 
-transes :: (Name, Type) -> [Trans SyntacticFunc]
-transes b = map toTrans (transInterpretations b)
+data CoarseType
+  = SomeVar
+  | Type WrappedType
+  deriving (Eq, Ord)
+
+-- Heuristically ignore distinctions between all TyVars
+-- since comparing types gets complicated with TyVars
+type CoarseFunc = (TyCon, [CoarseType])
+
+squint :: SyntacticFunc -> CoarseFunc
+squint (tc, ts) = (tc, map squintTy ts) where
+  squintTy (WrappedType t) = case t of
+    TyVarTy v      -> SomeVar
+    _              -> Type (WrappedType t)
+
+-- Filtering occurs here
+transes :: Set.Set CoarseFunc -> (Name, Type) -> [Trans SyntacticFunc]
+transes funcs b = mapMaybe toTrans (transInterpretations b)
   where
-  toTrans :: TransInterpretation -> Trans SyntacticFunc
-  toTrans (TransInterpretation {..}) = Trans {from, to, name=name'}
+  toTrans :: TransInterpretation -> Maybe (Trans SyntacticFunc)
+  toTrans (TransInterpretation {..}) =
+    if any (\f -> not $ Set.member (squint f) funcs) from ||
+       any (\f -> not $ Set.member (squint f) funcs) to
+    then Nothing
+    else if from == to
+    then Nothing
+    else if numArguments > 3 then Nothing
+    else Just (Trans {from, to, name=name'})
     where
     ident = occNameString $ occName name
     name' =
@@ -131,6 +155,9 @@ monads = instancesOneParamFunctorClass PrelNames.monadClassName
 applicatives :: GhcMonad m => m [SyntacticFunc]
 applicatives = instancesOneParamFunctorClass PrelNames.applicativeClassName
 
+functors :: GhcMonad m => m [SyntacticFunc]
+functors = instancesOneParamFunctorClass PrelNames.functorClassName
+
 instancesOneParamFunctorClass name =
   getInfo False name >>| \case
     Just (_,_,insts,_) -> mapMaybe (extractUnapplied . head . is_tys) insts
@@ -145,14 +172,26 @@ extractUnapplied t = case t of
   LitTy tl         -> Nothing
   TyVarTy v        -> Nothing
 
-search :: [String] -> [String] -> Int ->  M [NaturalGraph (Int, Int)]
+-- TODO: This type is only for debug purposes
+data WrappedTyCon = WrappedTyCon TyCon String
+instance Eq WrappedTyCon where
+  WrappedTyCon tc _ == WrappedTyCon tc' _ = tc == tc'
+instance Ord WrappedTyCon where
+  compare (WrappedTyCon x _) (WrappedTyCon y _) = compare x y
+instance Hashable WrappedTyCon where
+  hashWithSalt s (WrappedTyCon tc _) = s `hashWithSalt` getKey (getUnique tc)
+instance Show WrappedTyCon where
+  show (WrappedTyCon _ s) = show s
+-- search :: [String] -> [String] -> Int ->  M [NaturalGraph (Int, Int)]
 search src trg n = do
   fs      <- lift getSessionDynFlags
-  let renderSyntacticFunc (tc, args) = (getKey (getUnique tc), hash args)
+  -- let renderSyntacticFunc (tc, args) = (getKey (getUnique tc), hash args)
+  let showSyntacticFunc = showSDoc fs . ppr
+  let renderSyntacticFunc sf@(tc, args) = WrappedTyCon tc (showSyntacticFunc sf)
   from    <- fmap catMaybes $ mapM (fmap (fmap renderSyntacticFunc . extractUnapplied . dropForAlls) . readType) src
   to      <- fmap catMaybes $ mapM (fmap (fmap renderSyntacticFunc . extractUnapplied . dropForAlls) . readType) trg
   transes <- fmap (fmap (fmap renderSyntacticFunc)) transesInScope
-  return $ graphsOfSizeAtMost transes n from to
+  return $ graphsOfSizeAtMostH transes n from to
 
 transesInScope :: M [Trans SyntacticFunc]
 transesInScope = do
@@ -160,10 +199,11 @@ transesInScope = do
   ts <- lift traversables
   as <- lift applicatives
   ms <- lift monads
+  funcSet <- lift $ fmap (Set.fromList . map squint) functors
   let joins     = map (\m -> Trans { from = [m,m], to = [m], name = Simple "join" }) ms
       traverses = liftA2 (\t f -> Trans { from = [t,f], to = [f,t], name = Simple "sequenceA" }) ts as
-  return . filter (\Trans {..} -> not (from == to)) $
-    concatMap transes namedTys ++ traverses ++ joins
+  return $
+    concatMap (transes funcSet) namedTys ++ traverses ++ joins
   where
   typeName n = do
     hsc_env <- lift getSession

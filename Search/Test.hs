@@ -16,18 +16,18 @@ import Slick.LoadFile
 import Slick.Search
 
 import qualified Data.HashSet as HashSet
+import Data.Maybe (catMaybes)
 
 main :: IO ()
 main = do
   (nStr:_) <- getArgs
   let n = read nStr :: Int
   void . runWithTestRef' $ \r -> runErrorT $ do
-    loadFile r "Slick.hs"
+    loadFile r "Search/Test.hs"
     ts <- transesInScope
     liftIO $ print (length ts)
-    mapM_ (liftIO . putStrLn <=< showTrans) ts
     gs <- search from to n
-    liftIO (print gs)
+    liftIO (mapM_ print gs)
   where
   from = ["[]", "Maybe", "IO"]
   to   = ["IO","[]"]

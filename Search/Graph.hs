@@ -1,5 +1,6 @@
 {-# LANGUAGE RecordWildCards, NamedFieldPuns, LambdaCase,
-             ScopedTypeVariables, BangPatterns, ViewPatterns #-}
+             ScopedTypeVariables, BangPatterns, ViewPatterns,
+             TupleSections #-}
 module Search.Graph where
 
 import Prelude hiding (sequence)
@@ -189,7 +190,7 @@ branchOut ts = concatMap possibilities . fineViews where
 
 -- TODO: Convert real Haskell programs into lists of moves
 -- TODO: Analyze program graphs
-graphsOfSizeAtMost :: (Hashable f, Ord f) => [Trans f] -> Int -> BraidState f -> BraidState f -> [NaturalGraph f]
+graphsOfSizeAtMost :: (Hashable f, Ord f, Show f) => [Trans f] -> Int -> BraidState f -> BraidState f -> [NaturalGraph f]
 graphsOfSizeAtMost tsList n start end = HashSet.toList $ runST $ do
   arr <- newSTArray (0, n) M.empty
   go arr n start
@@ -207,8 +208,48 @@ graphsOfSizeAtMost tsList n start end = HashSet.toList $ runST $ do
         progs <- fmap HashSet.unions . forM (branchOut ts b) $ \(b', move) ->
           fmap (HashSet.map (sequence (moveToNaturalGraph move))) (go arr (n - 1) b')
         let progs' = if b == end then HashSet.insert (idGraph end) progs else progs
-        writeArray arr n (M.insert b progs' memo)
+        traceShow (length b, HashSet.size progs') $ writeArray arr n (M.insert b progs' memo)
         return progs'
+
+      Just ps -> return ps
+
+-- Search with heuristics
+graphsOfSizeAtMostH :: (Hashable f, Ord f, Show f) => [Trans f] -> Int -> BraidState f -> BraidState f -> [NaturalGraph f]
+graphsOfSizeAtMostH tsList n start end = HashSet.toList $ runST $ do
+  arr <- newSTArray (0, n) M.empty
+  fmap HashSet.unions . forM (branchOut ts start) $ \(b', move) ->
+    let g = moveToNaturalGraph move in
+    fmap (HashSet.map (sequence g)) (go arr (n - 1) b' move)
+  where 
+  newSTArray :: (Int, Int) -> Map k v -> ST s (STArray s Int (Map k v))
+  newSTArray = newArray
+
+  ts = HashMap.fromListWith (++) (map (\t -> (from t, [t])) tsList)
+
+  -- TODO: Some work is definitely duplicated.
+  -- E.g., I start with AB, which gets rewritten to CB, to BC, to ABC, to
+  -- AB, I shouldn't keep going since happens next should have been done up
+  -- the call stack (or is about to be done).
+  -- For each S, n store programs of length n which map out of S (to T), keyed by T
+  go arr 0 b move = return $ if b == end then HashSet.singleton (idGraph end) else HashSet.empty
+  go arr n b (pre, t, post) = do
+    memo <- readArray arr n
+    case M.lookup b memo of
+      Nothing ->
+        if length b > 5
+        then return HashSet.empty
+        else do
+          x <- traceShow b $ readArray arr n
+          progs <- fmap HashSet.unions . forM (branchOut ts b) $ \(b', move@(_, t', _)) ->
+            if from t == [] && from t' == []
+            then return HashSet.empty
+            else
+              let g = moveToNaturalGraph move in
+              fmap (HashSet.map (sequence g)) (go arr (n - 1) b' move)
+
+          let progs' = if b == end then HashSet.insert (idGraph end) progs else progs
+          traceShow (HashSet.size progs') $ writeArray arr n (M.insert b progs' memo)
+          return progs'
 
       Just ps -> return ps
 
@@ -292,13 +333,19 @@ renderTerm = \case
 toTerm :: Show f => NaturalGraph f -> Term
 toTerm = toTerm' . compressPaths
 
+lastMay :: [a] -> Maybe a
+lastMay []     = Nothing
+lastMay [x]    = Just x
+lastMay (_:xs) = lastMay xs
+
 toTerm' :: Show f => NaturalGraph f -> Term
-toTerm' ng0 = case traceShow ng $ findGoodVertex 0 (M.toList $ incomingSuccs ng) of
+toTerm' ng0 = traceShow ("ngis",ng) $ case findGoodVertex 0 (M.toList $ incomingSuccs ng) of
   Nothing                        -> Id
+  -- TODO: We have to make sure outgoingPreds is accurate.
   -- TODO: When we rip out vGood, we don't fix up outgoingPreds,
   -- but that's fine as it's never really used by this function
   Just (n, d0, vGood, vGoodData) ->
-    case toTerm (ng { incomingSuccs = incomingSuccs', digraph = g' }) of
+    case toTerm (ng { incomingSuccs = incomingSuccs', digraph = g', outgoingPreds = outgoingPreds' }) of
       Id -> fmapped (n + k) goodProgram
       p  -> fmapped k (p <> fmapped n goodProgram)
     where
@@ -314,6 +361,13 @@ toTerm' ng0 = case traceShow ng $ findGoodVertex 0 (M.toList $ incomingSuccs ng)
       , M.mapKeysMonotonic (\k -> k + (1 + dummyOutCount - dummyInCount)) after
       ]
 
+    outgoingPreds' =
+      foldl (\m (i, (v, _)) -> case v of
+        Dummy dum -> M.adjust (\_ -> Dummy i) dum m
+        _          -> m)
+        (outgoingPreds ng)
+        (zip [d0..] (outgoing vGoodData))
+
     g' =
       foldl (\digY'all (i, (v,_)) -> case v of
         Real r -> M.adjust (updateIncomingAt (Real vGood) (Dummy i)) r digY'all 
@@ -328,10 +382,27 @@ toTerm' ng0 = case traceShow ng $ findGoodVertex 0 (M.toList $ incomingSuccs ng)
   inSuccs = incomingSuccs ng
   -- The input to this is "map snd $ M.toList (incomingSuccs ng)" with all
   -- the left straights stripped. Thus, all Vert's are Real.
-  findGoodVertex _ []                  = Nothing
+
+  -- If there is a vertex emanating from an incoming port, then
+  -- findGoodVertex will find a good vertex if the graph is non-identity,
+  -- and will return nothing if the graph is the identity.
+
+  -- If there are no vertices emanating from the incoming ports, then
+  -- the graph is a natural transformation from the identity, but there
+  -- are of course non-trivial such things. So, we must just pick a vertex
+  -- in the graph which has no incoming vertices. It is best to pick the
+  -- rightmost such vertex to prevent unnecessary fmapping.
+  rightmostGoodVertex =
+    outgoingPreds 
+
+
+  -- If there are no vertices eman
+  -- then there could still be another connected component of the graph
+  --
+  findGoodVertex _ []                  = trace "eyo" $ Nothing
   findGoodVertex !n ((d, Real r) : vs) =
     let vd = lookupExn r g in
-    if all (\(v,_) -> isOrphanOrDummy v) (incoming vd)
+    if all (\(v,_) -> isOrphanOrDummy v) (trace ("vd at " ++ show n ++ ":" ++ show vd ) $ incoming vd)
     then Just (n, d, r, vd)
     else findGoodVertex (n + 1) vs
     where
@@ -360,18 +431,12 @@ toTerm' ng0 = case traceShow ng $ findGoodVertex 0 (M.toList $ incomingSuccs ng)
   parens x = "(" ++ x ++ ")"
 
   countAndDropFMapStraights ng =
-    let inSuccs        = traceShowId $ incomingSuccs ng
-        (k, lastMay) =
-          lengthAndLast . takeWhile (\(_,v) -> case v of { Dummy _ -> True; _ -> False }) $ M.toAscList inSuccs
-        incoming' =
-          case lastMay of
-            Nothing          -> M.empty
-            Just (_, Dummy dlast) -> snd $ M.split dlast inSuccs
-
+    let inSuccs = incomingSuccs ng
+        (length -> k, M.fromAscList -> incoming') = span (\(_,v) -> case v of { Dummy _ -> True; _ -> False }) $ M.toAscList inSuccs
         outgoing' = let o = outgoingPreds ng in
           if M.null o then M.empty else snd $ M.split (fst (M.findMin o) + k - 1) o
     in
-    (k, ng { incomingSuccs = incoming', outgoingPreds = outgoing' })
+    (k, ng { incomingSuccs = incoming' , outgoingPreds = outgoing'})
 
   lengthAndLast [] = (0, Nothing)
   lengthAndLast l = loop 0 l where
