@@ -31,8 +31,6 @@ import Data.Hashable
 import qualified Data.HashSet as HashSet
 import qualified Data.HashMap.Strict as HashMap
 
-import Debug.Trace
-
 type BraidState f = [f]
 type BraidView  f = ([f], [f])
 
@@ -346,7 +344,7 @@ lastMay (_:xs) = lastMay xs
 -- there are no incoming vertices or outgoing vertices.
 data TopOrBottom = Top | Bottom deriving (Eq, Show)
 toTerm' :: Show f => NaturalGraph f -> Term
-toTerm' ng0 = case traceShow ng $ findGoodVertex ng of
+toTerm' ng0 = case findGoodVertex ng of
   Nothing -> Id
   Just (Top, (n, d0, vGood, vGoodData)) ->
     case toTerm' (ng { incomingSuccs = incomingSuccs', digraph = g'', outgoingPreds = outgoingPreds'' }) of
@@ -366,7 +364,7 @@ toTerm' ng0 = case traceShow ng $ findGoodVertex ng of
     incomingSuccs' = 
       M.unions
       [ beforeSuccs
-      , (\x -> traceShow ("outgoing", x) x). M.fromList $ zipWith (\i (v,_) -> (i, v)) [d0..] (outgoing vGoodData)
+      , M.fromList $ zipWith (\i (v,_) -> (i, v)) [d0..] (outgoing vGoodData)
       , M.mapKeysMonotonic (\k -> k + dummyShift) afterSuccs
       ]
 
@@ -457,25 +455,6 @@ toTerm' ng0 = case traceShow ng $ findGoodVertex ng of
       incomingSuccs'
       (zip [d0..] (incoming vGoodData))
 
-{-
-    g' =
-      M.mapWithKey (\r vd -> vd { incoming = map (first (rename r)) (incoming vd) }) (M.delete vGood g)
-      where
-      rename rCurr ve = case ve of
-        Real r ->
-          if r == vGood
-          then Dummy (d0 + fromJust (findIndex (== Real rCurr) (map fst . outgoing $ vGoodData)))
-          else ve
-        Dummy d ->
-          if d >= d0 + dummiesRemoved then Dummy (d + dummyShift) else ve -}
-
-{-
-    g' =
-      M.foldWithKey (\d ve digY'all -> case ve of
-        Real r -> M.adjust (updateOutgoingAtAll (Dummy d) (Dummy (d + dummyShift))) r digY'all
-        _      -> digY'all)
-        (M.delete vGood g) afterPreds
--}
     g' =
       foldl (\digY'all r ->
         M.adjust (\vd -> vd { outgoing = map (first shift) (outgoing vd) }) r digY'all)
@@ -528,7 +507,7 @@ toTerm' ng0 = case traceShow ng $ findGoodVertex ng of
   --    "offscreen"
 
   findGoodVertex ng =
-    traceShowId $ case findGoodVertexFrom Top ng of
+    case findGoodVertexFrom Top ng of
       Just x  -> Just (Top, x)
       Nothing -> fmap (Bottom,) (findGoodVertexFrom Bottom ng)
 
@@ -962,4 +941,4 @@ leftFromRight [] ys = Just ys
 
 -- UTIL
 -- lookupExn :: Ord k => k -> M.Map k v -> v
-lookupExn k = fromMaybe (error ("M.lookup failed for key: " ++ show k)) . M.lookup (traceShowId k)
+lookupExn k = fromMaybe (error ("M.lookup failed for key: " ++ show k)) . M.lookup k

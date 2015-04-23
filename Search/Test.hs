@@ -28,7 +28,7 @@ main = do
     ts <- transesInScope
     liftIO $ print (length ts)
     gs <- search from to n
-    liftIO (mapM_  (putStrLn . renderTerm . toTerm . traceShowId) gs)
+    liftIO (mapM_  (putStrLn . renderTerm . toTerm) gs)
   where
   from = ["[]", "Maybe", "IO"]
   to   = ["IO","[]"]
