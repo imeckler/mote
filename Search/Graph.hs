@@ -32,8 +32,6 @@ import Data.Hashable
 import qualified Data.HashSet as HashSet
 import qualified Data.HashMap.Strict as HashMap
 
-import Debug.Trace
-
 type BraidState f = [f]
 type BraidView  f = ([f], [f])
 
@@ -190,7 +188,7 @@ branchOut ts = concatMap possibilities . fineViews where
 
 -- TODO: Convert real Haskell programs into lists of moves
 -- TODO: Analyze program graphs
-graphsOfSizeAtMost :: (Hashable f, Ord f, Show f) => [Trans f] -> Int -> BraidState f -> BraidState f -> [NaturalGraph f]
+graphsOfSizeAtMost :: (Hashable f, Ord f) => [Trans f] -> Int -> BraidState f -> BraidState f -> [NaturalGraph f]
 graphsOfSizeAtMost tsList n start end = HashSet.toList $ runST $ do
   arr <- newSTArray (0, n) M.empty
   go arr n start
@@ -214,7 +212,7 @@ graphsOfSizeAtMost tsList n start end = HashSet.toList $ runST $ do
       Just ps -> return ps
 
 -- Search with heuristics
-graphsOfSizeAtMostH :: (Hashable f, Ord f, Show f) => [Trans f] -> Int -> BraidState f -> BraidState f -> [NaturalGraph f]
+graphsOfSizeAtMostH :: (Hashable f, Ord f) => [Trans f] -> Int -> BraidState f -> BraidState f -> [NaturalGraph f]
 graphsOfSizeAtMostH tsList n start end = HashSet.toList $ runST $ do
   arr <- newSTArray (0, n) M.empty
   fmap HashSet.unions . forM (branchOut ts start) $ \(b', move) ->
@@ -348,16 +346,12 @@ lastMay (_:xs) = lastMay xs
 -- there are no incoming vertices or outgoing vertices.
 data TopOrBottom = Top | Bottom deriving (Eq, Show)
 
-iClaimThat loc x y = case x of
-  Right _ -> y
-  Left s  -> error (loc ++ ": " ++ s)
-
 data GoodVertexType = FloatingRightOf Int | AttachedTo DummyVertex
 toTerm' :: Show f => NaturalGraph f -> AnnotatedTerm
-toTerm' ng0 = traceShow ng $  case findGoodVertex ng of
+toTerm' ng0 = case findGoodVertex ng of
   Nothing -> AnnotatedTerm Id 0
   Just (Top, (leftStrands, vGood, vGoodData)) ->
-    case toTerm' (iClaimThat "0" (checkGraph ng') ng') of
+    case toTerm' ng' of
       (unannotatedTerm -> Id) -> fmapped (k + leftStrands) goodProgram
       p                       -> fmapped k (p <> fmapped leftStrands goodProgram)
     where
@@ -375,13 +369,9 @@ toTerm' ng0 = traceShow ng $  case findGoodVertex ng of
       let (before, _) = M.split leftStrands (incomingSuccs ng)
           (_, after)  = M.split (leftStrands + dummiesRemoved - 1) (incomingSuccs ng)
       in
-      traceShow ( "leftStrands + dummiesRemoved - 1", leftStrands + dummiesRemoved - 1)
-      . traceShow ("dummiesRemoved", dummiesRemoved)
-      . traceShow ("after", after) . traceShow ("before", before) . traceShow ("leftStrands", leftStrands)
-      . traceShow ("vGood", vGood)
-      $ (before, after)
+      (before, after)
 
-    incomingSuccs' = 
+    incomingSuccs' =
       M.unions
       [ beforeSuccs
       , M.fromList $ zipWith (\i (v,_) -> (i, v)) [leftStrands..] (outgoing vGoodData)
@@ -425,7 +415,7 @@ toTerm' ng0 = traceShow ng $  case findGoodVertex ng of
     goodProgram = makeTopGoodProgram vGoodData
 
   Just (Bottom, (leftStrands, vGood, vGoodData)) ->
-    case toTerm (iClaimThat "1" (checkGraph ng') ng') of
+    case toTerm ng' of
       (unannotatedTerm -> Id) -> fmapped (k + leftStrands) goodProgram -- I think n will always be 0 in this case
       p  -> fmapped k (fmapped leftStrands goodProgram <> p)
     where
@@ -561,13 +551,13 @@ toTerm' ng0 = traceShow ng $  case findGoodVertex ng of
 
   -- d here is the index of the rightmost dummy we've seen.
   findGoodVertexFrom dir ng =
-    if M.size (incomingSuccs ng) == 0
+    if M.size start == 0
     then Nothing
     else foldr (\(d, ve) keepGoing -> case ve of
       Real r -> go d r <|> keepGoing
       Dummy _ -> keepGoing)
       Nothing
-      (M.toAscList (start ng))
+      (M.toAscList start)
     where
     scanAcross d []            = Nothing
     scanAcross d ((ve,_) : vs) = case ve of
@@ -586,7 +576,7 @@ toTerm' ng0 = traceShow ng $  case findGoodVertex ng of
             else Nothing
           Just (d', r') -> go d' r'
 
-    start = case dir of { Top -> incomingSuccs; Bottom -> outgoingPreds }
+    start = case dir of { Top -> incomingSuccs ng; Bottom -> outgoingPreds ng }
     next  = case dir of { Top -> incoming; Bottom -> outgoing }
 
   makeTopGoodProgram vd = label vd <> loop (map fst (incoming vd))
@@ -615,7 +605,7 @@ toTerm' ng0 = traceShow ng $  case findGoodVertex ng of
   fmapped n (AnnotatedTerm f x) = case n of
     0 -> AnnotatedTerm f x
     1 -> AnnotatedTerm (Compound ("fmap " ++ wrapped)) x
-    _ -> AnnotatedTerm (Compound (parens (intercalate " . " $ replicate n "fmap") ++ wrapped)) x
+    _ -> AnnotatedTerm (Compound (parens (intercalate " . " $ replicate n "fmap") ++ " " ++ wrapped)) x
     where wrapped = case f of { Simple x -> x; Compound x -> parens x }
 
   parens x = "(" ++ x ++ ")"
@@ -636,7 +626,7 @@ dropComponentStraights ng =
   in
   ng { incomingSuccs = incoming', outgoingPreds = outgoing' }
 
-countAndDropFMapStraights :: Show f => NaturalGraph f -> (Int, NaturalGraph f)
+countAndDropFMapStraights :: NaturalGraph f -> (Int, NaturalGraph f)
 countAndDropFMapStraights ng =
   let numFMapStraights =
         length $ takeWhile (\((dumIn,inSucc), (dumOut, outPred)) -> case (inSucc, outPred) of
@@ -654,13 +644,11 @@ countAndDropFMapStraights ng =
       g' = M.map (\vd -> vd { incoming = map shift (incoming vd), outgoing = map shift (outgoing vd) }) (digraph ng)
   in
   ( numFMapStraights
-  , let ng' = ng { incomingSuccs = incoming', outgoingPreds = outgoing', digraph = g' }
-    in iClaimThat "2" (checkGraph ng') ng'
+  , ng { incomingSuccs = incoming', outgoingPreds = outgoing', digraph = g' }
   )
 
 checkGraph :: Show f => NaturalGraph f -> Either String ()
 checkGraph ng = do
-  () <- trace ("Checking\n" ++ show ng) (Right ())
   throwIfNot "Incoming bad" $ all (uncurry (==)) $ zip [0..] (M.keys (incomingSuccs ng))
   throwIfNot "Outgoing bad" $ all (uncurry (==)) $ zip [0..] (M.keys (outgoingPreds ng))
   forM_ (M.toList (incomingSuccs ng)) $ \(dum, ve) ->

@@ -22,15 +22,15 @@ import Data.Function (on)
 
 main :: IO ()
 main = do
-  -- (nStr:_) <- getArgs
-  -- let n = read nStr :: Int
-  n <- readLn
+  (nStr:_) <- getArgs
+  let n = read nStr :: Int
   void . runWithTestRef' $ \r -> runErrorT $ do
     loadFile r "Search/Test.hs"
     ts <- transesInScope
     liftIO $ print (length ts)
     gs <- search from to n
-    liftIO (mapM (putStrLn . renderAnnotatedTerm) . List.sortBy (compare `on` numHoles) $ map toTerm gs)
+    liftIO (mapM (\x -> print x >> print (toTerm x)) gs)
+    -- . List.sortBy (compare `on` numHoles) $ map toTerm gs)
   where
   from = ["[]", "Maybe", "IO"]
   to   = ["IO","[]"]
