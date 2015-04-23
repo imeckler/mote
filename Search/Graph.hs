@@ -100,11 +100,11 @@ connectedComponents ng = undefined -- go (S.fromList vs)
 
 -- Transformations to and from the identity functor are not handled
 -- properly.
-programToNaturalGraph :: Program f -> NaturalGraph f
-programToNaturalGraph = foldl1 (\acc g -> sequence acc g) . map moveToNaturalGraph
+programToGraph :: Program f -> NaturalGraph f
+programToGraph = foldl1 (\acc g -> sequence acc g) . map moveToGraph
 
-moveToNaturalGraph :: Move f -> NaturalGraph f
-moveToNaturalGraph (ls, t, rs) =
+moveToGraph :: Move f -> NaturalGraph f
+moveToGraph (ls, t, rs) =
   NaturalGraph
   { incomingLabels = ls ++ from t ++ rs
   , incomingSuccs = M.fromList $
@@ -144,14 +144,14 @@ idGraph fs =
   , digraph = M.empty
   }
   where
-  n = length fs
+  n = length fs - 1
 
 cutProofToNaturalGraph :: CutProof f -> NaturalGraph f
 cutProofToNaturalGraph cp0 = case cp0 of
   FMap f cp  -> juxtapose (idGraph [f]) (cutProofToNaturalGraph cp)
   At fs cp   -> juxtapose (cutProofToNaturalGraph cp) (idGraph fs)
   Cut cp cp' -> sequence (cutProofToNaturalGraph cp) (cutProofToNaturalGraph cp')
-  Axiom t    -> programToNaturalGraph [([], t, [])]
+  Axiom t    -> programToGraph [([], t, [])]
 
 -- How to make the graph of a cut free proof?
 
@@ -206,9 +206,9 @@ graphsOfSizeAtMost tsList n start end = HashSet.toList $ runST $ do
     case M.lookup b memo of
       Nothing -> do
         progs <- fmap HashSet.unions . forM (branchOut ts b) $ \(b', move) ->
-          fmap (HashSet.map (sequence (moveToNaturalGraph move))) (go arr (n - 1) b')
+          fmap (HashSet.map (sequence (moveToGraph move))) (go arr (n - 1) b')
         let progs' = if b == end then HashSet.insert (idGraph end) progs else progs
-        traceShow (length b, HashSet.size progs') $ writeArray arr n (M.insert b progs' memo)
+        writeArray arr n (M.insert b progs' memo)
         return progs'
 
       Just ps -> return ps
@@ -218,9 +218,10 @@ graphsOfSizeAtMostH :: (Hashable f, Ord f, Show f) => [Trans f] -> Int -> BraidS
 graphsOfSizeAtMostH tsList n start end = HashSet.toList $ runST $ do
   arr <- newSTArray (0, n) M.empty
   fmap HashSet.unions . forM (branchOut ts start) $ \(b', move) ->
-    let g = moveToNaturalGraph move in
+    let g = moveToGraph move in
     fmap (HashSet.map (sequence g)) (go arr (n - 1) b' move)
   where 
+  n0 = n -- TODO: Debug
   newSTArray :: (Int, Int) -> Map k v -> ST s (STArray s Int (Map k v))
   newSTArray = newArray
 
@@ -239,16 +240,16 @@ graphsOfSizeAtMostH tsList n start end = HashSet.toList $ runST $ do
         if length b > 5
         then return HashSet.empty
         else do
-          x <- traceShow b $ readArray arr n
+          readArray arr n
           progs <- fmap HashSet.unions . forM (branchOut ts b) $ \(b', move@(_, t', _)) ->
             if from t == [] && from t' == []
             then return HashSet.empty
             else
-              let g = moveToNaturalGraph move in
+              let g = moveToGraph move in
               fmap (HashSet.map (sequence g)) (go arr (n - 1) b' move)
 
           let progs' = if b == end then HashSet.insert (idGraph end) progs else progs
-          traceShow (HashSet.size progs') $ writeArray arr n (M.insert b progs' memo)
+          writeArray arr n (M.insert b progs' memo)
           return progs'
 
       Just ps -> return ps
@@ -345,73 +346,151 @@ lastMay (_:xs) = lastMay xs
 -- there are no incoming vertices or outgoing vertices.
 data TopOrBottom = Top | Bottom deriving (Eq, Show)
 toTerm' :: Show f => NaturalGraph f -> Term
-toTerm' ng0 = case findGoodVertex ng of
+toTerm' ng0 = case traceShow ng $ findGoodVertex ng of
   Nothing -> Id
   Just (Top, (n, d0, vGood, vGoodData)) ->
-    case toTerm (ng { incomingSuccs = incomingSuccs', digraph = g', outgoingPreds = outgoingPreds' }) of
+    case toTerm' (ng { incomingSuccs = incomingSuccs', digraph = g'', outgoingPreds = outgoingPreds'' }) of
       Id -> fmapped (n + k) goodProgram
       p  -> fmapped k (p <> fmapped n goodProgram)
     where
-    dummyInCount   = length . filter (\case {(Dummy _,_) -> True; _ -> False}) $ incoming vGoodData
-    dummyOutCount  = length . filter (\case {(Dummy _,_) -> True; _ -> False}) $ outgoing vGoodData
-    incomingSuccs' = 
+    dummiesRemoved = length . filter (\case {(Dummy _,_) -> True; _ -> False}) $ incoming vGoodData
+    dummiesCreated = length $ outgoing vGoodData
+    dummyShift     = dummiesCreated - dummiesRemoved
+
+    (beforeSuccs, afterSuccs) =
       let (before, y) = M.split d0 (incomingSuccs ng)
-          (_, after)  = M.split (d0 + dummyInCount - 1) y
+          (_, after)  = M.split (d0 + dummiesRemoved - 1) y
       in
+      (before, after)
+
+    incomingSuccs' = 
       M.unions
-      [ before
-      , M.fromList $ zipWith (\i (v,_) -> (i, v)) [d0..] (outgoing vGoodData)
-      -- Why is there 1 here?
-      , M.mapKeysMonotonic (\k -> k + (1 + dummyOutCount - dummyInCount)) after
+      [ beforeSuccs
+      , (\x -> traceShow ("outgoing", x) x). M.fromList $ zipWith (\i (v,_) -> (i, v)) [d0..] (outgoing vGoodData)
+      , M.mapKeysMonotonic (\k -> k + dummyShift) afterSuccs
       ]
 
+    -- TODO: Merge this with g'
     outgoingPreds' =
+      M.foldWithKey (\d ve preds -> case ve of
+        Dummy suc -> M.adjust (\_ -> Dummy (d + dummyShift)) suc preds
+        _         -> preds)
+      (outgoingPreds ng)
+      afterSuccs
+
+    outgoingPreds'' =
       foldl (\m (i, (v, _)) -> case v of
         Dummy dum -> M.adjust (\_ -> Dummy i) dum m
         _          -> m)
-        (outgoingPreds ng)
+        outgoingPreds'
         (zip [d0..] (outgoing vGoodData))
 
+    -- This is incorrect
+    {-
     g' =
+      M.mapWithKey (\r vd -> vd { incoming = map (first (rename r)) (incoming vd) }) (M.delete vGood g)
+      where
+      rename rCurr ve = case ve of
+        Real r ->
+          if r == vGood
+          then Dummy (d0 + fromJust (findIndex (== Real rCurr) (map fst . outgoing $ vGoodData)))
+          else ve
+        Dummy d ->
+          if d >= d0 + dummiesRemoved then Dummy (d + dummyShift) else ve
+-}
+
+
+    g' =
+      foldl (\digY'all r ->
+        M.adjust (\vd -> vd { incoming = map (first shift) (incoming vd) }) r digY'all)
+        g
+        (List.nub . mapMaybe (\case {Real r -> Just r; _ -> Nothing}) $ M.elems afterSuccs)
+      where
+      shift ve = case ve of
+        Dummy d -> if d >= d0 + dummiesRemoved then Dummy (d + dummyShift) else ve
+        _       -> ve
+
+    g'' =
       foldl (\digY'all (i, (v,_)) -> case v of
-        Real r -> M.adjust (updateIncomingAt (Real vGood) (Dummy i)) r digY'all 
+        Real r -> M.adjust (updateIncomingAtFirst (Real vGood) (Dummy i)) r digY'all 
         _      -> digY'all)
-        (M.delete vGood g)
-        (zip [d0..] $ outgoing vGoodData)
+        g'
+        (zip [d0..] (outgoing vGoodData))
 
     goodProgram = makeTopGoodProgram vGoodData
 
   -- d0 is the leftmost dummy child of vGood
   Just (Bottom, (n, d0, vGood, vGoodData)) ->
-    case toTerm (ng { incomingSuccs = incomingSuccs', digraph = g', outgoingPreds = outgoingPreds' }) of
+    case toTerm (ng { incomingSuccs = incomingSuccs'', digraph = g'', outgoingPreds = outgoingPreds' }) of
       Id -> fmapped (n + k) goodProgram -- I think n will always be 0 in this case
       p  -> fmapped k (fmapped n goodProgram <> p)
     where
-    dummyInCount   = length . filter (\case {(Dummy _,_) -> True; _ -> False}) $ incoming vGoodData
-    dummyOutCount  = length . filter (\case {(Dummy _,_) -> True; _ -> False}) $ outgoing vGoodData
-    outgoingPreds' =
-      let (before, y) = M.split d0 (incomingSuccs ng)
-          (_, after)  = M.split (d0 + dummyOutCount - 1) y
+    dummiesCreated = length $ incoming vGoodData
+    dummiesRemoved = length . filter (\case {(Dummy _,_) -> True; _ -> False}) $ outgoing vGoodData
+    dummyShift     = dummiesCreated - dummiesRemoved
+
+    (beforePreds, afterPreds) =
+      let (before, y) = M.split d0 (outgoingPreds ng)
+          (_, after)  = M.split (d0 + dummiesRemoved - 1) y
       in
+      (before, after)
+
+    outgoingPreds' =
       M.unions
-      [ before
+      [ beforePreds
       , M.fromList $ zipWith (\i (v,_) -> (i, v)) [d0..] (incoming vGoodData)
-      , M.mapKeysMonotonic (\k -> k + (dummyInCount - dummyOutCount)) after
+      , M.mapKeysMonotonic (\k -> k + dummyShift) afterPreds
       ]
 
-    -- TODO: This and g' should sort of be done in one pass.
     incomingSuccs' =
+      M.foldWithKey (\d ve succs -> case ve of
+        Dummy pred -> M.adjust (\_ -> Dummy (d + dummyShift)) pred succs
+        _          -> succs)
+        (incomingSuccs ng)
+        afterPreds
+
+    -- TODO: This and g' should sort of be done in one pass.
+    incomingSuccs'' =
       foldl (\m (i, (v, _)) -> case v of
         Dummy dum -> M.adjust (\_ -> Dummy i) dum m
         _         -> m)
-      (incomingSuccs ng)
+      incomingSuccs'
       (zip [d0..] (incoming vGoodData))
 
+{-
     g' =
-      foldl (\digY'all (i, (v, _)) -> case v of
-        Real r -> M.adjust (updateOutgoingAt (Real vGood) (Dummy i)) r digY'all
+      M.mapWithKey (\r vd -> vd { incoming = map (first (rename r)) (incoming vd) }) (M.delete vGood g)
+      where
+      rename rCurr ve = case ve of
+        Real r ->
+          if r == vGood
+          then Dummy (d0 + fromJust (findIndex (== Real rCurr) (map fst . outgoing $ vGoodData)))
+          else ve
+        Dummy d ->
+          if d >= d0 + dummiesRemoved then Dummy (d + dummyShift) else ve -}
+
+{-
+    g' =
+      M.foldWithKey (\d ve digY'all -> case ve of
+        Real r -> M.adjust (updateOutgoingAtAll (Dummy d) (Dummy (d + dummyShift))) r digY'all
         _      -> digY'all)
-        (M.delete vGood g)
+        (M.delete vGood g) afterPreds
+-}
+    g' =
+      foldl (\digY'all r ->
+        M.adjust (\vd -> vd { outgoing = map (first shift) (outgoing vd) }) r digY'all)
+        g
+        (List.nub . mapMaybe (\case {Real r -> Just r; _ -> Nothing}) $ M.elems afterPreds)
+      where
+      shift ve = case ve of
+        Dummy d -> if d >= d0 + dummiesRemoved then Dummy (d + dummyShift) else ve
+        _       -> ve
+
+    g'' =
+      foldl (\digY'all (i, (v, _)) -> case v of
+        Real r -> M.adjust (updateOutgoingAtFirst (Real vGood) (Dummy i)) r digY'all
+        _      -> digY'all)
+        g'
         (zip [d0..] (incoming vGoodData))
 
     goodProgram = makeBottomGoodProgram vGoodData
@@ -425,29 +504,14 @@ toTerm' ng0 = case findGoodVertex ng of
   g       = digraph ng
   inSuccs = incomingSuccs ng
 
-{-
-  rightmostGoodVertex ng =
-    case M.findMax (outgoingPreds ng) of
-      Nothing            -> error "rightmostGoodVertex: Expected non-empty outgoingPreds"
-      Just (dum, Real r) -> goFrom r
-      Just (_, Dummy _)  -> error "rightmostGoodVertex: Rightmost outgoing dummy had a dummy as its predecessor"
-    where
-    goFrom r =
-      let vd = lookupExn r g in
-      -- check if this vertex has any non-dummy predecessors. If it
-      -- doesn't, we're done. Otherwise, recurse on the last such
-      -- predecessor.
-      case lastMay (filter (\case { Dummy _ -> False; _ -> True }) (incoming vd)) of
-        Nothing -> (r, vd)
-        Just r' -> goFrom r' -}
-
   -- If there are no vertices emanating from the incoming ports, then
   -- the graph is a natural transformation from the identity, but there
   -- are of course non-trivial such things. So, we must just pick a vertex
   -- in the graph which has no incoming vertices. It is best to pick the
   -- rightmost such vertex to prevent unnecessary fmapping.
 
-  -- A vertex is top-good if all of its predecessors are dummys or orphans.
+  -- A vertex is top-good if all of its predecessors are dummys or orphans
+  -- and its dummy predecessors form a contiguous block.
   -- A vertex is bottom-good if all of its all of its successors are dummys or childless.
   -- If a graph is non-trival (i.e., not a bunch of straights) then either there is
   -- a top-good vertex which is a successor of an incoming dummy, or
@@ -462,18 +526,17 @@ toTerm' ng0 = case findGoodVertex ng of
   --    will be the predecessor of an outgoing dummy.
   --    findGoodVertexFromBottom will find it and we can pull it down
   --    "offscreen"
-  --
 
   findGoodVertex ng =
-    case findGoodVertexFrom Top ng of
+    traceShowId $ case findGoodVertexFrom Top ng of
+      Just x  -> Just (Top, x)
       Nothing -> fmap (Bottom,) (findGoodVertexFrom Bottom ng)
-      x       -> fmap (Top,) x
 
   findGoodVertexFrom dir ng = go 0 (M.toList verts) where
     go !n [] = Nothing
     go !n ((d, Real r) : vs) =
       let vd = lookupExn r g in
-      if traceShow n (isGood vd)
+      if isGood vd
       then Just (n, d, r, vd)
       else go (n + 1) vs
     go _ ((_, Dummy _):_) = error ("findGoodVertexFrom " ++ show dir ++ ": Impossible case")
@@ -481,25 +544,17 @@ toTerm' ng0 = case findGoodVertex ng of
     isGood = case dir of { Top -> isTopGood; Bottom -> isBottomGood }
     verts  = case dir of { Top -> incomingSuccs ng; Bottom -> outgoingPreds ng }
 
-    isBottomGood vd = all (\(v, _) -> isChildlessOrDummy v) (outgoing vd)
+    isBottomGood vd =
+      all (\(v, _) -> isChildlessOrDummy v) (outgoing vd)
+      && contiguous (mapMaybe (\case {(Dummy d,_) -> Just d; _ -> Nothing}) (outgoing vd))
     isChildlessOrDummy (Dummy _) = True
-    isChildlessOrDummy (Real r)  = null . outgoing . fromJust $ M.lookup r g
+    isChildlessOrDummy (Real r)  = null . outgoing $ lookupExn r g
 
-    isTopGood vd              = all (\(v, _) -> isOrphanOrDummy v) (incoming vd)
+    isTopGood vd              =
+      all (\(v, _) -> isOrphanOrDummy v) (incoming vd)
+      && contiguous (mapMaybe (\case {(Dummy d,_) -> Just d; _ -> Nothing}) (incoming vd))
     isOrphanOrDummy (Dummy _) = True
-    isOrphanOrDummy (Real r)  = null . incoming . fromJust $ M.lookup r g
-
-  findGoodVertexFromTop' _ []                  = trace "eyo" $ Nothing
-  findGoodVertexFromTop' !n ((d, Real r) : vs) =
-    let vd = lookupExn r g in
-    if all (\(v,_) -> isOrphanOrDummy v) (trace ("vd at " ++ show n ++ ":" ++ show vd ) $ incoming vd)
-    then Just (n, d, r, vd)
-    else findGoodVertexFromTop' (n + 1) vs
-    where
-    isOrphanOrDummy (Dummy _) = True
-    isOrphanOrDummy (Real r)  = null . incoming $ fromJust (M.lookup r g)
-
-  findGoodVertexFromTop' !n ((d,Dummy _):vs) = error "findGoodVertex: Impossible case hit"
+    isOrphanOrDummy (Real r)  = null . incoming $ lookupExn r g
 
   makeTopGoodProgram vd = label vd <> loop (map fst (incoming vd))
     where
@@ -510,7 +565,7 @@ toTerm' ng0 = case findGoodVertex ng of
         Simple s   -> Compound ("fmap (" ++ s ++ ")")
         Compound s -> Compound ("fmap (" ++ s ++ ")")
 
-      (Real r : vs)  -> label (fromJust (M.lookup r g)) <> loop vs
+      (Real r : vs)  -> label (lookupExn r g) <> loop vs
 
   -- All children of the given vertex are dummys or childless
   makeBottomGoodProgram vd = loop (map fst (outgoing vd)) <> label vd where
@@ -529,6 +584,9 @@ toTerm' ng0 = case findGoodVertex ng of
     where wrapped = case f of { Simple x -> x; Compound x -> parens x }
 
   parens x = "(" ++ x ++ ")"
+
+-- renameIncomingAt r g f = M.adjust (\vd -> vd { incoming = map (first f) (incoming vd) }) r g
+renameIncoming g f = M.map
 
 dropComponentStraights ng =
   let numComponentStraights =
@@ -788,15 +846,65 @@ sequence ng1 ng2 =
   outPreds1 = outgoingPreds ng1
   inSuccs2  = incomingSuccs ng2
 
-  (digraph', outgoingPreds', incomingSuccs') =
+  (replacements, outgoingPreds', incomingSuccs') =
     foldl upd
-      ( M.union g1 g2'
+      ( M.empty
       , M.map (\case {Real v -> Real (n1+v); x -> x}) (outgoingPreds ng2)
       , incomingSuccs ng1)
-      (zip [0..] (incomingLabels ng2))
+      [0..(M.size outPreds1)]
 
+  digraph' =
+    M.foldWithKey (\r (io, rep) g ->
+      let replace = first $ \x -> case M.lookup x rep of
+            Nothing -> x
+            Just x' -> x'
+      in
+      case io of
+        In  -> M.adjust (\vd -> vd { incoming = map replace (incoming vd) }) r g
+        Out -> M.adjust (\vd -> vd { outgoing = map replace (outgoing vd) }) r g)
+      (M.union g1 g2')
+      replacements 
 
   -- There should really be a few pictures describing what this code does.
+
+--  replacements :: Map RealVertex (InOrOut, Map Vert Vert)
+  upd (replacements, outPreds, inSuccs) i =
+    case (M.lookup i outPreds1, M.lookup i inSuccs2) of
+      (Just x, Just y) -> case (x, y) of
+        (Real u, Real v)    ->
+          let v' = v + n1 in
+          ( M.insertWith merge u (Out, M.singleton (Dummy i) (Real v'))
+            $ M.insertWith merge v' (In, M.singleton (Dummy i) (Real u))
+            $ replacements
+          , outPreds
+          , inSuccs
+          )
+
+        (Real u, Dummy d)   ->
+          ( M.insertWith merge u (Out, M.singleton (Dummy i) (Dummy d)) replacements
+          , M.insert d (Real u) outPreds
+          , inSuccs
+          )
+
+        (Dummy d, Real v)   ->
+          let v' = v + n1 in
+          ( M.insertWith merge v' (In, M.singleton (Dummy i) (Dummy d)) replacements
+          , outPreds
+          , M.insert d (Real v') inSuccs
+          )
+
+        (Dummy d, Dummy d') ->
+          ( replacements
+          , M.insert d' (Dummy d) outPreds
+          , M.insert d (Dummy d') inSuccs
+          )
+
+      _ -> (replacements, outPreds, inSuccs) -- TODO: This should throw an error actually
+      where
+      merge (io, replacements) (io', replacements') = (io, M.union replacements replacements')
+
+{-
+  -- TODO: This is wrong. It toe-steps.
   upd (g, outPreds, inSuccs) (i, func) =
     case (M.lookup i outPreds1, M.lookup i inSuccs2) of
       (Just x, Just y) -> case (x, y) of
@@ -828,84 +936,22 @@ sequence ng1 ng2 =
           )
 
       _ -> (g, outPreds, inSuccs)
-
--- TODO: Does this handle parallel edges properly?
-updateNeighborListAt x v es = map (\e@(y,f) -> if x == y then (v, f) else e) es
-
-{-- case es of
-  (e@(y, f) : es') -> if x == y then (v, f) : updateNeighborListAt x v es' else e : updateNeighborListAt x v es'
-  []                -> [] --}
-
-updateIncomingAt i v vd = vd { incoming = updateNeighborListAt i v (incoming vd) }
-updateOutgoingAt i v vd = vd { outgoing = updateNeighborListAt i v (outgoing vd) }
--- maybe (Just x) f = fmap f
-
-
-{-
-  g such that
-    V(g) = V(g1) + V(g2)
-    (u, v) in E(g) iff
-      (u,v) in g1 or
-      (u, v) are a source-target pair
 -}
+-- TODO: Does this handle parallel edges properly? No. No it does not.
+updateNeighborListAtAll x v es = map (\e@(y,f) -> if x == y then (v, f) else e) es
 
-  
+updateIncomingAtAll i v vd = vd { incoming = updateNeighborListAtAll i v (incoming vd) }
+updateOutgoingAtAll i v vd = vd { outgoing = updateNeighborListAtAll i v (outgoing vd) }
 
-{-
-dijkstra
-  :: BraidState -> M.Map BraidState (Int, (BraidState, Move))
-dijkstra init = 
-  let nexts = branchOut transes init 
-  in
-  go M.empty
-    (M.fromList . map (\(v, en) -> (v, (init, en))) $ nexts) -- nexts)
-    (P.fromList . map (\(v, _) -> v P.:-> 1) $ nexts)
-  where
-  maxDist = 8
-  tooMuch u = length u > 5
-  go
-    :: M.Map BraidState (Int, (BraidState, Move))
-    -> M.Map BraidState (BraidState, Move)
-    -> P.PSQ BraidState Int
-    -> M.Map BraidState (Int, (BraidState, Move))
-  go visited onDeckPreds onDeckDists =
-    case P.minView onDeckDists of
-      Just (u P.:-> dist, onDeckDists') ->
-        let visited' :: M.Map BraidState (Int, (BraidState, Move))
-            visited' = M.insert u (dist, fromJust $ M.lookup u onDeckPreds) visited
+updateNeighborListAtFirst x v = \case
+  []          -> []
+  e@(y, f):es -> if y == x then (v, f) : es else e : updateNeighborListAtFirst x v es
 
-            nexts = 
-              if dist >= maxDist
-              then []
-              else if tooMuch u
-              then []
-              else
-                filter (\(v, _) -> not (M.member v visited'))
-                $ branchOut transes u
+updateIncomingAtFirst x v vd = vd { incoming = updateNeighborListAtFirst x v (incoming vd) }
+updateOutgoingAtFirst x v vd = vd { outgoing = updateNeighborListAtFirst x v (outgoing vd) }
 
-            (onDeckPreds', onDeckDists'') =
-              foldl (\(ps, ds) (v, en) ->
-                let ds' = P.insertWith min v (dist + 1) ds 
-                    ps' =
-                      if P.lookup v ds' == Just (dist + 1)
-                      then M.insert v (u,en) ps
-                      else ps
-                in (ps', ds'))
-                (onDeckPreds, onDeckDists') nexts
-        in
-        go visited' onDeckPreds' onDeckDists''
-      Nothing             -> visited -- visited
-
-prove :: (BraidState, BraidState) -> String
-prove (s,t) = go "id" t where
-  d        = dijkstra s
-  go :: String -> BraidState -> String
-  go acc v =
-    case M.lookup v d of
-      Just (d, (b', (i, t))) ->
-        go ("(" ++ intercalate " . " (replicate i "fmap") ++ ")" ++ t ++ " . " ++ acc) b'
-      Nothing                -> acc
--}
+contiguous (x:xs@(y:_)) = y == x + 1 && contiguous xs
+contiguous _            = True
 
 leftFromRight :: Eq a => [a] -> [a] -> Maybe [a]
 leftFromRight (x : xs) [] = Nothing
@@ -915,5 +961,5 @@ leftFromRight (x : xs) (y : ys)
 leftFromRight [] ys = Just ys
 
 -- UTIL
-lookupExn :: Ord k => k -> M.Map k v -> v
-lookupExn k = fromMaybe (error "M.lookup failed") . M.lookup k
+-- lookupExn :: Ord k => k -> M.Map k v -> v
+lookupExn k = fromMaybe (error ("M.lookup failed for key: " ++ show k)) . M.lookup (traceShowId k)
