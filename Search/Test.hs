@@ -22,8 +22,9 @@ import Data.Function (on)
 
 main :: IO ()
 main = do
-  (nStr:_) <- getArgs
-  let n = read nStr :: Int
+  -- (nStr:_) <- getArgs
+  -- let n = read nStr :: Int
+  n <- readLn
   void . runWithTestRef' $ \r -> runErrorT $ do
     loadFile r "Search/Test.hs"
     ts <- transesInScope

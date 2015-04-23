@@ -10,6 +10,7 @@ import qualified Data.Map as M
 import Data.Map (Map)
 import qualified Data.PSQueue as P
 import Data.List
+import Control.Applicative
 import Control.Monad.State hiding (sequence)
 import Control.Monad.Error hiding (sequence)
 import Control.Monad.Identity hiding (sequence)
@@ -35,6 +36,8 @@ import Debug.Trace
 
 type BraidState f = [f]
 type BraidView  f = ([f], [f])
+
+-- TODO: Get rid of all the debug Show constraints
 
 -- TODO: Perhaps add the ability to filter the results by those which
 -- satisfy some test cases.
@@ -70,7 +73,7 @@ data VertexData f = VertexData
   , outgoing :: [(Vert, f)]
   }
   deriving (Show, Eq)
--- One imagines the incoming dummys are labeled 0 to incomingCount - 1 and
+-- Invariant: The incoming dummys are labeled 0 to incomingCount - 1 and
 -- the outgoing dummys are labeled 0 to outgoingCount - 1
 data NaturalGraph f = NaturalGraph
   { incomingLabels :: [f]
@@ -97,9 +100,6 @@ connectedComponents ng = undefined -- go (S.fromList vs)
     ++ map (UDummy In) [0..(incomingCount ng - 1)]
     ++ map (UDummy Out) [0..(outgoingCount ng - 1)]
 
-
--- Transformations to and from the identity functor are not handled
--- properly.
 programToGraph :: Program f -> NaturalGraph f
 programToGraph = foldl1 (\acc g -> sequence acc g) . map moveToGraph
 
@@ -348,30 +348,43 @@ lastMay (_:xs) = lastMay xs
 -- there are no incoming vertices or outgoing vertices.
 data TopOrBottom = Top | Bottom deriving (Eq, Show)
 
-data GoodVertexType = LooseRightOf DummyVertex | NeighborOf DummyVertex
+iClaimThat loc x y = case x of
+  Right _ -> y
+  Left s  -> error (loc ++ ": " ++ s)
 
+data GoodVertexType = FloatingRightOf Int | AttachedTo DummyVertex
 toTerm' :: Show f => NaturalGraph f -> AnnotatedTerm
 toTerm' ng0 = traceShow ng $  case findGoodVertex ng of
   Nothing -> AnnotatedTerm Id 0
-  Just (Top, (n, d0, vGood, vGoodData)) ->
-    case toTerm' (ng { incomingSuccs = incomingSuccs', digraph = g'', outgoingPreds = outgoingPreds'' }) of
-      (unannotatedTerm -> Id) -> fmapped (n + k) goodProgram
-      p                       -> fmapped k (p <> fmapped n goodProgram)
+  Just (Top, (leftStrands, vGood, vGoodData)) ->
+    case toTerm' (iClaimThat "0" (checkGraph ng') ng') of
+      (unannotatedTerm -> Id) -> fmapped (k + leftStrands) goodProgram
+      p                       -> fmapped k (p <> fmapped leftStrands goodProgram)
     where
     dummiesRemoved = length . filter (\case {(Dummy _,_) -> True; _ -> False}) $ incoming vGoodData
     dummiesCreated = length $ outgoing vGoodData
     dummyShift     = dummiesCreated - dummiesRemoved
 
+    -- leftStrands is the number of strands strictly to the left of the
+    -- good vertex.
+    -- I thought this was wrong and we have to case on whether its a free or
+    -- attached vertex since in the attched case we delete a dummy strand
+    -- and in the free case we don't. BUT, the fact that dummiesRemoved is
+    -- 0 in the free case actually takes care of that
     (beforeSuccs, afterSuccs) =
-      let (before, y) = M.split d0 (incomingSuccs ng)
-          (_, after)  = M.split (d0 + dummiesRemoved - 1) y
+      let (before, _) = M.split leftStrands (incomingSuccs ng)
+          (_, after)  = M.split (leftStrands + dummiesRemoved - 1) (incomingSuccs ng)
       in
-      (before, after)
+      traceShow ( "leftStrands + dummiesRemoved - 1", leftStrands + dummiesRemoved - 1)
+      . traceShow ("dummiesRemoved", dummiesRemoved)
+      . traceShow ("after", after) . traceShow ("before", before) . traceShow ("leftStrands", leftStrands)
+      . traceShow ("vGood", vGood)
+      $ (before, after)
 
     incomingSuccs' = 
       M.unions
       [ beforeSuccs
-      , M.fromList $ zipWith (\i (v,_) -> (i, v)) [d0..] (outgoing vGoodData)
+      , M.fromList $ zipWith (\i (v,_) -> (i, v)) [leftStrands..] (outgoing vGoodData)
       , M.mapKeysMonotonic (\k -> k + dummyShift) afterSuccs
       ]
 
@@ -388,31 +401,16 @@ toTerm' ng0 = traceShow ng $  case findGoodVertex ng of
         Dummy dum -> M.adjust (\_ -> Dummy i) dum m
         _          -> m)
         outgoingPreds'
-        (zip [d0..] (outgoing vGoodData))
-
-    -- This is incorrect
-    {-
-    g' =
-      M.mapWithKey (\r vd -> vd { incoming = map (first (rename r)) (incoming vd) }) (M.delete vGood g)
-      where
-      rename rCurr ve = case ve of
-        Real r ->
-          if r == vGood
-          then Dummy (d0 + fromJust (findIndex (== Real rCurr) (map fst . outgoing $ vGoodData)))
-          else ve
-        Dummy d ->
-          if d >= d0 + dummiesRemoved then Dummy (d + dummyShift) else ve
--}
-
+        (zip [leftStrands..] (outgoing vGoodData))
 
     g' =
       foldl (\digY'all r ->
         M.adjust (\vd -> vd { incoming = map (first shift) (incoming vd) }) r digY'all)
-        g
+        (M.delete vGood g)
         (List.nub . mapMaybe (\case {Real r -> Just r; _ -> Nothing}) $ M.elems afterSuccs)
       where
       shift ve = case ve of
-        Dummy d -> if d >= d0 + dummiesRemoved then Dummy (d + dummyShift) else ve
+        Dummy d -> if d >= leftStrands + dummiesRemoved then Dummy (d + dummyShift) else ve
         _       -> ve
 
     g'' =
@@ -420,30 +418,31 @@ toTerm' ng0 = traceShow ng $  case findGoodVertex ng of
         Real r -> M.adjust (updateIncomingAtFirst (Real vGood) (Dummy i)) r digY'all 
         _      -> digY'all)
         g'
-        (zip [d0..] (outgoing vGoodData))
+        (zip [leftStrands..] (outgoing vGoodData))
+
+    ng' = ng { incomingSuccs = incomingSuccs', digraph = g'', outgoingPreds = outgoingPreds'' }
 
     goodProgram = makeTopGoodProgram vGoodData
 
-  -- d0 is the leftmost dummy child of vGood
-  Just (Bottom, (n, d0, vGood, vGoodData)) ->
-    case toTerm (ng { incomingSuccs = incomingSuccs'', digraph = g'', outgoingPreds = outgoingPreds' }) of
-      (unannotatedTerm -> Id) -> fmapped (n + k) goodProgram -- I think n will always be 0 in this case
-      p  -> fmapped k (fmapped n goodProgram <> p)
+  Just (Bottom, (leftStrands, vGood, vGoodData)) ->
+    case toTerm (iClaimThat "1" (checkGraph ng') ng') of
+      (unannotatedTerm -> Id) -> fmapped (k + leftStrands) goodProgram -- I think n will always be 0 in this case
+      p  -> fmapped k (fmapped leftStrands goodProgram <> p)
     where
     dummiesCreated = length $ incoming vGoodData
     dummiesRemoved = length . filter (\case {(Dummy _,_) -> True; _ -> False}) $ outgoing vGoodData
     dummyShift     = dummiesCreated - dummiesRemoved
 
     (beforePreds, afterPreds) =
-      let (before, y) = M.split d0 (outgoingPreds ng)
-          (_, after)  = M.split (d0 + dummiesRemoved - 1) y
+      let (before, _) = M.split leftStrands (outgoingPreds ng)
+          (_, after)  = M.split (leftStrands + dummiesRemoved - 1) (outgoingPreds ng)
       in
       (before, after)
 
     outgoingPreds' =
       M.unions
       [ beforePreds
-      , M.fromList $ zipWith (\i (v,_) -> (i, v)) [d0..] (incoming vGoodData)
+      , M.fromList $ zipWith (\i (v,_) -> (i, v)) [leftStrands..] (incoming vGoodData)
       , M.mapKeysMonotonic (\k -> k + dummyShift) afterPreds
       ]
 
@@ -460,16 +459,16 @@ toTerm' ng0 = traceShow ng $  case findGoodVertex ng of
         Dummy dum -> M.adjust (\_ -> Dummy i) dum m
         _         -> m)
       incomingSuccs'
-      (zip [d0..] (incoming vGoodData))
+      (zip [leftStrands..] (incoming vGoodData))
 
     g' =
       foldl (\digY'all r ->
         M.adjust (\vd -> vd { outgoing = map (first shift) (outgoing vd) }) r digY'all)
-        g
+        (M.delete vGood g)
         (List.nub . mapMaybe (\case {Real r -> Just r; _ -> Nothing}) $ M.elems afterPreds)
       where
       shift ve = case ve of
-        Dummy d -> if d >= d0 + dummiesRemoved then Dummy (d + dummyShift) else ve
+        Dummy d -> if d >= leftStrands + dummiesRemoved then Dummy (d + dummyShift) else ve
         _       -> ve
 
     g'' =
@@ -477,7 +476,9 @@ toTerm' ng0 = traceShow ng $  case findGoodVertex ng of
         Real r -> M.adjust (updateOutgoingAtFirst (Real vGood) (Dummy i)) r digY'all
         _      -> digY'all)
         g'
-        (zip [d0..] (incoming vGoodData))
+        (zip [leftStrands..] (incoming vGoodData))
+
+    ng' = ng { incomingSuccs = incomingSuccs'', digraph = g'', outgoingPreds = outgoingPreds' }
 
     goodProgram = makeBottomGoodProgram vGoodData
   where
@@ -527,7 +528,7 @@ toTerm' ng0 = traceShow ng $  case findGoodVertex ng of
       Just x  -> Just (Top, x)
       Nothing -> fmap (Bottom,) (findGoodVertexFrom Bottom ng)
 
-  findGoodVertexFrom dir ng = go 0 (M.toList verts) where
+  findGoodVertexFrom' dir ng = go 0 (M.toList verts) where
     go !n [] = Nothing
     go !n ((d, Real r) : vs) =
       let vd = lookupExn r g in
@@ -558,26 +559,35 @@ toTerm' ng0 = traceShow ng $  case findGoodVertex ng of
   -- should keep track of the rightmost dummy thread which we are at least
   -- as far right as.
 
+  -- d here is the index of the rightmost dummy we've seen.
   findGoodVertexFrom dir ng =
     if M.size (incomingSuccs ng) == 0
     then Nothing
-    else let (d, Real r) = M.findMin (start ng) in go d r
+    else foldr (\(d, ve) keepGoing -> case ve of
+      Real r -> go d r <|> keepGoing
+      Dummy _ -> keepGoing)
+      Nothing
+      (M.toAscList (start ng))
     where
-    scanAcross d [] = Nothing
+    scanAcross d []            = Nothing
     scanAcross d ((ve,_) : vs) = case ve of
       Real r   -> Just (d, r)
-      Dummy d' -> scanAcross d' vs -- I think d' always wins. I.e., d' == max d d'
+      Dummy d' -> scanAcross (max d d') vs -- I think d' always wins. I.e., d' == max d d'
 
+    -- d is the number of strands strictly to the left of us
     go d r =
       let vd = lookupExn r g in
       case next vd of
-        [] -> (LooseRightOf d, r, vd)
-        _  -> scanAcross d (next vd) of
-          Nothing       -> Just (NeighborOf d, r, vd)
+        [] -> Just (d, r, vd) -- Just (d + 1, r, vd)
+        xs -> case scanAcross d xs of
+          Nothing       -> 
+            if contiguous (map (\(Dummy d,_) -> d) xs)
+            then let (Dummy dum, _) = head xs in Just (dum, r, vd)
+            else Nothing
           Just (d', r') -> go d' r'
-    where
-    start = case dir of { Top -> incomingSuccs; Bot -> outgoingPreds }
-    next  = case dir of { Top -> incoming; Bot -> outgoing }
+
+    start = case dir of { Top -> incomingSuccs; Bottom -> outgoingPreds }
+    next  = case dir of { Top -> incoming; Bottom -> outgoing }
 
   makeTopGoodProgram vd = label vd <> loop (map fst (incoming vd))
     where
@@ -613,6 +623,7 @@ toTerm' ng0 = traceShow ng $  case findGoodVertex ng of
 -- renameIncomingAt r g f = M.adjust (\vd -> vd { incoming = map (first f) (incoming vd) }) r g
 renameIncoming g f = M.map
 
+-- Maintaining the invariant that the dummys are labelled 0..n
 dropComponentStraights ng =
   let numComponentStraights =
         length $ takeWhile (\((dumIn,inSucc), (dumOut, outPred)) -> case (inSucc, outPred) of
@@ -620,12 +631,12 @@ dropComponentStraights ng =
           _ -> False)
           (zip (M.toDescList (incomingSuccs ng)) (M.toDescList (outgoingPreds ng)))
 
-      incoming' = M.fromList . drop numComponentStraights $ M.toDescList (incomingSuccs ng)
-      outgoing' = M.fromList . drop numComponentStraights $ M.toDescList (outgoingPreds ng)
+      incoming' = M.fromList . zip [0..] . map snd . reverse . drop numComponentStraights $ M.toDescList (incomingSuccs ng)
+      outgoing' = M.fromList . zip [0..] . map snd . reverse . drop numComponentStraights $ M.toDescList (outgoingPreds ng)
   in
   ng { incomingSuccs = incoming', outgoingPreds = outgoing' }
 
-countAndDropFMapStraights :: NaturalGraph f -> (Int, NaturalGraph f)
+countAndDropFMapStraights :: Show f => NaturalGraph f -> (Int, NaturalGraph f)
 countAndDropFMapStraights ng =
   let numFMapStraights =
         length $ takeWhile (\((dumIn,inSucc), (dumOut, outPred)) -> case (inSucc, outPred) of
@@ -633,10 +644,73 @@ countAndDropFMapStraights ng =
           _ -> False)
           (zip (M.toAscList (incomingSuccs ng)) (M.toAscList (outgoingPreds ng)))
 
-      incoming' = M.fromList . drop numFMapStraights $ M.toAscList (incomingSuccs ng)
-      outgoing' = M.fromList . drop numFMapStraights $ M.toAscList (outgoingPreds ng)
+      incoming' = M.fromList . zip [0..] . map snd . drop numFMapStraights $ M.toAscList (incomingSuccs ng)
+      outgoing' = M.fromList . zip [0..] . map snd . drop numFMapStraights $ M.toAscList (outgoingPreds ng)
+
+      shift = first $ \ve -> case ve of
+        Dummy d -> Dummy (d - numFMapStraights)
+        _       -> ve
+
+      g' = M.map (\vd -> vd { incoming = map shift (incoming vd), outgoing = map shift (outgoing vd) }) (digraph ng)
   in
-  (numFMapStraights, ng { incomingSuccs = incoming', outgoingPreds = outgoing' })
+  ( numFMapStraights
+  , let ng' = ng { incomingSuccs = incoming', outgoingPreds = outgoing', digraph = g' }
+    in iClaimThat "2" (checkGraph ng') ng'
+  )
+
+checkGraph :: Show f => NaturalGraph f -> Either String ()
+checkGraph ng = do
+  () <- trace ("Checking\n" ++ show ng) (Right ())
+  throwIfNot "Incoming bad" $ all (uncurry (==)) $ zip [0..] (M.keys (incomingSuccs ng))
+  throwIfNot "Outgoing bad" $ all (uncurry (==)) $ zip [0..] (M.keys (outgoingPreds ng))
+  forM_ (M.toList (incomingSuccs ng)) $ \(dum, ve) ->
+    case ve of
+      Dummy d ->
+        throwIfNot "Dummy out didn't agree with dummy in" $
+          M.lookup d (outgoingPreds ng) == Just (Dummy dum)
+      Real r -> do
+        vd <- lookupThrow r g
+        throwIfNot "Out suc didn't think it was coming in" $
+          Dummy dum `elem` map fst (incoming vd)
+
+  forM_ (M.toList (outgoingPreds ng)) $ \(dum, ve) ->
+    case ve of
+      Dummy d ->
+        throwIfNot "Dummy out didn't agree with dummy in" $
+          M.lookup d (incomingSuccs ng) == Just (Dummy dum)
+      Real r -> do
+        vd <- lookupThrow r g
+        throwIfNot "Out suc didn't think it was coming in" $
+          Dummy dum `elem` map fst (outgoing vd)
+
+  forM_ (M.toList g) $ \(v, vd) -> do
+    forM_ (incoming vd) $ \(ve, _) -> case ve of
+      Dummy d ->
+        throwIfNot ("Disagreement: " ++ show v ++ " has pred Dummy " ++ show d ++ " but Dummy does not have it as suc") $
+          M.lookup d (incomingSuccs ng) == Just (Real v)
+
+      Real r -> do
+        vd' <- lookupThrow r g
+        throwIfNot "Am I Not your neighbor" $
+          Real v `elem` map fst (outgoing vd')
+
+    forM_ (outgoing vd) $ \(ve, _) -> case ve of
+      Dummy d ->
+        throwIfNot ("Disagreement: " ++ show v ++ " has suc Dummy " ++ show d ++ " but Dummy does not have it as pred") $
+          M.lookup d (outgoingPreds ng) == Just (Real v)
+
+      Real r -> do
+        vd' <- lookupThrow r g
+        throwIfNot "Am I Not your neighbor" $
+          Real v `elem` map fst (incoming vd')
+  where
+  lookupThrow r g = case M.lookup r g of
+    Nothing -> Left ("I got nothing for: " ++ show r)
+    Just x  -> Right x
+
+  throwIf e x  = if x then Left e else Right ()
+  throwIfNot e = throwIf e . not
+  g = digraph ng
 
 {-
 countAndDropFMapStraights ng =
