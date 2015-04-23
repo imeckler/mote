@@ -134,7 +134,7 @@ transes funcs b = mapMaybe toTrans (transInterpretations b)
     else if from == to
     then Nothing
     else if numArguments > 3 then Nothing
-    else Just (Trans {from, to, name=name'})
+    else Just (Trans {from, to, name=AnnotatedTerm name' (numArguments - 1)})
     where
     ident = occNameString $ occName name
     name' =
@@ -200,8 +200,8 @@ transesInScope = do
   as <- lift applicatives
   ms <- lift monads
   funcSet <- lift $ fmap (Set.fromList . map squint) functors
-  let joins     = map (\m -> Trans { from = [m,m], to = [m], name = Simple "join" }) ms
-      traverses = liftA2 (\t f -> Trans { from = [t,f], to = [f,t], name = Simple "sequenceA" }) ts as
+  let joins     = map (\m -> Trans { from = [m,m], to = [m], name = AnnotatedTerm (Simple "join") 0 }) ms
+      traverses = liftA2 (\t f -> Trans { from = [t,f], to = [f,t], name = AnnotatedTerm (Simple "sequenceA") 0 }) ts as
   return $
     concatMap (transes funcSet) namedTys ++ traverses ++ joins
   where

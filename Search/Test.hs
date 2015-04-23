@@ -18,6 +18,7 @@ import Slick.Search
 import qualified Data.HashSet as HashSet
 import Data.Maybe (catMaybes)
 import Debug.Trace
+import Data.Function (on)
 
 main :: IO ()
 main = do
@@ -28,7 +29,7 @@ main = do
     ts <- transesInScope
     liftIO $ print (length ts)
     gs <- search from to n
-    liftIO (mapM_  (putStrLn . renderTerm . toTerm) gs)
+    liftIO (mapM (putStrLn . renderAnnotatedTerm) . List.sortBy (compare `on` numHoles) $ map toTerm gs)
   where
   from = ["[]", "Maybe", "IO"]
   to   = ["IO","[]"]

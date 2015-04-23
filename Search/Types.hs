@@ -6,6 +6,7 @@ module Search.Types
   , Program
   , CutProof(..)
   , Term(..)
+  , AnnotatedTerm(..)
   ) where
 
 import Data.Map (Map)

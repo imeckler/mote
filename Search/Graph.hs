@@ -31,6 +31,8 @@ import Data.Hashable
 import qualified Data.HashSet as HashSet
 import qualified Data.HashMap.Strict as HashMap
 
+import Debug.Trace
+
 type BraidState f = [f]
 type BraidView  f = ([f], [f])
 
@@ -329,7 +331,9 @@ renderTerm = \case
   Simple s   -> s
   Compound s -> s
 
-toTerm :: Show f => NaturalGraph f -> Term
+renderAnnotatedTerm = renderTerm . unannotatedTerm
+
+toTerm :: Show f => NaturalGraph f -> AnnotatedTerm
 toTerm = toTerm' . compressPaths
 
 lastMay :: [a] -> Maybe a
@@ -343,13 +347,16 @@ lastMay (_:xs) = lastMay xs
 -- There are no 
 -- there are no incoming vertices or outgoing vertices.
 data TopOrBottom = Top | Bottom deriving (Eq, Show)
-toTerm' :: Show f => NaturalGraph f -> Term
-toTerm' ng0 = case findGoodVertex ng of
-  Nothing -> Id
+
+data GoodVertexType = LooseRightOf DummyVertex | NeighborOf DummyVertex
+
+toTerm' :: Show f => NaturalGraph f -> AnnotatedTerm
+toTerm' ng0 = traceShow ng $  case findGoodVertex ng of
+  Nothing -> AnnotatedTerm Id 0
   Just (Top, (n, d0, vGood, vGoodData)) ->
     case toTerm' (ng { incomingSuccs = incomingSuccs', digraph = g'', outgoingPreds = outgoingPreds'' }) of
-      Id -> fmapped (n + k) goodProgram
-      p  -> fmapped k (p <> fmapped n goodProgram)
+      (unannotatedTerm -> Id) -> fmapped (n + k) goodProgram
+      p                       -> fmapped k (p <> fmapped n goodProgram)
     where
     dummiesRemoved = length . filter (\case {(Dummy _,_) -> True; _ -> False}) $ incoming vGoodData
     dummiesCreated = length $ outgoing vGoodData
@@ -420,7 +427,7 @@ toTerm' ng0 = case findGoodVertex ng of
   -- d0 is the leftmost dummy child of vGood
   Just (Bottom, (n, d0, vGood, vGoodData)) ->
     case toTerm (ng { incomingSuccs = incomingSuccs'', digraph = g'', outgoingPreds = outgoingPreds' }) of
-      Id -> fmapped (n + k) goodProgram -- I think n will always be 0 in this case
+      (unannotatedTerm -> Id) -> fmapped (n + k) goodProgram -- I think n will always be 0 in this case
       p  -> fmapped k (fmapped n goodProgram <> p)
     where
     dummiesCreated = length $ incoming vGoodData
@@ -506,6 +513,15 @@ toTerm' ng0 = case findGoodVertex ng of
   --    findGoodVertexFromBottom will find it and we can pull it down
   --    "offscreen"
 
+-- definition of good is wrong. or rather, it is not the case that some
+-- incoming dummy will have a topgood successor Consider this picture.
+{-
+|      |
+|   * *|
+|   \ /|
+|    * |
+|     \*
+-}
   findGoodVertex ng =
     case findGoodVertexFrom Top ng of
       Just x  -> Just (Top, x)
@@ -535,31 +551,61 @@ toTerm' ng0 = case findGoodVertex ng of
     isOrphanOrDummy (Dummy _) = True
     isOrphanOrDummy (Real r)  = null . incoming $ lookupExn r g
 
+  -- TODO: When I have the chance, it should preferentially pull a good vertex up if it
+  -- reduces the number of incoming ports
+
+  -- this scans from left to right. 
+  -- should keep track of the rightmost dummy thread which we are at least
+  -- as far right as.
+
+  findGoodVertexFrom dir ng =
+    if M.size (incomingSuccs ng) == 0
+    then Nothing
+    else let (d, Real r) = M.findMin (start ng) in go d r
+    where
+    scanAcross d [] = Nothing
+    scanAcross d ((ve,_) : vs) = case ve of
+      Real r   -> Just (d, r)
+      Dummy d' -> scanAcross d' vs -- I think d' always wins. I.e., d' == max d d'
+
+    go d r =
+      let vd = lookupExn r g in
+      case next vd of
+        [] -> (LooseRightOf d, r, vd)
+        _  -> scanAcross d (next vd) of
+          Nothing       -> Just (NeighborOf d, r, vd)
+          Just (d', r') -> go d' r'
+    where
+    start = case dir of { Top -> incomingSuccs; Bot -> outgoingPreds }
+    next  = case dir of { Top -> incoming; Bot -> outgoing }
+
   makeTopGoodProgram vd = label vd <> loop (map fst (incoming vd))
     where
     loop = \case
-      []             -> Id
-      (Dummy d : vs) -> case loop vs of
-        Id         -> Id
-        Simple s   -> Compound ("fmap (" ++ s ++ ")")
-        Compound s -> Compound ("fmap (" ++ s ++ ")")
+      []             -> AnnotatedTerm Id 0
+      (Dummy d : vs) -> let AnnotatedTerm t x = loop vs in case t of
+        Id         -> AnnotatedTerm Id x
+        Simple s   -> AnnotatedTerm (Compound ("fmap (" ++ s ++ ")")) x
+        Compound s -> AnnotatedTerm (Compound ("fmap (" ++ s ++ ")")) x
 
       (Real r : vs)  -> label (lookupExn r g) <> loop vs
 
   -- All children of the given vertex are dummys or childless
   makeBottomGoodProgram vd = loop (map fst (outgoing vd)) <> label vd where
     loop = \case
-      []             -> Id
-      (Dummy d : vs) -> case loop vs of
-        Id         -> Id
-        Simple s   -> Compound ("fmap (" ++ s ++ ")")
-        Compound s -> Compound ("fmap (" ++ s ++ ")")
+      []             -> AnnotatedTerm Id 0
+
+      (Dummy d : vs) -> let AnnotatedTerm t x = loop vs in case t of
+        Id         -> AnnotatedTerm Id x
+        Simple s   -> AnnotatedTerm (Compound ("fmap (" ++ s ++ ")")) x
+        Compound s -> AnnotatedTerm (Compound ("fmap (" ++ s ++ ")")) x
+
       (Real r : vs) -> loop vs <> label (lookupExn r g)
 
-  fmapped n f = case n of
-    0 -> f
-    1 -> Compound ("fmap " ++ wrapped)
-    _ -> Compound (parens (intercalate " . " $ replicate n "fmap") ++ wrapped)
+  fmapped n (AnnotatedTerm f x) = case n of
+    0 -> AnnotatedTerm f x
+    1 -> AnnotatedTerm (Compound ("fmap " ++ wrapped)) x
+    _ -> AnnotatedTerm (Compound (parens (intercalate " . " $ replicate n "fmap") ++ wrapped)) x
     where wrapped = case f of { Simple x -> x; Compound x -> parens x }
 
   parens x = "(" ++ x ++ ")"
@@ -795,7 +841,7 @@ graphsToHTML ngs =
   ,   unlines $ zipWith (\i ng ->
         "<div>"
         ++ "<div class='network' id=" ++ show (idName i) ++ "></div>" 
-        ++ "<div>" ++ renderTerm (toTerm ng) ++ "</div>"
+        ++ "<div>" ++ renderAnnotatedTerm (toTerm ng) ++ "</div>"
         ++ "</div>"
         ) [0..] ngs
   , "</body>"

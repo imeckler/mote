@@ -13,8 +13,8 @@ data Term
   deriving (Eq, Ord, Show)
 
 data AnnotatedTerm = AnnotatedTerm
-  { term     :: Term
-  , numHoles :: Int
+  { unannotatedTerm :: Term
+  , numHoles        :: Int
   }
   deriving (Eq, Ord, Show)
 
@@ -43,6 +43,9 @@ instance ToJSON Term where
     Id         -> toJSON "id"
     Simple s   -> toJSON s
     Compound s -> toJSON s
+
+instance ToJSON AnnotatedTerm where
+  toJSON = toJSON . unannotatedTerm
 
 type TransName = AnnotatedTerm
 data Trans f   = Trans { from :: [f], to :: [f], name :: TransName }
