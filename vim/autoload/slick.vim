@@ -84,7 +84,7 @@ augroup END
 command! SlickStart  call slick#start()
 command! -nargs=1 SlickGetType call slick#getType(<f-args>)
 command! -nargs=1 SlickRefine call slick#refine(<f-args>)
-command! SlickLoadCurrentFIle call slick#loadCurrentFile()
+command! SlickLoadCurrentFile call slick#loadCurrentFile()
 command! SlickGetEnv call slick#getEnv()
 command! -nargs=1 Casex call slick#caseFurther(<f-args>)
 command! -nargs=1 CaseOn call slick#caseOn(<f-args>)
