@@ -51,6 +51,7 @@ import Data.Hashable
 -- TODO: Debug imports. Delete
 import Slick.LoadFile
 import Slick.Debug
+import Debug.Trace
 
 {-
 search stRef = do
@@ -182,16 +183,20 @@ instance Hashable WrappedTyCon where
   hashWithSalt s (WrappedTyCon tc _) = s `hashWithSalt` getKey (getUnique tc)
 instance Show WrappedTyCon where
   show (WrappedTyCon _ s) = show s
+
 -- search :: [String] -> [String] -> Int ->  M [NaturalGraph (Int, Int)]
 search src trg n = do
   fs      <- lift getSessionDynFlags
-  -- let renderSyntacticFunc (tc, args) = (getKey (getUnique tc), hash args)
-  let showSyntacticFunc = showSDoc fs . ppr
-  let renderSyntacticFunc sf@(tc, args) = WrappedTyCon tc (showSyntacticFunc sf)
+  let renderSyntacticFunc (tc, args) = (getKey (getUnique tc), hash args)
+--  let showSyntacticFunc = showSDoc fs . ppr
+--  let renderSyntacticFunc sf@(tc, args) = WrappedTyCon tc (showSyntacticFunc sf)
   from    <- fmap catMaybes $ mapM (fmap (fmap renderSyntacticFunc . extractUnapplied . dropForAlls) . readType) src
   to      <- fmap catMaybes $ mapM (fmap (fmap renderSyntacticFunc . extractUnapplied . dropForAlls) . readType) trg
+  -- TODO: Debug
+  liftIO $ print (from, to)
   transes <- fmap (fmap (fmap renderSyntacticFunc)) transesInScope
-  return $ graphsOfSizeAtMostH transes n from to
+  liftIO $ mapM_ print transes
+  return $ graphsOfSizeAtMost transes n from to
 
 transesInScope :: M [Trans SyntacticFunc]
 transesInScope = do
@@ -211,6 +216,8 @@ transesInScope = do
       runTcInteractive hsc_env . discardConstraints . tcRnExprTc . noLoc . HsVar . Exact $ n
     return $ fmap (n,) mayTy
 
+-- TODO: Turn SyntacticFunc into SyntacticFuncScheme
+-- so runErrorT can work
 extractFunctors :: Type -> ([SyntacticFunc], WrappedType)
 extractFunctors t = case t of
   TyVarTy v        -> ([], WrappedType t)
@@ -219,7 +226,7 @@ extractFunctors t = case t of
   LitTy _          -> ([], WrappedType t)
   AppTy t t'       -> ([], WrappedType t) -- TODO
   TyConApp tc kots -> case splitLast kots of
-    Nothing -> ([], WrappedType t)
+    Nothing          -> ([], WrappedType t)
     Just (args, arg) -> first ((tc, map WrappedType args) :) (extractFunctors arg)
   where
   splitLast' :: [a] -> ([a], a)
@@ -253,7 +260,7 @@ occursStrictlyPositively v = not . bad where
 
 transInterpretations :: (Name, Type) -> [TransInterpretation]
 transInterpretations (n, t0) =
-  case targInner of
+  case traceShow (occNameFS . getOccName $ n) $ targInner of
     WrappedType (TyVarTy polyVar) ->
       if polyVar `elementOfUniqSet` forbiddenVars
       then []
@@ -263,7 +270,7 @@ transInterpretations (n, t0) =
       where
       interp :: Int -> Type -> Maybe TransInterpretation
       interp i argty =
-        if inner == targInner
+        if trace' (showv inner, showv targInner, inner == targInner) (inner == targInner)
         then Just trans
         else Nothing
         where
@@ -284,6 +291,14 @@ transInterpretations (n, t0) =
   (args, targ)         = splitFunTys t
   (sfsTarg, targInner) = extractFunctors targ
   numArguments         = length args
+
+  showv (WrappedType t) = case t of { TyVarTy v -> occNameFS $ getOccName v }
+  trace' x y =
+    if (show . occNameFS . getOccName $ n) == show "runErrorT"
+    then traceShow x y
+    else y
+
+  traceId' x = trace' x x
 
 newtype WrappedType = WrappedType Type
 instance Eq WrappedType where

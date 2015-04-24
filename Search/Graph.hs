@@ -32,6 +32,8 @@ import Data.Hashable
 import qualified Data.HashSet as HashSet
 import qualified Data.HashMap.Strict as HashMap
 
+import Debug.Trace
+
 type BraidState f = [f]
 type BraidView  f = ([f], [f])
 
@@ -91,12 +93,70 @@ instance Hashable f => Eq (NaturalGraph f) where
 instance Hashable f => Hashable (NaturalGraph f) where
   hashWithSalt = hashWithSaltGraph
 
-connectedComponents :: NaturalGraph f -> Int
-connectedComponents ng = undefined -- go (S.fromList vs)
+-- Any stray vertex is reachable from a vertex that has no incoming edges.
+deleteStrayVertices ng = ng { digraph = go g possibleStrays } where
+  go acc remaining =
+    case M.minViewWithKey remaining of
+      Nothing -> acc
+      Just ((r, vd), remaining') ->
+        let comp = componentOf (UReal r) ng in
+        if isStray comp
+        then go (deleteFrom acc comp) (deleteFrom remaining comp)
+        else go acc (deleteFrom remaining comp)
+
+  possibleStrays = M.filter (\vd -> length (incoming vd) == 0) g
+  g              = digraph ng
+  isStray        = S.fold (\x r -> case x of {UDummy {} -> False; _ -> r}) True 
+  deleteFrom acc = S.fold (\x h -> case x of {UReal r -> M.delete r h; _ -> h}) acc
+
+
+connectedComponents :: NaturalGraph f -> [[UnambiguousVert]]
+connectedComponents ng = go [] vs
   where
-  vs = map UReal [0..(M.size (digraph ng) - 1)]
-    ++ map (UDummy In) [0..(incomingCount ng - 1)]
-    ++ map (UDummy Out) [0..(outgoingCount ng - 1)]
+  go acc remaining = case S.maxView remaining of
+    Nothing              -> acc
+    Just (v, remaining') ->
+      let comp = componentOf v ng in
+      go (S.toList comp : acc) (S.difference remaining' comp)
+
+  inSuccs  = incomingSuccs ng
+  outPreds = outgoingPreds ng
+  g        = digraph ng
+
+  vs = S.fromList $ map UReal (M.keys g)
+    ++ map (UDummy In) [0..(M.size inSuccs - 1)]
+    ++ map (UDummy Out) [0..(M.size outPreds - 1)]
+
+componentOf v ng = go (S.singleton v) [v] where
+  go seen q0 =
+    case q0 of
+      []     -> seen
+      ve : q ->
+        case ve of
+          UReal r ->
+            let vd   = lookupExn r g
+                next = filter (not . (`S.member` seen))
+                  $ map (\case { (Real r',_) -> UReal r'; (Dummy d,_) -> UDummy In d }) (incoming vd)
+                  ++ map (\case { (Real r',_) -> UReal r'; (Dummy d,_) -> UDummy Out d }) (outgoing vd)
+                seen' = foldl' (flip S.insert) seen next
+            in
+            go seen' (next ++ q)
+
+          UDummy In d ->
+            let suc         = case lookupExn d inSuccs of { Dummy d' -> UDummy Out d'; Real r -> UReal r }
+                (q', seen') = if suc `S.member` seen then (q, seen) else (suc : q, S.insert suc seen)
+            in
+            go seen' q'
+
+          UDummy Out d ->
+            let pred = case lookupExn d outPreds of { Dummy d' -> UDummy In d'; Real r -> UReal r }
+                (q', seen') = if pred `S.member` seen then (q, seen) else (pred : q, S.insert pred seen)
+            in
+            go seen' q'
+
+  inSuccs  = incomingSuccs ng
+  outPreds = outgoingPreds ng
+  g        = digraph ng
 
 programToGraph :: Program f -> NaturalGraph f
 programToGraph = foldl1 (\acc g -> sequence acc g) . map moveToGraph
@@ -188,6 +248,7 @@ branchOut ts = concatMap possibilities . fineViews where
 
 -- TODO: Convert real Haskell programs into lists of moves
 -- TODO: Analyze program graphs
+
 graphsOfSizeAtMost :: (Hashable f, Ord f) => [Trans f] -> Int -> BraidState f -> BraidState f -> [NaturalGraph f]
 graphsOfSizeAtMost tsList n start end = HashSet.toList $ runST $ do
   arr <- newSTArray (0, n) M.empty
@@ -198,18 +259,22 @@ graphsOfSizeAtMost tsList n start end = HashSet.toList $ runST $ do
 
   ts = HashMap.fromListWith (++) (map (\t -> (from t, [t])) tsList)
 
-  go arr 0 b = return $ if b == end then HashSet.singleton (idGraph end) else HashSet.empty
-  go arr n b = do
-    memo <- readArray arr n
-    case M.lookup b memo of
-      Nothing -> do
-        progs <- fmap HashSet.unions . forM (branchOut ts b) $ \(b', move) ->
-          fmap (HashSet.map (sequence (moveToGraph move))) (go arr (n - 1) b')
-        let progs' = if b == end then HashSet.insert (idGraph end) progs else progs
-        writeArray arr n (M.insert b progs' memo)
-        return progs'
+  -- TODO: This is wrong, should allow shit to happen after reaching the
+  -- end.
+  go arr n b
+    | b == end  = return (HashSet.singleton (idGraph end))
+    | n == 0    = return HashSet.empty
+    | otherwise = do
+      memo <- readArray arr n
+      case M.lookup b memo of
+        Nothing -> do
+          progs <- fmap HashSet.unions . forM (branchOut ts b) $ \(b', move) ->
+            fmap (HashSet.map (sequence (moveToGraph move))) (go arr (n - 1) b')
+          let progs' = if b == end then HashSet.insert (idGraph end) progs else progs
+          writeArray arr n (M.insert b progs' memo)
+          return progs'
 
-      Just ps -> return ps
+        Just ps -> return ps
 
 -- Search with heuristics
 graphsOfSizeAtMostH :: (Hashable f, Ord f) => [Trans f] -> Int -> BraidState f -> BraidState f -> [NaturalGraph f]
@@ -503,44 +568,10 @@ toTerm' ng0 = case findGoodVertex ng of
   --    will be the predecessor of an outgoing dummy.
   --    findGoodVertexFromBottom will find it and we can pull it down
   --    "offscreen"
-
--- definition of good is wrong. or rather, it is not the case that some
--- incoming dummy will have a topgood successor Consider this picture.
-{-
-|      |
-|   * *|
-|   \ /|
-|    * |
-|     \*
--}
   findGoodVertex ng =
     case findGoodVertexFrom Top ng of
       Just x  -> Just (Top, x)
       Nothing -> fmap (Bottom,) (findGoodVertexFrom Bottom ng)
-
-  findGoodVertexFrom' dir ng = go 0 (M.toList verts) where
-    go !n [] = Nothing
-    go !n ((d, Real r) : vs) =
-      let vd = lookupExn r g in
-      if isGood vd
-      then Just (n, d, r, vd)
-      else go (n + 1) vs
-    go _ ((_, Dummy _):_) = error ("findGoodVertexFrom " ++ show dir ++ ": Impossible case")
-
-    isGood = case dir of { Top -> isTopGood; Bottom -> isBottomGood }
-    verts  = case dir of { Top -> incomingSuccs ng; Bottom -> outgoingPreds ng }
-
-    isBottomGood vd =
-      all (\(v, _) -> isChildlessOrDummy v) (outgoing vd)
-      && contiguous (mapMaybe (\case {(Dummy d,_) -> Just d; _ -> Nothing}) (outgoing vd))
-    isChildlessOrDummy (Dummy _) = True
-    isChildlessOrDummy (Real r)  = null . outgoing $ lookupExn r g
-
-    isTopGood vd              =
-      all (\(v, _) -> isOrphanOrDummy v) (incoming vd)
-      && contiguous (mapMaybe (\case {(Dummy d,_) -> Just d; _ -> Nothing}) (incoming vd))
-    isOrphanOrDummy (Dummy _) = True
-    isOrphanOrDummy (Real r)  = null . incoming $ lookupExn r g
 
   -- TODO: When I have the chance, it should preferentially pull a good vertex up if it
   -- reduces the number of incoming ports
@@ -609,9 +640,6 @@ toTerm' ng0 = case findGoodVertex ng of
     where wrapped = case f of { Simple x -> x; Compound x -> parens x }
 
   parens x = "(" ++ x ++ ")"
-
--- renameIncomingAt r g f = M.adjust (\vd -> vd { incoming = map (first f) (incoming vd) }) r g
-renameIncoming g f = M.map
 
 -- Maintaining the invariant that the dummys are labelled 0..n
 dropComponentStraights ng =
@@ -700,16 +728,8 @@ checkGraph ng = do
   throwIfNot e = throwIf e . not
   g = digraph ng
 
-{-
-countAndDropFMapStraights ng =
-  let inSuccs = incomingSuccs ng
-      (length -> k, M.fromAscList -> incoming') = span (\(_,v) -> case v of { Dummy _ -> True; _ -> False }) $ M.toAscList inSuccs
-      outgoing' = let o = outgoingPreds ng in
-        if M.null o then M.empty else snd $ M.split (fst (M.findMin o) + k - 1) o
-  in
-  (k, ng { incomingSuccs = incoming' , outgoingPreds = outgoing'})
--}
--- TODO: This breaks the assumption that the vertices are labelled 1..n.
+-- TODO: This breaks the assumption that internal vertices are labelled 0..n, but I don't
+-- think I ever use that assumption
 compressPaths :: NaturalGraph f -> NaturalGraph f
 compressPaths ng = let g' = evalState (go $ digraph ng) (S.empty, []) in ng { digraph = g' }
   where

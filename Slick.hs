@@ -12,7 +12,7 @@ import qualified Data.ByteString            as B
 import qualified Data.ByteString.Lazy.Char8 as LB8
 import qualified Data.List                  as List
 import qualified Data.Map                   as M
-import           Data.Maybe                 (isNothing)
+import           Data.Maybe
 import qualified Data.Set                   as S
 
 import qualified DynFlags
@@ -164,9 +164,10 @@ respond' stRef = \case
     hi    <- getCurrentHoleErr stRef
     expr' <- refine stRef exprStr
     fs    <- lift getSessionDynFlags
+    unqual <- lift getPrintUnqual
     return $
       Replace (toSpan . holeSpan $ holeInfo hi) path
-        (showSDocForUser fs neverQualify (ppr expr'))
+        (showSDocForUser fs unqual (ppr expr'))
 
 
   SendStop -> return Stop 
@@ -184,13 +185,14 @@ respond' stRef = \case
       Nothing                        -> return (Error "Variable not found")
       Just ((L sp _mg, mi), matches) -> do
         fs <- lift getSessionDynFlags
+        unqual <- lift getPrintUnqual
         let span              = toSpan sp
             indentLevel       = subtract 1 . snd . fst $ span
             indentTail []     = error "indentTail got []"
             indentTail (s:ss) = s : map (replicate indentLevel ' ' ++) ss
 
             showMatch :: HsMatchContext RdrName -> Match RdrName (LHsExpr RdrName) -> String
-            showMatch ctx = showSDocForUser fs neverQualify . pprMatch ctx
+            showMatch ctx = showSDocForUser fs unqual . pprMatch ctx
         return $ case mi of
           Equation (L _l name) ->
             Replace (toSpan sp) path . unlines . indentTail $
@@ -212,21 +214,28 @@ respond' stRef = \case
     ty <- getEnclosingHole stRef cursorPos >>= \case
       Nothing -> hsExprType expr
       Just hi -> inHoleEnv typecheckedModule (holeInfo hi) $ tcRnExprTc expr
-    ms <- let (line,col) = cursorPos in matchesForTypeAt stRef ty (mkSrcLoc (fsLit "") line col)
+    let (line, col) = cursorPos
+    ms <- matchesForTypeAt stRef ty (mkSrcLoc (fsLit "") line col)
+
+    indentLevel <- liftIO $
+      LB8.length . LB8.takeWhile (== ' ') . (!! (line - 1)) . LB8.lines <$> LB8.readFile path
+
     fs <- lift getSessionDynFlags
+    unqual <- lift getPrintUnqual
     let indent n  = (replicate n ' ' ++)
-        showMatch = showSDocForUser fs neverQualify . pprMatch (CaseAlt :: HsMatchContext RdrName)
+        showMatch = showSDocForUser fs unqual . pprMatch (CaseAlt :: HsMatchContext RdrName)
     return
       . Insert cursorPos path
       . unlines
-      $ ("case " ++ exprStr ++ " of") : map (indent 2 . showMatch) ms
+      $ ("case " ++ exprStr ++ " of") : map (indent (2 + fromIntegral indentLevel) . showMatch) ms
 
   -- every message should really send current file name (ClientState) and
   -- check if it matches the currently loaded file
   GetType e -> do
     fs <- lift getSessionDynFlags
     x  <- exprType e
-    return . SetInfoWindow . showSDocForUser fs neverQualify $ ppr x
+    unqual <- lift getPrintUnqual
+    return . SetInfoWindow . showSDocForUser fs unqual $ ppr x
 
 showM :: (GhcMonad m, Outputable a) => a -> m String
 showM = showSDocM . ppr

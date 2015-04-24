@@ -10,28 +10,36 @@ import TypeRep
 import Slick.ReadType
 import Control.Applicative
 import qualified Data.List as List
+import qualified Data.List.Split as List
 import System.Environment (getArgs)
 import Slick.Debug
 import Slick.LoadFile
 import Slick.Search
+import qualified Data.Map as M
 
 import qualified Data.HashSet as HashSet
-import Data.Maybe (catMaybes)
+import Data.Maybe
 import Debug.Trace
 import Data.Function (on)
 
 main :: IO ()
 main = do
-  (nStr:_) <- getArgs
-  let n = read nStr :: Int
+  (filePath:nStr:fromStr:toStr:_) <- getArgs
+  let n    = read nStr :: Int
+      from = List.splitOn "," fromStr
+      to   = List.splitOn "," toStr
   void . runWithTestRef' $ \r -> runErrorT $ do
-    loadFile r "Search/Test.hs"
+    loadFile r filePath
     ts <- transesInScope
     liftIO $ print (length ts)
     gs <- search from to n
-    liftIO (mapM (\x -> print x >> print (toTerm x)) gs)
-    -- . List.sortBy (compare `on` numHoles) $ map toTerm gs)
+    liftIO $
+      mapM (\(t, g) ->
+        print (renderAnnotatedTerm t, lex (t,g)) )
+      . List.sortBy (compare `on` lex)
+      . map (\g -> (toTerm g, g))
+      . map deleteStrayVertices 
+      $ gs
   where
-  from = ["[]", "Maybe", "IO"]
-  to   = ["IO","[]"]
+  lex (t, g) = (numHoles t, M.size (digraph g), length $ connectedComponents g)
 

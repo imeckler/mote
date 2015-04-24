@@ -72,6 +72,7 @@ data FromClient
   | CaseFurther Var ClientState
   | CaseOn String ClientState
   | SendStop
+  | Search 
   deriving (Show)
 
 instance FromJSON FromClient where

@@ -39,9 +39,9 @@ executable searchtest
                        process >= 1.2,
                        strict  >= 0.3.2,
                        fingertree >= 0.1,
-                       -- debug
                        unordered-containers >= 0.2,
                        hashable >= 1.2,
+                       -- debug
                        array >= 0.5,
                        syb,
                        PSQueue >= 1.1,
@@ -54,6 +54,8 @@ executable slick
   main-is: Slick.hs
   build-depends:       base >= 4.7 && < 4.8,
                        containers >= 0.5,
+                       unordered-containers >= 0.2,
+                       hashable >= 1.2,
                        vector >= 0.10.12.2,
                        text >= 1.2.0.4,
                        aeson >= 0.8.0.2,
