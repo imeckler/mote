@@ -12,6 +12,8 @@ import           RdrName (RdrName (Exact), extendLocalRdrEnvList)
 import           SrcLoc              (realSrcSpanStart, realSrcSpanEnd)
 import           TcRnDriver          (tcRnExpr)
 import           TcRnMonad
+import Type (isPredTy)
+import TypeRep (Type(..))
 
 import           Slick.Types
 import           Slick.Util
@@ -103,3 +105,9 @@ withBindings bs mx = do
 
 discardConstraints :: TcRn a -> TcRn a
 discardConstraints = fmap fst . captureConstraints
+
+
+splitPredTys :: Type -> ([PredType], Type)
+splitPredTys (FunTy t1 t2) | isPredTy t1 = let (ps, t) = splitPredTys t2 in (t1:ps, t)
+splitPredTys t                           = ([], t)
+

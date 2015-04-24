@@ -1,3 +1,4 @@
+{-# LANGUAGE FlexibleContexts #-}
 module Slick.Util where
 
 import           Control.Applicative    ((<$>))
@@ -101,3 +102,7 @@ showType fs = showSDocForUser fs neverQualify . ppr
 mapMaybeM :: Monad m => (a -> m (Maybe b)) -> [a] -> m [b]
 mapMaybeM f = liftM catMaybes . mapM f
 
+headErr :: MonadError ErrorType m => [a] -> m a
+headErr xs = case xs of
+  [] -> throwError $ OtherError "headErr: Empty list"
+  x : xs -> return x
