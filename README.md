@@ -93,12 +93,12 @@ Mote provides the following vim commands.
 
   Partially fill the current hole by providing a function that maps into the
   goal type. For example, if we have
-  ```
+  ```haskell
   f :: [a] -> Int
   f xs = _
   ```
   then typing `:MoteRefine length` will result in
-  ```
+  ```haskell
   f :: [a] -> Int
   f xs = length _
   ```
