@@ -45,6 +45,7 @@ makeScopeMap = goDecls I.empty . hsmodDecls where
       goGRHSs acc' pat_rhs
       where
       scopeSpan = foldl1 lub (map (toSrcLocInterval . getLoc) (grhssGRHSs pat_rhs))
+    _ -> acc
 
   -- TODO: Where clause? I guess that's with the GRHSs in localBinds
   goMatchGroup :: Accum (MatchGroup RdrName (LHsExpr RdrName))
@@ -57,7 +58,7 @@ makeScopeMap = goDecls I.empty . hsmodDecls where
 
   -- TODO: grhssLocalBinds
   goGRHSs :: Accum (GRHSs RdrName (LHsExpr RdrName))
-  goGRHSs acc (GRHSs {grhssGRHSs, grhssLocalBinds}) = foldl (\m g -> goGRHS m (unLoc g)) acc grhssGRHSs
+  goGRHSs acc (GRHSs {grhssGRHSs, grhssLocalBinds = _}) = foldl (\m g -> goGRHS m (unLoc g)) acc grhssGRHSs
 
   -- TODO: Guard 
   goGRHS :: Accum (GRHS RdrName (LHsExpr RdrName))
@@ -116,13 +117,13 @@ makeScopeMap = goDecls I.empty . hsmodDecls where
     HsSCC _fs e                     -> goLExpr acc e
     HsCoreAnn _fs e                 -> goLExpr acc e
     -- Begin template haskell stuff
-    HsBracket x0                    -> acc
-    HsRnBracketOut x0 x1            -> acc
-    HsTcBracketOut x0 x1            -> acc
-    HsSpliceE x0 x1                 -> acc
-    HsQuasiQuoteE x0                -> acc
+    HsBracket {}      -> acc
+    HsRnBracketOut {} -> acc
+    HsTcBracketOut {} -> acc
+    HsSpliceE {}      -> acc
+    HsQuasiQuoteE {}  -> acc
     -- End template haskell stuff
-    HsProc x0 x1       -> acc -- TODO
+    HsProc {}          -> acc -- TODO
     HsTick _tick e     -> goLExpr acc e
     HsBinTick _t _t' e -> goLExpr acc e
     HsTickPragma _t e  -> goLExpr acc e
@@ -130,7 +131,7 @@ makeScopeMap = goDecls I.empty . hsmodDecls where
     _                  -> acc
 
   goRecordBinds :: Accum (HsRecordBinds RdrName)
-  goRecordBinds acc (HsRecFields {rec_flds, rec_dotdot}) = goMany goRecField acc rec_flds
+  goRecordBinds acc (HsRecFields {rec_flds, rec_dotdot=_}) = goMany goRecField acc rec_flds
     where
     goRecField :: Accum (HsRecField RdrName (LHsExpr RdrName))
     goRecField m (HsRecField {hsRecFieldArg}) = goLExpr m hsRecFieldArg
@@ -164,7 +165,7 @@ makeScopeMap = goDecls I.empty . hsmodDecls where
 
   toSrcLocInterval :: SrcSpan -> I.Interval SrcLoc
   toSrcLocInterval = \case
-    UnhelpfulSpan x0 -> I.Interval unhelpful unhelpful
+    UnhelpfulSpan _ -> I.Interval unhelpful unhelpful
       where unhelpful = UnhelpfulLoc nilFS
     RealSrcSpan sp -> I.Interval (RealSrcLoc $ realSrcSpanStart sp) (RealSrcLoc $ realSrcSpanEnd sp)
 
@@ -214,7 +215,7 @@ patNamesBound = \case
   ConPatIn _ deets                    -> detailsNamesBound deets
   ConPatOut {pat_args}                -> detailsNamesBound pat_args
   ViewPat _expr p _ty                 -> lpatNamesBound p
-  SplicePat (HsSplice id x1)          -> [id] -- TODO: I don't actually know what I'm doing here
+  SplicePat (HsSplice id _)           -> [id] -- TODO: I don't actually know what I'm doing here
   QuasiQuotePat (HsQuasiQuote id _ _) -> [id] -- TODO: Or here
   LitPat _                            -> []
   NPat _ _ _                          -> [] -- TODO

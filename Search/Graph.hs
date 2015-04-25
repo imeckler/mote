@@ -33,8 +33,6 @@ import qualified Data.HashMap.Strict as HashMap
 type BraidState f = [f]
 type BraidView  f = ([f], [f])
 
--- TODO: Get rid of all the debug Show constraints
-
 -- TODO: Perhaps add the ability to filter the results by those which
 -- satisfy some test cases.
 
@@ -93,12 +91,12 @@ instance Hashable f => Hashable (NaturalGraph f) where
 deleteStrayVertices ng = ng { digraph = go g possibleStrays } where
   go acc remaining =
     case M.minViewWithKey remaining of
-      Nothing -> acc
-      Just ((r, vd), remaining') ->
+      Nothing                     -> acc
+      Just ((r, _vd), remaining') ->
         let comp = componentOf (UReal r) ng in
         if isStray comp
-        then go (deleteFrom acc comp) (deleteFrom remaining comp)
-        else go acc (deleteFrom remaining comp)
+        then go (deleteFrom acc comp) (deleteFrom remaining' comp)
+        else go acc (deleteFrom remaining' comp)
 
   possibleStrays = M.filter (\vd -> length (incoming vd) == 0) g
   g              = digraph ng
@@ -210,7 +208,7 @@ fineViews :: [f] -> [([f], [f], [f])]
 fineViews = concatMap (\(pre, post) -> map (\(x,y) -> (pre,x,y)) (splittings post)) . splittings
 
 tryRewrite :: Eq f => Trans f -> BraidView f -> Maybe (BraidState f, Move f)
-tryRewrite t@(Trans {from, to, name}) (pre, fs) = case leftFromRight from fs of
+tryRewrite t@(Trans {from, to}) (pre, fs) = case leftFromRight from fs of
   Nothing  -> Nothing
   Just fs' -> Just (pre ++ to ++ fs', (pre, t, fs'))
 
@@ -264,11 +262,10 @@ graphsOfSizeAtMost tsList n start end = HashSet.toList $ runST $ do
 graphsOfSizeAtMostH :: (Hashable f, Ord f) => [Trans f] -> Int -> BraidState f -> BraidState f -> [NaturalGraph f]
 graphsOfSizeAtMostH tsList n start end = HashSet.toList $ runST $ do
   arr <- newSTArray (0, n) M.empty
-  fmap HashSet.unions . forM (branchOut ts start) $ \(b', move) ->
+  fmap HashSet.unions . forM (branchOut ts start) $ \(b', move@(_, t,_)) ->
     let g = moveToGraph move in
-    fmap (HashSet.map (sequence g)) (go arr (n - 1) b' move)
+    fmap (HashSet.map (sequence g)) (go arr (n - 1) b' t)
   where 
-  n0 = n -- TODO: Debug
   newSTArray :: (Int, Int) -> Map k v -> ST s (STArray s Int (Map k v))
   newSTArray = newArray
 
@@ -279,8 +276,8 @@ graphsOfSizeAtMostH tsList n start end = HashSet.toList $ runST $ do
   -- AB, I shouldn't keep going since happens next should have been done up
   -- the call stack (or is about to be done).
   -- For each S, n store programs of length n which map out of S (to T), keyed by T
-  go arr 0 b move = return $ if b == end then HashSet.singleton (idGraph end) else HashSet.empty
-  go arr n b (pre, t, post) = do
+  go _   0 b _              = return $ if b == end then HashSet.singleton (idGraph end) else HashSet.empty
+  go arr n b t = do
     memo <- readArray arr n
     case M.lookup b memo of
       Nothing ->
@@ -293,7 +290,7 @@ graphsOfSizeAtMostH tsList n start end = HashSet.toList $ runST $ do
             then return HashSet.empty
             else
               let g = moveToGraph move in
-              fmap (HashSet.map (sequence g)) (go arr (n - 1) b' move)
+              fmap (HashSet.map (sequence g)) (go arr (n - 1) b' t')
 
           let progs' = if b == end then HashSet.insert (idGraph end) progs else progs
           writeArray arr n (M.insert b progs' memo)
@@ -496,6 +493,8 @@ toTerm' ng0 = case findGoodVertex ng of
 
     ng' = ng { incomingSuccs = incomingSuccs'', digraph = g'', outgoingPreds = outgoingPreds' }
 
+    -- TODO: This should be eliminated since now good vertices have no
+    -- orphan parents
     goodProgram = makeBottomGoodProgram vGoodData
   where
   -- TODO: This algorithm is a bit complicated. We could actually just use
@@ -505,7 +504,6 @@ toTerm' ng0 = case findGoodVertex ng of
 
   (k, ng) = countAndDropFMapStraights $ dropComponentStraights ng0
   g       = digraph ng
-  inSuccs = incomingSuccs ng
 
   -- If there are no vertices emanating from the incoming ports, then
   -- the graph is a natural transformation from the identity, but there
@@ -551,7 +549,7 @@ toTerm' ng0 = case findGoodVertex ng of
       Nothing
       (M.toAscList start)
     where
-    scanAcross d []            = Nothing
+    scanAcross _d []           = Nothing
     scanAcross d ((ve,_) : vs) = case ve of
       Real r   -> Just (d, r)
       Dummy d' -> scanAcross (max d d') vs -- I think d' always wins. I.e., d' == max d d'
@@ -575,7 +573,7 @@ toTerm' ng0 = case findGoodVertex ng of
     where
     loop = \case
       []             -> AnnotatedTerm Id 0
-      (Dummy d : vs) -> let AnnotatedTerm t x = loop vs in case t of
+      (Dummy _ : vs) -> let AnnotatedTerm t x = loop vs in case t of
         Id         -> AnnotatedTerm Id x
         Simple s   -> AnnotatedTerm (Compound ("fmap (" ++ s ++ ")")) x
         Compound s -> AnnotatedTerm (Compound ("fmap (" ++ s ++ ")")) x
@@ -587,7 +585,7 @@ toTerm' ng0 = case findGoodVertex ng of
     loop = \case
       []             -> AnnotatedTerm Id 0
 
-      (Dummy d : vs) -> let AnnotatedTerm t x = loop vs in case t of
+      (Dummy _ : vs) -> let AnnotatedTerm t x = loop vs in case t of
         Id         -> AnnotatedTerm Id x
         Simple s   -> AnnotatedTerm (Compound ("fmap (" ++ s ++ ")")) x
         Compound s -> AnnotatedTerm (Compound ("fmap (" ++ s ++ ")")) x
@@ -598,15 +596,15 @@ toTerm' ng0 = case findGoodVertex ng of
     0 -> AnnotatedTerm f x
     1 -> AnnotatedTerm (Compound ("fmap " ++ wrapped)) x
     _ -> AnnotatedTerm (Compound (parens (intercalate " . " $ replicate n "fmap") ++ " " ++ wrapped)) x
-    where wrapped = case f of { Simple x -> x; Compound x -> parens x }
+    where wrapped = case f of { Simple x -> x; Compound x -> parens x; _ -> error "Search.Graph.fmapped: Impossible" }
 
   parens x = "(" ++ x ++ ")"
 
 -- Maintaining the invariant that the dummys are labelled 0..n
 dropComponentStraights ng =
   let numComponentStraights =
-        length $ takeWhile (\((dumIn,inSucc), (dumOut, outPred)) -> case (inSucc, outPred) of
-          (Dummy dumOut', Dummy dumIn') -> dumOut' == dumOut
+        length $ takeWhile (\((_dumIn, inSucc), (dumOut, outPred)) -> case (inSucc, outPred) of
+          (Dummy dumOut', Dummy _dumIn') -> dumOut' == dumOut
           _ -> False)
           (zip (M.toDescList (incomingSuccs ng)) (M.toDescList (outgoingPreds ng)))
 
@@ -618,8 +616,8 @@ dropComponentStraights ng =
 countAndDropFMapStraights :: NaturalGraph f -> (Int, NaturalGraph f)
 countAndDropFMapStraights ng =
   let numFMapStraights =
-        length $ takeWhile (\((dumIn,inSucc), (dumOut, outPred)) -> case (inSucc, outPred) of
-          (Dummy dumOut', Dummy dumIn') -> dumOut' == dumOut
+        length $ takeWhile (\((_dumIn, inSucc), (dumOut, outPred)) -> case (inSucc, outPred) of
+          (Dummy dumOut', Dummy _dumIn') -> dumOut' == dumOut
           _ -> False)
           (zip (M.toAscList (incomingSuccs ng)) (M.toAscList (outgoingPreds ng)))
 
@@ -699,13 +697,13 @@ compressPaths ng = let g' = evalState (go $ digraph ng) (S.empty, []) in ng { di
     (_, next) <- get
     case next of
       []       -> return g
-      (Dummy d : vs) -> do
+      (Dummy d : _) -> do
         let Just v = M.lookup d outPreds
         case v of
           Dummy _ -> return g
           Real r  -> slurpBackFrom r g
 
-      (Real r : vs) -> slurpBackFrom r g
+      (Real r : _) -> slurpBackFrom r g
 
   slurpBackFrom = \v g -> do
     (seen, next) <- get
@@ -969,43 +967,8 @@ sequence ng1 ng2 =
 
       _ -> (replacements, outPreds, inSuccs) -- TODO: This should throw an error actually
       where
-      merge (io, replacements) (io', replacements') = (io, M.union replacements replacements')
+      merge (io, replacements) (_io', replacements') = (io, M.union replacements replacements')
 
-{-
-  -- TODO: This is wrong. It toe-steps.
-  upd (g, outPreds, inSuccs) (i, func) =
-    case (M.lookup i outPreds1, M.lookup i inSuccs2) of
-      (Just x, Just y) -> case (x, y) of
-        (Real u, Real v)    ->
-          let v' = v + n1 in
-          ( M.adjust (updateOutgoingAt (Dummy i) (Real v')) u 
-            $ M.adjust (updateIncomingAt (Dummy i) (Real u)) v' g
-          , outPreds
-          , inSuccs
-          )
-
-        (Real u, Dummy d)   ->
-          ( M.adjust (updateOutgoingAt (Dummy i) (Dummy d)) u g
-          , M.insert d (Real u) outPreds
-          , inSuccs
-          )
-
-        (Dummy d, Real v)   ->
-          let v' = v + n1 in
-          ( M.adjust (updateIncomingAt (Dummy i) (Dummy d)) v' g
-          , outPreds
-          , M.insert d (Real v') inSuccs
-          )
-
-        (Dummy d, Dummy d') ->
-          ( g
-          , M.insert d' (Dummy d) outPreds
-          , M.insert d (Dummy d') inSuccs
-          )
-
-      _ -> (g, outPreds, inSuccs)
--}
--- TODO: Does this handle parallel edges properly? No. No it does not.
 updateNeighborListAtAll x v es = map (\e@(y,f) -> if x == y then (v, f) else e) es
 
 updateIncomingAtAll i v vd = vd { incoming = updateNeighborListAtAll i v (incoming vd) }
@@ -1022,7 +985,7 @@ contiguous (x:xs@(y:_)) = y == x + 1 && contiguous xs
 contiguous _            = True
 
 leftFromRight :: Eq a => [a] -> [a] -> Maybe [a]
-leftFromRight (x : xs) [] = Nothing
+leftFromRight (_ : _) [] = Nothing
 leftFromRight (x : xs) (y : ys)
   | x == y    = leftFromRight xs ys
   | otherwise = Nothing

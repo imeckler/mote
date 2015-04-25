@@ -3,46 +3,28 @@
 module Mote.Refine where
 
 import           Bag                 (bagToList)
-import           Control.Applicative ((<$>))
-import           Control.Monad.Error (ErrorT (..), MonadError, lift, throwError)
-import           Control.Monad.Trans (MonadIO, MonadTrans)
-import           Data.IORef          (IORef)
+import           Control.Monad.Error (throwError)
 import qualified Data.Set            as S
-import           ErrUtils            (pprErrMsgBag)
-import           GHC                 (TypecheckedModule (..))
-import           GhcMonad
 import           HsExpr              (HsExpr (..), LHsExpr)
-import           OccName             (mkVarOcc, occName)
-import           Outputable          (showSDoc, vcat)
+import           OccName             (mkVarOcc)
 import           RdrName             (RdrName (Unqual))
-import           SrcLoc              (noLoc, noSrcSpan, unLoc)
-import           TcRnDriver          (runTcInteractive)
-import           TcRnTypes           (CtOrigin (..))
-import           TcType              (TcSigmaType)
-import           Type                (PredType, TyVar, dropForAlls, isPredTy,
-                                      mkForAllTys, mkPiTypes, splitForAllTys,
-                                      splitFunTy_maybe)
+import           SrcLoc              (noLoc, unLoc)
+import           Type                (PredType, TyVar, mkForAllTys, mkPiTypes,
+                                      splitForAllTys, splitFunTy_maybe)
 import           TypeRep             (Type (..))
 
 import           Mote.GhcUtil
 import           Mote.Holes
-import           Mote.ReadType
 import           Mote.Types
 import           Mote.Util
 
 -- Imports for doing subtype testing
-import           Data.Either         (rights)
-import           Name                (mkInternalName)
-import           Parser              (parseType)
 import           PrelNames           (itName)
 import           RnExpr              (rnLExpr)
-import           RnTypes             (extractHsTysRdrTyVars)
 import           SrcLoc              (getLoc)
 import           TcEvidence          (EvBind (..), EvTerm (..), HsWrapper (..))
 import           TcExpr              (tcInferRho)
 import           TcMType             (zonkTcType)
-import           TcRnMonad           (captureConstraints, failIfErrsM,
-                                      newUnique)
 import           TcRnMonad
 import           TcSimplify          (simplifyInteractive)
 import           TcSimplify          (simplifyInfer)
@@ -112,7 +94,6 @@ refine :: Ref MoteState -> String -> M (LHsExpr RdrName)
 refine stRef eStr = do
   hi    <- holeInfo <$> getCurrentHoleErr stRef
   isArg <- S.member (holeSpan hi) . argHoles <$> gReadRef stRef
-  fs    <- lift getSessionDynFlags
   let goalTy = holeType hi
 
   expr <- parseExpr eStr

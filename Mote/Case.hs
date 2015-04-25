@@ -2,10 +2,10 @@
 module Mote.Case where
 
 import           Bag                 (bagToList)
-import           BasicTypes          (Boxity (..), Origin (..))
+import           BasicTypes          (Boxity (..))
 import           Control.Applicative ((<$), (<$>), (<*>), (<|>))
 import           Control.Arrow       (second)
-import           Control.Monad.Error (lift, throwError)
+import           Control.Monad.Error (throwError)
 import           Control.Monad.State
 import qualified Data.List           as List
 import           Data.Maybe          (fromMaybe, mapMaybe)
@@ -24,28 +24,23 @@ import qualified GHC
 import           GhcMonad
 import           HsBinds             (HsBindLR (..), HsLocalBindsLR (..),
                                       HsValBindsLR (..))
-import Outputable (vcat)
 import           HsDecls             (ClsInstDecl (..), HsDecl (..),
                                       InstDecl (..))
 import           HsExpr              (GRHS (..), GRHSs (..), HsExpr (..),
                                       HsTupArg (..), LHsExpr, LMatch,
-                                      Match (..), MatchGroup (..), StmtLR (..),
-                                      pprMatch, HsMatchContext(..))
+                                      Match (..), StmtLR (..))
 import           HsPat
 import           HsSyn               (HsModule (..))
 import           Name                (Name)
 import           OccName             (occNameString, occNameFS, occName)
-import           PrelNames           (consDataConKey)
 import           RdrName             (RdrName (..), mkVarUnqual, nameRdrName)
 import           SrcLoc              (GenLocated (..), Located, SrcLoc(..), SrcSpan,
                                       getLoc, isSubspanOf, noLoc, realSrcSpanStart)
 import           TcRnDriver          (runTcInteractive)
 import           TcRnMonad           (setXOptM)
 import           TyCon
-import           TyCon               (TyCon (..))
 import           Type
 import           TypeRep
-import           Unique              (hasKey)
 
 import           Mote.Types
 import           Mote.Util
@@ -124,7 +119,7 @@ freshWithPrefix pre = do
 -- synonyms expanded
 typePrefix :: Type -> FastString
 typePrefix = \case
-  AppTy x0 x1       -> fsLit "x"
+  AppTy {}         -> fsLit "x"
   -- TODO: This will probably break on infix tycons
   -- TODO: Special case maybe
   -- TODO: Special case either

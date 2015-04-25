@@ -7,21 +7,16 @@ import           DynFlags            (ExtensionFlag (Opt_PolyKinds))
 import           FamInst             (tcGetFamInstEnvs)
 import           FamInstEnv          (normaliseType)
 import           GHC                 (Type, runTcInteractive)
-import           GhcMonad            (GhcMonad, getSession, getSessionDynFlags)
-import           HsTypes             (LHsType, mkImplicitHsForAllTy)
-import           Kind                (anyKind)
+import           GhcMonad            (getSession, getSessionDynFlags)
+import           HsTypes             (mkImplicitHsForAllTy)
 import           Name                (Name)
 import           Parser              (parseType)
-import           RnEnv               (HsDocContext (GHCiCtx),
-                                      bindLocatedLocalsRn)
+import           RnEnv               (HsDocContext (GHCiCtx))
 import           RnTypes             (rnLHsType)
 import           SrcLoc              (noLoc)
-import           TcEnv               (tcExtendTyVarEnv)
 import           TcHsType            (tcHsSigType)
 import           TcRnMonad           (setXOptM)
 import           TcType              (UserTypeCtxt (GhciCtxt))
-import           UniqSet             (uniqSetToList)
-import           Var                 (mkTyVar)
 import Outputable (showSDoc, vcat)
 import ErrUtils (pprErrMsgBag)
 
@@ -66,7 +61,6 @@ readTypeWithTyVarsInScope tvNames str =
 -- doesn't work properly yet.
 tcGetType rdr_type = do
   hsc_env <- getSession
-  fs <- getSessionDynFlags
   liftIO . runTcInteractive hsc_env . setXOptM Opt_PolyKinds $ do
     (rn_type, _fvs) <- rnLHsType GHCiCtx (noLoc $ mkImplicitHsForAllTy (noLoc []) rdr_type)
     ty <- tcHsSigType GhciCtxt rn_type

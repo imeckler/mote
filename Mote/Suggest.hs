@@ -6,30 +6,23 @@ import           Control.Applicative
 import           Control.Monad
 import           Control.Monad.Error
 import           Data.Function       (on)
-import           Data.IORef
 import qualified Data.List           as List
+import qualified Data.Map as M
 import           Data.Maybe
-import           Data.Traversable    hiding (forM, mapM, sequence)
-import           GHC
-import           GhcMonad
-import           HsExpr
-import           HsExpr
-import           RdrName
+
 import           Mote.GhcUtil
 import           Mote.Holes
 import           Mote.Refine
 import           Mote.Types
 import           Mote.Util
-import           TcRnMonad           (captureConstraints, TcRn)
-import           TyCon               (isTupleTyCon)
+
+import           GHC
+import           RdrName
+import           TcRnMonad           (TcRn)
 import           Type
--- TODO: DEBUG
-import           Generics.SYB.Text
 import           Module              (packageIdString)
 import           Name                (isInternalName, nameModule_maybe)
-import           Outputable          (ppr, showSDoc, showSDocDebug)
 import           TcEvidence          (HsWrapper (..))
-import qualified Data.Map as M
 
 eitherToMaybe = either (const Nothing) Just
 
@@ -54,12 +47,12 @@ vagueness (RefineMatch {..}) = go refineWrapper where
   go :: HsWrapper -> Int
   go = \case
     WpCompose x0 x1 -> go x0 + go x1
-    WpCast x0       -> 0
-    WpEvLam x0      -> 1
-    WpEvApp x0      -> 1
-    WpTyLam x0      -> 1
-    WpTyApp x0      -> 1
-    WpLet x0        -> 1
+    WpCast {}       -> 0
+    WpEvLam {}      -> 1
+    WpEvApp {}      -> 1
+    WpTyLam {}      -> 1
+    WpTyApp {}      -> 1
+    WpLet {}        -> 1
     WpHole          -> 0
 
 -- should really count the number of "hard to get" arg tys,
@@ -105,7 +98,6 @@ score hole goalTy ty n = do
 suggestions :: TypecheckedModule -> HoleInfo -> M [(Name, Type)]
 suggestions tcmod hi = do
   gblScope <- lift getNamesInScope
-  fs <- lift getSessionDynFlags
   -- not sure if it's stricly necessary to do this in Tc environment of the
   -- hole
   gblSuggestions <- mapMaybeM gblScore gblScope

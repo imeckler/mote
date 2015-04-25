@@ -1,4 +1,4 @@
-{-# LANGUAGE TupleSections, RecordWildCards, LambdaCase, NamedFieldPuns #-}
+{-# LANGUAGE LambdaCase, NamedFieldPuns, RecordWildCards, TupleSections #-}
 
 module Mote.Search
   ( transesInScope
@@ -12,41 +12,32 @@ module Mote.Search
   , applicatives
   ) where
 
-import Mote.Types
-import Mote.Util
-import Mote.GhcUtil (discardConstraints, splitPredTys)
-import Search.Graph
-import Search.Types
-import Mote.Refine (tcRnExprTc)
-import Mote.ReadType
+import           Mote.GhcUtil        (discardConstraints, splitPredTys)
+import           Mote.ReadType
+import           Mote.Refine         (tcRnExprTc)
+import           Mote.Types
+import           Mote.Util
+import           Search.Graph
+import           Search.Types
 
-import Control.Monad.Error
-import Control.Arrow (first)
-import Control.Applicative
-import Data.Maybe
-import qualified Data.List as List
-import qualified Data.Set as Set
+import           Control.Applicative
+import           Control.Arrow       (first)
+import           Control.Monad.Error
+import           Data.Hashable
+import qualified Data.List           as List
+import           Data.Maybe
+import qualified Data.Set            as Set
 
-import InstEnv (ClsInst(..))
-import GHC
+import           GHC
+import           InstEnv             (ClsInst (..))
+import           Name
+import           Outputable
 import qualified PrelNames
-import TypeRep
-import Type (splitForAllTys, splitFunTys, tyVarsOfTypes, dropForAlls)
-import TcRnDriver (runTcInteractive)
-import TyCon
-import Var
-import Name
-import RdrName
-import HsExpr
-import SrcLoc (noLoc)
-import Outputable
-import UniqSet (elementOfUniqSet)
-import Unique (getKey, getUnique)
-import Data.Hashable
--- TODO: Debug imports. Delete
-import Mote.LoadFile
-import Mote.Debug
-import Debug.Trace
+import           RdrName
+import           Type                (dropForAlls, splitFunTys)
+import           TypeRep
+import           UniqSet             (elementOfUniqSet)
+import           Unique              (getKey, getUnique)
 
 {-
 search stRef = do
@@ -115,7 +106,7 @@ type CoarseFunc = (TyCon, [CoarseType])
 squint :: SyntacticFunc -> CoarseFunc
 squint (tc, ts) = (tc, map squintTy ts) where
   squintTy (WrappedType t) = case t of
-    TyVarTy v      -> SomeVar
+    TyVarTy _v     -> SomeVar
     _              -> Type (WrappedType t)
 
 -- Filtering occurs here
@@ -161,12 +152,10 @@ instancesOneParamFunctorClass name =
 
 extractUnapplied :: Type -> Maybe SyntacticFunc
 extractUnapplied t = case t of
-  AppTy t t'       -> Nothing
   TyConApp tc kots -> Just (tc, map WrappedType kots)
-  FunTy t t'       -> Nothing
-  ForAllTy v t     -> Nothing
-  LitTy tl         -> Nothing
-  TyVarTy v        -> Nothing
+  -- TODO: In the future, this should extract applications of type
+  -- variables
+  _                -> Nothing
 
 -- TODO: This type is only for debug purposes
 data WrappedTyCon = WrappedTyCon TyCon String
@@ -181,16 +170,12 @@ instance Show WrappedTyCon where
 
 -- search :: [String] -> [String] -> Int ->  M [NaturalGraph (Int, Int)]
 search src trg n = do
-  fs      <- lift getSessionDynFlags
   let renderSyntacticFunc (tc, args) = (getKey (getUnique tc), hash args)
 --  let showSyntacticFunc = showSDoc fs . ppr
 --  let renderSyntacticFunc sf@(tc, args) = WrappedTyCon tc (showSyntacticFunc sf)
   from    <- fmap catMaybes $ mapM (fmap (fmap renderSyntacticFunc . extractUnapplied . dropForAlls) . readType) src
   to      <- fmap catMaybes $ mapM (fmap (fmap renderSyntacticFunc . extractUnapplied . dropForAlls) . readType) trg
-  -- TODO: Debug
-  liftIO $ print (from, to)
   transes <- fmap (fmap (fmap renderSyntacticFunc)) transesInScope
-  liftIO $ mapM_ print transes
   return $ graphsOfSizeAtMost transes n from to
 
 transesInScope :: M [Trans SyntacticFunc]
@@ -215,11 +200,11 @@ transesInScope = do
 -- so runErrorT can work
 extractFunctors :: Type -> ([SyntacticFunc], WrappedType)
 extractFunctors t = case t of
-  TyVarTy v        -> ([], WrappedType t)
+  TyVarTy _v       -> ([], WrappedType t)
   FunTy _ _        -> ([], WrappedType t)
-  ForAllTy v t     -> extractFunctors t
+  ForAllTy _v t    -> extractFunctors t
   LitTy _          -> ([], WrappedType t)
-  AppTy t t'       -> ([], WrappedType t) -- TODO
+  AppTy t _t'      -> ([], WrappedType t) -- TODO
   TyConApp tc kots -> case splitLast kots of
     Nothing          -> ([], WrappedType t)
     Just (args, arg) -> first ((tc, map WrappedType args) :) (extractFunctors arg)
@@ -227,6 +212,7 @@ extractFunctors t = case t of
   splitLast' :: [a] -> ([a], a)
   splitLast' [x]    = ([], x)
   splitLast' (x:xs) = first (x:) (splitLast' xs)
+  splitLast' _      = error "Mote.Search.splitLast': Impossible"
 
   splitLast :: [a] -> Maybe ([a], a)
   splitLast [] = Nothing
@@ -238,24 +224,24 @@ extractFunctors t = case t of
 occursStrictlyPositively :: TyVar -> Type -> Bool
 occursStrictlyPositively v = not . bad where
   bad t = case t of
-    AppTy t' t''     -> bad t' || bad t''
-    TyConApp tc kots -> any bad kots
-    FunTy t' t''     -> occurs t' || bad t''
-    ForAllTy v' t'   -> bad t'
-    LitTy tl         -> False
-    TyVarTy v'       -> False
+    AppTy t' t''      -> bad t' || bad t''
+    TyConApp _tc kots -> any bad kots
+    FunTy t' t''      -> occurs t' || bad t''
+    ForAllTy _ t'     -> bad t'
+    LitTy _tl         -> False
+    TyVarTy _v        -> False
 
   occurs t = case t of
-    AppTy t' t''     -> occurs t' || occurs t''
-    TyConApp tc kots -> any occurs kots
-    FunTy t' t''     -> occurs t' || occurs t''
-    ForAllTy v' t'   -> occurs t'
-    LitTy tl         -> False
-    TyVarTy v'       -> v' == v
+    AppTy t' t''      -> occurs t' || occurs t''
+    TyConApp _tc kots -> any occurs kots
+    FunTy t' t''      -> occurs t' || occurs t''
+    ForAllTy _v t'    -> occurs t'
+    LitTy _tl         -> False
+    TyVarTy v'        -> v' == v
 
 transInterpretations :: (Name, Type) -> [TransInterpretation]
 transInterpretations (n, t0) =
-  case traceShow (occNameFS . getOccName $ n) $ targInner of
+  case targInner of
     WrappedType (TyVarTy polyVar) ->
       if polyVar `elementOfUniqSet` forbiddenVars
       then []
@@ -265,7 +251,7 @@ transInterpretations (n, t0) =
       where
       interp :: Int -> Type -> Maybe TransInterpretation
       interp i argty =
-        if trace' (showv inner, showv targInner, inner == targInner) (inner == targInner)
+        if inner == targInner
         then Just trans
         else Nothing
         where
@@ -280,20 +266,12 @@ transInterpretations (n, t0) =
 
     _ -> []
   where
-  (polyVars, t1)       = splitForAllTys t0
+  (_polyVars, t1)      = splitForAllTys t0
   (predTys, t)         = splitPredTys t1
   forbiddenVars        = tyVarsOfTypes predTys
   (args, targ)         = splitFunTys t
   (sfsTarg, targInner) = extractFunctors targ
   numArguments         = length args
-
-  showv (WrappedType t) = case t of { TyVarTy v -> occNameFS $ getOccName v }
-  trace' x y =
-    if (show . occNameFS . getOccName $ n) == show "runErrorT"
-    then traceShow x y
-    else y
-
-  traceId' x = trace' x x
 
 newtype WrappedType = WrappedType Type
 instance Eq WrappedType where
@@ -323,12 +301,12 @@ instance Hashable WrappedType where
 
 hashTypeWithSalt :: Int -> Type -> Int
 hashTypeWithSalt s t = case t of
-  TyVarTy v        -> (0::Int) `hashWithSalt` getKey (getUnique v)
-  AppTy t t'       -> ((1::Int) `hashTypeWithSalt` t) `hashTypeWithSalt` t'
-  TyConApp tc kots -> List.foldl' hashTypeWithSalt ((2::Int) `hashWithSalt` getKey (getUnique tc)) kots
-  FunTy t t'       -> (3::Int) `hashTypeWithSalt` t `hashTypeWithSalt` t'
-  ForAllTy v t     -> ((4::Int) `hashWithSalt` getKey (getUnique v)) `hashTypeWithSalt` t
-  LitTy tl         -> (5::Int) `hashTyLitWithSalt` tl
+  TyVarTy v        -> s `hashWithSalt` (0::Int) `hashWithSalt` getKey (getUnique v)
+  AppTy t t'       -> s `hashWithSalt` ((1::Int) `hashTypeWithSalt` t) `hashTypeWithSalt` t'
+  TyConApp tc kots -> List.foldl' hashTypeWithSalt (s `hashWithSalt` (2::Int) `hashWithSalt` getKey (getUnique tc)) kots
+  FunTy t t'       -> s `hashWithSalt` (3::Int) `hashTypeWithSalt` t `hashTypeWithSalt` t'
+  ForAllTy v t     -> s `hashWithSalt` ((4::Int) `hashWithSalt` getKey (getUnique v)) `hashTypeWithSalt` t
+  LitTy tl         -> s `hashWithSalt` (5::Int) `hashTyLitWithSalt` tl
 
 hashTyLitWithSalt s tl = case tl of
   NumTyLit n  -> s `hashWithSalt` n
@@ -354,16 +332,18 @@ compareTy = \x y -> case compare (conOrd x) (conOrd y) of
 
       (TyVarTy v, TyVarTy v') -> compare v v'
 
+      _ -> error "Mote.Search.compareTy: Impossible"
+
   o -> o
   where
   conOrd :: Type -> Int
   conOrd x = case x of
-    TyVarTy v        -> 0
-    AppTy t t'       -> 1
-    TyConApp tc kots -> 2
-    FunTy t t'       -> 3
-    ForAllTy v t     -> 4
-    LitTy tl         -> 5
+    TyVarTy {}  -> 0
+    AppTy {}    -> 1
+    TyConApp {} -> 2
+    FunTy {}    -> 3
+    ForAllTy {} -> 4
+    LitTy {}    -> 5
 
   lex :: [Ordering] -> Ordering
   lex = (\case { [] -> EQ; (o:_) -> o } ) . dropWhile (== EQ)

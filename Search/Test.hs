@@ -4,11 +4,6 @@ module Main where
 import Control.Monad.Error
 import Search.Types
 import Search.Graph
-import Mote.Types
-import TyCon
-import TypeRep
-import Mote.ReadType
-import Control.Applicative
 import qualified Data.List as List
 import qualified Data.List.Split as List
 import System.Environment (getArgs)
@@ -17,9 +12,6 @@ import Mote.LoadFile
 import Mote.Search
 import qualified Data.Map as M
 
-import qualified Data.HashSet as HashSet
-import Data.Maybe
-import Debug.Trace
 import Data.Function (on)
 
 main :: IO ()

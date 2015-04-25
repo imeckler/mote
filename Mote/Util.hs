@@ -104,4 +104,4 @@ mapMaybeM f = liftM catMaybes . mapM f
 headErr :: MonadError ErrorType m => [a] -> m a
 headErr xs = case xs of
   [] -> throwError $ OtherError "headErr: Empty list"
-  x : xs -> return x
+  x : _ -> return x

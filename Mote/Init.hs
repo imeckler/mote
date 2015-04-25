@@ -7,21 +7,15 @@ import           GHC
 import           Language.Haskell.GhcMod.Internal              hiding (getCompilerOptions,
                                                                 parseCabalFile)
 import           Outputable
-import           Mote.Protocol (ToClient(Error))
 import           Mote.Types
 import           Mote.Util
 -- I had to write my own "getCompilerOptions" and "parseCabalFile"
 -- since the ghcmod versions die on new binary format cabal files.
 import           Control.Applicative
-import qualified Control.Exception
 import           Control.Monad
 import           Control.Monad.Error
-import           Data.Aeson                                    (encode)
-import qualified Data.ByteString.Lazy.Char8 as LB8
-import qualified Data.Map                                      as M
 import qualified Data.Set                                      as S
 import           DynFlags
-import           GhcMonad
 import           Language.Haskell.GhcMod
 import ErrUtils
 
@@ -60,7 +54,6 @@ import qualified CabalVersions.Cabal21                         as C21
 import qualified CabalVersions.Cabal22                         as C22
 import           Data.List                                     (find, isInfixOf,
                                                                 isPrefixOf, nub,
-                                                                splitAt,
                                                                 stripPrefix,
                                                                 tails)
 import           Data.List.Split                               (splitOn)
@@ -144,7 +137,7 @@ setOptions stRef (Options {..}) (CompilerOptions{..}) = do
         { hscTarget  = HscInterpreted
         , ghcLink    = LinkInMemory
         , ghcMode    = CompManager
-        , log_action = \dfs sev span pprsty msgdoc ->
+        , log_action = \dfs sev span _pprsty msgdoc ->
             let msg =
                   showSDocForUser dfs neverQualify
                   $ mkLocMessage sev span msgdoc
@@ -156,11 +149,6 @@ setOptions stRef (Options {..}) (CompilerOptions{..}) = do
             else
               gModifyRef stRef (\s ->
                 s { loadErrors = msg : loadErrors s })
-        {- TODO: Debug
-        , traceLevel = 2
-        , log_action = \dfs sev span pprsty msgdoc ->
-            logS stRef $ showSDoc dfs msgdoc
-        -}
         }
 
   void $ setSessionDynFlags =<< addCmdOpts ghcOptions
@@ -188,6 +176,7 @@ ghcDbOpt db
   | s == "GlobalDb"                    = ["-global-package-db"]
   | s == "UserDb"                      = ["-user-package-db"]
   | ("PackageDb ",s') <-  splitAt 10 s = ["-no-user-package-db", "-package-db", read s']
+  | otherwise                          = []
   where s = show db
 
 -- begin implementation of parseCabalFile

@@ -2,9 +2,8 @@
              ScopedTypeVariables, TupleSections #-}
 module Main where
 
-import           Control.Applicative        ((<$), (<$>))
+import           Control.Applicative        ((<$>))
 import           Control.Concurrent         (forkIO)
-import           Control.Concurrent.MVar
 import           Control.Monad.Error
 import           Data.Aeson                 (decodeStrict, encode, (.=))
 import qualified Data.Aeson                 as Aeson
@@ -12,12 +11,11 @@ import qualified Data.ByteString            as B
 import qualified Data.ByteString.Lazy.Char8 as LB8
 import qualified Data.List                  as List
 import qualified Data.Map                   as M
-import           Data.Maybe
 import qualified Data.Set                   as S
 
+
 import qualified DynFlags
-import           Exception
-import           FastString                 (fsLit, unpackFS)
+import           FastString                 (fsLit)
 import           GHC                        hiding (exprType)
 import           GHC.Paths
 import           Name
@@ -35,29 +33,10 @@ import           Mote.Holes
 import qualified Mote.Init
 import           Mote.LoadFile             (loadFile)
 import           Mote.Protocol
-import           Mote.ReadType
 import           Mote.Refine
-import           Mote.Scope
 import           Mote.Suggest              (getAndMemoizeSuggestions)
 import           Mote.Types
 import           Mote.Util
-
--- DEBUG
-import Data.Time.Clock
-import Mote.Search
-import Search.Types
-
-ghcInit :: GhcMonad m => Ref MoteState -> m ()
-ghcInit stRef = do
-  dfs <- getSessionDynFlags
-  void . setSessionDynFlags . withFlags [DynFlags.Opt_DeferTypeErrors] $ dfs
-    { hscTarget  = HscInterpreted
-    , ghcLink    = LinkInMemory
-    , ghcMode    = CompManager
-    , traceLevel = 10
-    }
-  where
-  withFlags fs dynFs = foldl DynFlags.gopt_set dynFs fs
 
 getEnclosingHole :: Ref MoteState -> (Int, Int) -> M (Maybe AugmentedHoleInfo)
 getEnclosingHole stRef pos =
@@ -76,12 +55,11 @@ respond stRef msg = either (Error . show) id <$> runErrorT (respond' stRef msg)
 respond' :: Ref MoteState -> FromClient -> M ToClient
 respond' stRef = \case
   Load p -> do
-    t0 <- liftIO getCurrentTime
     loadFile stRef p
     liftIO . forkIO $ do
       fmap fileData (gReadRef stRef) >>= \case
         Nothing -> return ()
-        Just (FileData {holesInfo}) ->
+        Just (FileData {holesInfo=_}) ->
           return ()
           -- no idea if this is kosher
           -- void . runGhc (Just libdir) $ runErrorT (mapM_ (getAndMemoizeSuggestions stRef) (M.elems holesInfo))
@@ -237,6 +215,8 @@ respond' stRef = \case
     unqual <- lift getPrintUnqual
     return . SetInfoWindow . showSDocForUser fs unqual $ ppr x
 
+  Search {} -> return Ok -- TODO
+
 showM :: (GhcMonad m, Outputable a) => a -> m String
 showM = showSDocM . ppr
 
@@ -283,7 +263,18 @@ runWithTestRef x = do
   home <- getHomeDirectory
   withFile (home </> "testlog") WriteMode $ \logFile -> do
     r <- newRef =<< initialState logFile
-    run $ do { ghcInit r; x r }
+    run $ do { ghcInit; x r }
+  where
+  ghcInit = do
+    dfs <- getSessionDynFlags
+    void . setSessionDynFlags . withFlags [DynFlags.Opt_DeferTypeErrors] $ dfs
+      { hscTarget  = HscInterpreted
+      , ghcLink    = LinkInMemory
+      , ghcMode    = CompManager
+      , traceLevel = 10
+      }
+    where
+    withFlags fs dynFs = foldl DynFlags.gopt_set dynFs fs
 
 runWithTestRef' x = do
   home <- getHomeDirectory

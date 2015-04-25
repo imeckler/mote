@@ -6,33 +6,23 @@ import qualified Bag
 import           BasicTypes          (isTopLevel)
 import           Control.Applicative
 import           Control.Monad.Error hiding (liftIO)
-import           Control.Monad.State hiding (liftIO)
-import qualified Data.Map            as M
 import           Data.Maybe
 import qualified Data.Set            as S
-import           DynFlags
 import           ErrUtils
 import           GHC
-import           GHC.Paths
 import           GhcMonad
-import           HscTypes            (HsParsedModule (..), HscEnv (..))
-import           Inst                (tyVarsOfCt)
 import qualified OccName
 import           Outputable
-import qualified PrelNames
 import           Mote.Types
 import           Mote.Util
 import           TcMType             (zonkCt, zonkTcType)
 import           TcRnDriver          (tcTopSrcDecls)
-import           TcRnMonad           (TcM, captureConstraints, getConstraintVar,
-                                      readTcRef)
+import           TcRnMonad           (TcM, captureConstraints)
 import           TcRnTypes           (Ct (..), CtEvidence (..),
                                       Implication (..), TcIdBinder (..),
                                       TcLclEnv (..), WantedConstraints (..),
                                       ctEvPred, ctEvidence, ctLoc, ctLocEnv,
                                       ctLocSpan, isHoleCt)
-import           TcType              (tyVarsOfType)
-import           VarSet              (disjointVarSet)
 
 -- Be careful with guessTarget. It might grab a compiled version
 -- of a module instead of interpreting
@@ -112,7 +102,6 @@ getRelevantBindings :: Ct -> TcM [(Id, Type)]
 getRelevantBindings ct = go 100 (tcl_bndrs lcl_env)
   where
   lcl_env = ctLocEnv $ ctLoc ct
-  ct_tvs  = tyVarsOfCt ct
 
   go _      [] = return []
   go n_left (TcIdBndr id top_lvl : tc_bndrs)

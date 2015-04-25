@@ -42,7 +42,7 @@ run :: Ghc a -> IO a
 run = runGhc (Just libdir)
 
 ghcInit :: GhcMonad m => Ref MoteState -> m ()
-ghcInit stRef = do
+ghcInit _ = do
   dfs <- getSessionDynFlags
   void . setSessionDynFlags . withFlags [DynFlags.Opt_DeferTypeErrors] $ dfs
     { hscTarget  = HscInterpreted

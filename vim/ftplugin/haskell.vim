@@ -12,6 +12,6 @@ call mote#start()
 "
 " nnoremap <Esc>e :call mote#nextHole()<cr>:call mote#getEnv()<cr>
 " nnoremap <Esc>n :call mote#prevHole()<cr>:call mote#getEnv()<cr>
-" nnoremap <Esc>r :call mote#prevHole()<cr>:moteRefine 
+" nnoremap <Esc>r :call mote#prevHole()<cr>:MoteRefine 
 " nnoremap <Esc>l :MoteLoadCurrentFile <cr>
 

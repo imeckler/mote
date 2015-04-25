@@ -24,11 +24,11 @@ import           System.Directory        (getModificationTime)
 
 loadFile :: Ref MoteState -> FilePath -> M ()
 loadFile stRef p = do
-  pmod  <- eitherThrow =<< lift handled -- bulk of time is here
+  _pmod <- eitherThrow =<< lift handled -- bulk of time is here
   fdata <- getFileDataErr stRef
   let tcmod = typecheckedModule fdata
   his   <- getHoleInfos tcmod
-  augmentedHis <- mapM (augment tcmod) his
+  let augmentedHis = map augment his
   gModifyRef stRef (\s -> s {
       fileData = Just (fdata
         { holesInfo = M.fromList $ map (\hi -> (holeSpan $ holeInfo hi, hi)) augmentedHis })
@@ -36,9 +36,9 @@ loadFile stRef p = do
   where
   -- getting suggestions took far too long, so we only compute them if
   -- they're explicitly requested later on
-  augment :: TypecheckedModule -> HoleInfo -> M AugmentedHoleInfo
-  augment tcmod hi =
-    return (AugmentedHoleInfo { holeInfo = hi, suggestions = Nothing })
+  augment :: HoleInfo -> AugmentedHoleInfo
+  augment hi =
+    AugmentedHoleInfo { holeInfo = hi, suggestions = Nothing }
 
   -- bulk of time spent here unsurprisingly
   loadModuleAt :: GhcMonad m => FilePath -> m (Either ErrorType ParsedModule)
