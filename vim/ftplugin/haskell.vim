@@ -1,4 +1,3 @@
-" should be something like: call mote#register()
 call mote#start()
 
 " Possible key bindings:

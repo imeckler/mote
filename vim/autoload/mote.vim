@@ -63,6 +63,16 @@ function! mote#prevHole()
   redraw!
 endfunction
 
+function! mote#nextHoleAndGetEnv()
+  call mote#nextHole()
+  call mote#getEnv()
+endfunction
+
+function! mote#prevHoleAndGetEnv()
+  call mote#prevHole()
+  call mote#getEnv()
+endfunction
+
 function! mote#caseFurther(x)
   py mote.case_further(vim.eval('a:x'))
   redraw!
@@ -96,10 +106,12 @@ function! mote#toggleMode()
 endfunction
 
 command! MoteStart  call mote#start()
-command! -nargs=1 MoteGetType call mote#getType(<f-args>)
-command! -nargs=1 MoteRefine call mote#refine(<f-args>)
 command! MoteLoadCurrentFile call mote#loadCurrentFile()
 command! MoteGetEnv call mote#getEnv()
+command! MoteNextHole call mote#nextHoleAndGetEnv()
+command! MotePrevHole call mote#prevHoleAndGetEnv()
+command! -nargs=1 MoteGetType call mote#getType(<f-args>)
+command! -nargs=1 MoteRefine call mote#refine(<f-args>)
 command! -nargs=1 Casex call mote#caseFurther(<f-args>)
 command! -nargs=1 CaseOn call mote#caseOn(<f-args>)
 command! MoteToggleMode call mote#toggleMode()
