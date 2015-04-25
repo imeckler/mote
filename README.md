@@ -11,6 +11,7 @@ the Mote vim plugin is like.
   assumes you install pathogen bundles to `~/.vim/bundle`.
 
 # Installation
+Pick one of the following. 
 1. If you trust me and are okay with programs being installed to `/usr/local/bin`,
    just do
    ```bash
@@ -30,10 +31,17 @@ the Mote vim plugin is like.
     cd mote
     cabal sandbox init
     cabal configure
-    cabal install
+    cabal install mote -j
     mv .cabal-sandbox/bin/mote ~/.cabal/bin # or wherever
     ```
   - Install the vim plugin (which is in the `vim` directory of the repo)
+
+3. Personally, I would do this since it makes updating easy.
+  - Make a "sandboxes" or clones directory.
+  - Clone this repo there.
+  - `cabal install -j` in the sandbox.
+  - Symlink .cabal-sandbox/bin/mote to wherever you like.
+  - Whenever there's an update, just `git pull` and `cabal install -j`.
 
 # Documentation
 
