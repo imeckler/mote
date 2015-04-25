@@ -14,5 +14,4 @@ call mote#start()
 " nnoremap <Esc>n :call mote#prevHole()<cr>:call mote#getEnv()<cr>
 " nnoremap <Esc>r :call mote#prevHole()<cr>:moteRefine 
 " nnoremap <Esc>l :MoteLoadCurrentFile <cr>
-" autocmd BufWritePost *.hs MoteLoadCurrentFile
 

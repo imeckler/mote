@@ -17,23 +17,18 @@ import Mote.Util
 import Mote.GhcUtil (discardConstraints, splitPredTys)
 import Search.Graph
 import Search.Types
-import Mote.Suggest
 import Mote.Refine (tcRnExprTc)
-import Mote.Holes
 import Mote.ReadType
 
 import Control.Monad.Error
 import Control.Arrow (first)
 import Control.Applicative
 import Data.Maybe
-import qualified Data.HashSet as HashSet
 import qualified Data.List as List
 import qualified Data.Set as Set
 
 import InstEnv (ClsInst(..))
-import FastString
 import GHC
-import TysPrim (funTyCon)
 import qualified PrelNames
 import TypeRep
 import Type (splitForAllTys, splitFunTys, tyVarsOfTypes, dropForAlls)

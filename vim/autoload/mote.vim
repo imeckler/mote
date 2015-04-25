@@ -77,9 +77,23 @@ function! mote#caseOn(e)
   call mote#loadCurrentFile()
 endfunction
 
-augroup moteeGroup
+augroup moteGroup
   autocmd VimLeave * :call mote#stop()
+  autocmd BufWritePost *.hs MoteLoadCurrentFile
 augroup END
+
+let g:mote_mode = 1
+function! mote#toggleMode()
+  if g:mote_mode == 1
+    autocmd! moteGroup BufWritePost 
+    let g:mote_mode = 0
+  else
+    augroup moteGroup
+      autocmd BufWritePost *.hs MoteLoadCurrentFile
+    augroup END
+    let g:mote_mode = 1 - g:mote_mode
+  endif
+endfunction
 
 command! MoteStart  call mote#start()
 command! -nargs=1 MoteGetType call mote#getType(<f-args>)
@@ -88,4 +102,5 @@ command! MoteLoadCurrentFile call mote#loadCurrentFile()
 command! MoteGetEnv call mote#getEnv()
 command! -nargs=1 Casex call mote#caseFurther(<f-args>)
 command! -nargs=1 CaseOn call mote#caseOn(<f-args>)
+command! MoteToggleMode call mote#toggleMode()
 

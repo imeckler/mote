@@ -8,7 +8,6 @@ import Data.Maybe
 import qualified Data.Set as S
 import qualified Data.Map as M
 import Data.Map (Map)
-import qualified Data.PSQueue as P
 import Data.List
 import Control.Applicative
 import Control.Monad.State hiding (sequence)
@@ -19,20 +18,17 @@ import Data.Array.ST (STArray)
 import Control.Monad.ST (ST, runST)
 import Search.Types
 import qualified Data.List as List
-import Control.Arrow (first, second)
+import Control.Arrow (first)
 import Data.Either (isRight)
 
 import Data.Aeson
 import Data.Monoid
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.Text as T
-import Data.Char (ord)
 
 import Data.Hashable
 import qualified Data.HashSet as HashSet
 import qualified Data.HashMap.Strict as HashMap
-
-import Debug.Trace
 
 type BraidState f = [f]
 type BraidView  f = ([f], [f])
@@ -203,15 +199,6 @@ idGraph fs =
   }
   where
   n = length fs - 1
-
-cutProofToNaturalGraph :: CutProof f -> NaturalGraph f
-cutProofToNaturalGraph cp0 = case cp0 of
-  FMap f cp  -> juxtapose (idGraph [f]) (cutProofToNaturalGraph cp)
-  At fs cp   -> juxtapose (cutProofToNaturalGraph cp) (idGraph fs)
-  Cut cp cp' -> sequence (cutProofToNaturalGraph cp) (cutProofToNaturalGraph cp')
-  Axiom t    -> programToGraph [([], t, [])]
-
--- How to make the graph of a cut free proof?
 
 -- vertices S_i, T_i for each of the source and target functors
 -- vertices are created and destroyed

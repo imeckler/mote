@@ -206,7 +206,7 @@ def get_mote_process():
   global mote_process
 
   if not mote_process:
-    mote_process = moteProcess()
+    mote_process = MoteProcess()
     mote_process.start()
 
   return mote_process

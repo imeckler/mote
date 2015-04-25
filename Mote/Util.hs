@@ -1,7 +1,6 @@
 {-# LANGUAGE FlexibleContexts #-}
 module Mote.Util where
 
-import           Control.Applicative    ((<$>))
 import           Control.Monad          ((<=<), liftM)
 import           Control.Monad.IO.Class (MonadIO, liftIO)
 import           Control.Concurrent.MVar(modifyMVar_, readMVar, newMVar)
@@ -10,7 +9,7 @@ import           Data.Maybe             (catMaybes)
 import           DynFlags               (DynFlags)
 import           GHC                    ()
 import           GhcMonad               (GhcMonad, getSessionDynFlags)
-import           Name                   (Name, occName)
+import           Name                   (Name)
 import           OccName
 import           Outputable             (Outputable, SDoc, neverQualify, ppr,
                                          showSDoc, showSDocForUser)
