@@ -19,11 +19,11 @@ install_cabalparse() {
 pushd /tmp
   which cabalparse || install_cabalparse
 
+  if [ -d mote ]; then
+    rm -rf mote
+  fi
   git clone https://github.com/imeckler/mote.git
   pushd mote
-    if [ -d mote ]; then
-      rm -rf mote
-    fi
     cabal sandbox init
     cabal install --dependencies-only
     cabal configure
