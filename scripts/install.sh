@@ -8,7 +8,6 @@ install_cabalparse() {
   git clone https://github.com/imeckler/cabalparse.git
   pushd cabalparse
     cabal sandbox init
-    cabal configure
     cabal install -j
     sudo mv .cabal-sandbox/bin/cabalparse /usr/local/bin
   popd
@@ -24,7 +23,6 @@ pushd /tmp
   git clone https://github.com/imeckler/mote.git
   pushd mote
     cabal sandbox init
-    cabal configure
     cabal install -j
     sudo mv .cabal-sandbox/bin/mote /usr/local/bin
     if [ -d "~/.vim/bundle" ]; then
