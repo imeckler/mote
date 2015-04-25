@@ -8,9 +8,9 @@ install_cabalparse() {
   git clone https://github.com/imeckler/cabalparse.git
   pushd cabalparse
     cabal sandbox init
-    cabal install --dependencies-only
+    cabal install --dependencies-only -j
     cabal configure
-    cabal install
+    cabal install -j
     sudo mv .cabal-sandbox/bin/cabalparse /usr/local/bin
   popd
   rm -rf cabalparse
@@ -25,9 +25,9 @@ pushd /tmp
   git clone https://github.com/imeckler/mote.git
   pushd mote
     cabal sandbox init
-    cabal install --dependencies-only
+    cabal install --dependencies-only -j
     cabal configure
-    cabal install mote
+    cabal install mote -j
     sudo mv .cabal-sandbox/bin/mote /usr/local/bin
     if [ -d "~/.vim/bundle" ]; then
       mv vim ~/.vim/bundle/vim-mote
