@@ -1,10 +1,10 @@
-# slick
+# Mote
 
 The programmer's assistant. Discharge your burdens with style.
 
-Slick brings the development style found in Agda to Haskell, currently only
+Mote brings the development style found in Agda to Haskell, currently only
 as a vim plugin. In this section, I'll give an idea of what programming with
-the slick vim plugin is like.
+the Mote vim plugin is like.
 
 When you don't know how to complete a program, you type a `_` as a placeholder.
 For example, if we're writing a `map` function, we would put an underscore `_`
@@ -12,13 +12,13 @@ on the right hand side initially. We'll call our function `map'` so as not to
 clash with the Prelude function.
 
 ![](/images/readme/1.png)
-We then start the editing session by calling `:SlickLoadCurrentFIle`
+We then start the editing session by calling `:MoteLoadCurrentFIle`
 
-An underscore expression is called a *hole*. When programming with slick, there is
+An underscore expression is called a *hole*. When programming with Mote, there is
 a notion of the "current hole": the unfinished expression currently being worked on.
 
 When you want to work on a particular hole, you *enter* the hole. The command in the
-slick vim plugin is `:call slick#nextHole()`, which jumps your cursor to the next
+Mote vim plugin is `:call mote#nextHole()`, which jumps your cursor to the next
 hole.
 ![](/images/readme/3.png)
 
@@ -39,13 +39,13 @@ and we jump to the next hole after filling it with `_ : _`.
 Since our goal type is `b`, and we have a function `f` that returns a value of type `b`,
 we can *refine* the hole with `f`.
 ![](/images/readme/6.png)
-by typing `:SlickRefine f`.
+by typing `:MoteRefine f`.
 
 In general, if you are in a hole of type `T`, you can refine with an arbitrary expression
 of type `A1 -> ... -> An -> T`, which may itself contain holes.
 
 We can then blow through the rest of the definition, alternatingly
-calling `slick#nextHole()` and `SlickRefine` to finally get
+calling `mote#nextHole()` and `MoteRefine` to finally get
 ![](/images/readme/10.png)
 
 # Installation
@@ -58,7 +58,7 @@ calling `slick#nextHole()` and `SlickRefine` to finally get
 2. If you don't or aren't, do what the script does:
   - First install [cabalparse](https://github.com/imeckler/cabalparse) and
     make sure it's on your path.
-  - Install `slick` via cabal install:
+  - Install `mote` via cabal install:
 
     ```bash
     git clone https://github.com/imeckler/auto.git
@@ -66,5 +66,5 @@ calling `slick#nextHole()` and `SlickRefine` to finally get
     cabal sandbox init
     cabal configure
     cabal install
-    mv .cabal-sandbox/bin/slick ~/.cabal/bin # or wherever
+    mv .cabal-sandbox/bin/mote ~/.cabal/bin # or wherever
     ```
