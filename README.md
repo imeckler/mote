@@ -17,6 +17,9 @@ the Mote vim plugin is like.
    curl https://raw.githubusercontent.com/imeckler/auto/master/scripts/install.sh | bash
    ```
 
+   Mote does not set any key bindings for the commands it provides, but a suggested set
+   is given (commented out) [here](/vim/ftplugin/haskell.vim).
+
 2. If you don't or aren't, do what the script does:
   - First install [cabalparse](https://github.com/imeckler/cabalparse) and
     make sure it's on your path.
