@@ -1,6 +1,7 @@
 #!/bin/bash
 set -e
-pushd /tmp
+
+install_cabalparse() {
   if [ -d cabalparse ]; then
     rm -rf cabalparse
   fi
@@ -13,11 +14,15 @@ pushd /tmp
     sudo mv .cabal-sandbox/bin/cabalparse /usr/local/bin
   popd
   rm -rf cabalparse
+}
+
+pushd /tmp
+  which cabalparse || install_cabalparse
 
   git clone https://github.com/imeckler/mote.git
-  pushd auto
-    if [ -d auto ]; then
-      rm -rf auto
+  pushd mote
+    if [ -d mote ]; then
+      rm -rf mote
     fi
     cabal sandbox init
     cabal install --dependencies-only
@@ -28,6 +33,6 @@ pushd /tmp
       mv vim ~/.vim/bundle/vim-mote
     fi
   popd
-  rm -rf auto
+  rm -rf mote
 popd
 
