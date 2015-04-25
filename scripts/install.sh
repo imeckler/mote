@@ -14,7 +14,7 @@ pushd /tmp
   popd
   rm -rf cabalparse
 
-  git clone https://github.com/imeckler/auto.git
+  git clone https://github.com/imeckler/mote.git
   pushd auto
     if [ -d auto ]; then
       rm -rf auto
@@ -22,10 +22,10 @@ pushd /tmp
     cabal sandbox init
     cabal install --dependencies-only
     cabal configure
-    cabal install
-    sudo mv .cabal-sandbox/bin/slick /usr/local/bin
+    cabal install mote
+    sudo mv .cabal-sandbox/bin/mote /usr/local/bin
     if [ -d "~/.vim/bundle" ]; then
-      mv vim ~/.vim/bundle/slick-vim
+      mv vim ~/.vim/bundle/vim-mote
     fi
   popd
   rm -rf auto
