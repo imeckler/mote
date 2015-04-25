@@ -3,8 +3,7 @@
 The programmer's assistant. Discharge your burdens with style.
 
 Mote brings the development style found in Agda to Haskell, currently only
-as a vim plugin. In this section, I'll give an idea of what programming with
-the Mote vim plugin is like.
+as a vim plugin.
 
 # Requirements
   Mote uses [pathogen](https://github.com/tpope/vim-pathogen) for the vim plugin and
