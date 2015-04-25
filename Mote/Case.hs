@@ -1,5 +1,5 @@
 {-# LANGUAGE LambdaCase, NamedFieldPuns, RecordWildCards, TupleSections #-}
-module Slick.Case where
+module Mote.Case where
 
 import           Bag                 (bagToList)
 import           BasicTypes          (Boxity (..), Origin (..))
@@ -47,8 +47,8 @@ import           Type
 import           TypeRep
 import           Unique              (hasKey)
 
-import           Slick.Types
-import           Slick.Util
+import           Mote.Types
+import           Mote.Util
 
 type SatDataConRep = (Name, [Type])
 
@@ -232,12 +232,12 @@ patternsForType scope ty =
     Just dt -> map (noLoc . conPattern scope) dt
     Nothing -> [evalState (varPat ty) scope]
 
-scopeAt :: Ref SlickState -> SrcLoc -> M (S.Set FastString)
+scopeAt :: Ref MoteState -> SrcLoc -> M (S.Set FastString)
 scopeAt stRef loc = do
   FileData {scopeMap} <- getFileDataErr stRef
   return $ S.fromList . map (occNameFS . occName . snd) . I.search loc $ scopeMap
 
-matchesForTypeAt :: Ref SlickState -> Type -> SrcLoc -> M [Match RdrName (LHsExpr RdrName)]
+matchesForTypeAt :: Ref MoteState -> Type -> SrcLoc -> M [Match RdrName (LHsExpr RdrName)]
 matchesForTypeAt stRef ty loc = do
   scope <- scopeAt stRef loc
   fmap (map (\p -> Match [p] Nothing holyGRHSs)) (patternsForType scope ty)
@@ -248,7 +248,7 @@ matchesForTypeAt stRef ty loc = do
 -- TODO: We have an actual Var at our disposal now when we call this so the
 -- string argument can be replaced with a Var argument
 expansions
-  :: Ref SlickState
+  :: Ref MoteState
      -> String
      -> Type
      -> SrcSpan

@@ -1,6 +1,6 @@
 {-# LANGUAGE LambdaCase, RecordWildCards, TupleSections,
              NoMonomorphismRestriction #-}
-module Slick.Suggest where
+module Mote.Suggest where
 
 import           Control.Applicative
 import           Control.Monad
@@ -15,11 +15,11 @@ import           GhcMonad
 import           HsExpr
 import           HsExpr
 import           RdrName
-import           Slick.GhcUtil
-import           Slick.Holes
-import           Slick.Refine
-import           Slick.Types
-import           Slick.Util
+import           Mote.GhcUtil
+import           Mote.Holes
+import           Mote.Refine
+import           Mote.Types
+import           Mote.Util
 import           TcRnMonad           (captureConstraints, TcRn)
 import           TyCon               (isTupleTyCon)
 import           Type
@@ -125,21 +125,21 @@ suggestions tcmod hi = do
     ty <- tcRnExprTc . noLoc . HsVar $ Exact n
     score False goalTy ty n
 
-getAndMemoizeSuggestions :: Ref SlickState -> AugmentedHoleInfo -> M [(Name, Type)]
+getAndMemoizeSuggestions :: Ref MoteState -> AugmentedHoleInfo -> M [(Name, Type)]
 getAndMemoizeSuggestions stRef ahi = 
-  case Slick.Types.suggestions ahi of
+  case Mote.Types.suggestions ahi of
     Just suggs -> return suggs
     Nothing -> do
       fdata@(FileData {..}) <- getFileDataErr stRef
       let hi = holeInfo ahi
-      suggs <- Slick.Suggest.suggestions typecheckedModule hi
+      suggs <- Mote.Suggest.suggestions typecheckedModule hi
       saveInCurrentHole hi suggs
       gModifyRef stRef (\s ->
         s {
           fileData = Just (
             fdata {
               holesInfo =
-                M.update (\ahi' -> Just $ ahi' { Slick.Types.suggestions = Just suggs })
+                M.update (\ahi' -> Just $ ahi' { Mote.Types.suggestions = Just suggs })
                     (holeSpan hi) holesInfo})})
       return suggs
   where
@@ -149,6 +149,6 @@ getAndMemoizeSuggestions stRef ahi =
       Just ahi' ->
         if holeSpan (holeInfo ahi') == holeSpan hi
           then gModifyRef stRef (\s ->
-                  s { currentHole = Just (ahi' { Slick.Types.suggestions = Just suggs }) })
+                  s { currentHole = Just (ahi' { Mote.Types.suggestions = Just suggs }) })
           else return ()
 

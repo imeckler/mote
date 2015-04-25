@@ -1,5 +1,5 @@
 {-# LANGUAGE LambdaCase, NamedFieldPuns, RecordWildCards #-}
-module Slick.Scope where
+module Mote.Scope where
 
 import           Bag
 import qualified Data.IntervalMap.FingerTree as I
@@ -7,9 +7,9 @@ import           Data.Maybe                  (mapMaybe)
 import           FastString                  (nilFS)
 import           GHC
 import           RdrName                     (mkVarUnqual)
-import           Slick.Types
+import           Mote.Types
 import           SrcLoc
-import Slick.Util
+import Mote.Util
 
 type Accum a = ScopeMap -> a -> ScopeMap
 

@@ -1,6 +1,6 @@
 {-# LANGUAGE FlexibleContexts, LambdaCase, MultiParamTypeClasses,
              NamedFieldPuns, RecordWildCards, TupleSections #-}
-module Slick.Refine where
+module Mote.Refine where
 
 import           Bag                 (bagToList)
 import           Control.Applicative ((<$>))
@@ -24,11 +24,11 @@ import           Type                (PredType, TyVar, dropForAlls, isPredTy,
                                       splitFunTy_maybe)
 import           TypeRep             (Type (..))
 
-import           Slick.GhcUtil
-import           Slick.Holes
-import           Slick.ReadType
-import           Slick.Types
-import           Slick.Util
+import           Mote.GhcUtil
+import           Mote.Holes
+import           Mote.ReadType
+import           Mote.Types
+import           Mote.Util
 
 -- Imports for doing subtype testing
 import           Data.Either         (rights)
@@ -108,7 +108,7 @@ refineNumArgs goalTy rty = fmap (length . refineArgTys) <$> refineMatch goalTy r
 -- and the type of f doesn't match, insert 
 -- _ $ f _ _ _ 
 -- for the number of args f has
-refine :: Ref SlickState -> String -> M (LHsExpr RdrName)
+refine :: Ref MoteState -> String -> M (LHsExpr RdrName)
 refine stRef eStr = do
   hi    <- holeInfo <$> getCurrentHoleErr stRef
   isArg <- S.member (holeSpan hi) . argHoles <$> gReadRef stRef

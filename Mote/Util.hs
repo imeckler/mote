@@ -1,5 +1,5 @@
 {-# LANGUAGE FlexibleContexts #-}
-module Slick.Util where
+module Mote.Util where
 
 import           Control.Applicative    ((<$>))
 import           Control.Monad          ((<=<), liftM)
@@ -25,13 +25,13 @@ import           SrcLoc                 (GenLocated (..), SrcSpan(..), isSubspan
                                          mkRealSrcLoc, RealSrcSpan)
 import           StringBuffer           (stringToStringBuffer)
 
-import           Slick.Types
+import           Mote.Types
 
 runParserM :: GhcMonad m => Lexer.P a -> String -> m (Either String a)
 runParserM parser str = do
   fs <- getSessionDynFlags
   let buf = stringToStringBuffer str
-      loc = mkRealSrcLoc (fsLit "<slick>") 1 1
+      loc = mkRealSrcLoc (fsLit "<mote>") 1 1
   return $ case unP parser (mkPState fs buf loc) of
     PFailed _span err -> Left (showSDoc fs err)
     POk _pst x        -> Right x
@@ -58,7 +58,7 @@ gReadRef = liftIO . readMVar
 gModifyRef :: MonadIO m => Ref a -> (a -> a) -> m ()
 gModifyRef x f = liftIO $ modifyMVar_ x (return . f)
 
-logS :: MonadIO m => Ref SlickState -> String -> m ()
+logS :: MonadIO m => Ref MoteState -> String -> m ()
 logS stRef s = liftIO $ flip hPutStrLn s . logFile =<< readMVar stRef
 
 nextSubexpr :: SrcSpan -> [GenLocated SrcSpan b] -> b
@@ -81,13 +81,13 @@ eitherThrow = either throwError return
 maybeThrow :: MonadError e m => e -> Maybe a -> m a
 maybeThrow err = maybe (throwError err) return
 
-getCurrentHoleErr :: Ref SlickState -> M AugmentedHoleInfo
+getCurrentHoleErr :: Ref MoteState -> M AugmentedHoleInfo
 getCurrentHoleErr r = maybe (throwError NoHole) return . currentHole =<< gReadRef r
 
-getFileDataErr :: Ref SlickState -> M FileData
+getFileDataErr :: Ref MoteState -> M FileData
 getFileDataErr = maybe (throwError NoFile) return . fileData <=< gReadRef
 
-getHoles :: Ref SlickState -> M [Hole]
+getHoles :: Ref MoteState -> M [Hole]
 getHoles = fmap (M.keys . holesInfo) . getFileDataErr
 
 occNameToString :: OccName -> String

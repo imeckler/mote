@@ -1,12 +1,12 @@
 {-# LANGUAGE DeriveGeneric, StandaloneDeriving #-}
-module Slick.FunctorSearch where
+module Mote.FunctorSearch where
 
 import HsExpr
 import Data.Maybe
 import RdrName
 import Data.IORef
 import TypeRep
-import Slick.Util
+import Mote.Util
 import qualified Data.Map as M
 
 type ProofTerm   = HsExpr RdrName

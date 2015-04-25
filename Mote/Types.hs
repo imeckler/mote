@@ -1,4 +1,4 @@
-module Slick.Types (Hole, FileData (..), SlickState (..),
+module Mote.Types (Hole, FileData (..), MoteState (..),
                     HoleInfo (..), ErrorType (..), AugmentedHoleInfo(..), M, Ref, ScopeMap) where
 
 import           Control.Concurrent.MVar
@@ -27,7 +27,7 @@ data FileData = FileData
   , scopeMap             :: ScopeMap
   }
 
-data SlickState = SlickState
+data MoteState = MoteState
   { fileData    :: Maybe FileData
   , currentHole :: Maybe AugmentedHoleInfo
   , logFile     :: Handle
@@ -52,8 +52,8 @@ data HoleInfo = HoleInfo
 -- | Possible errors from the server.
 data ErrorType
   = NoHole             -- ^ No hole at the current location.
-  | NotInMap           -- ^ The current hole has not been loaded properly into Slick.
-  | NoFile             -- ^ The given file was not loaded properly into Slick.
+  | NotInMap           -- ^ The current hole has not been loaded properly into Mote.
+  | NoFile             -- ^ The given file was not loaded properly into Mote.
   | NoVariable String  -- ^ The variable with the given name does not exist.
   | TypeNotInEnv       -- ^ The type does not make sense in the current environment.
   | NoRefine           -- ^ The provided expression for refinement didn't match the hole type.

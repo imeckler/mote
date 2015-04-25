@@ -1,5 +1,5 @@
 {-# LANGUAGE NamedFieldPuns, PatternGuards, QuasiQuotes #-}
-module Slick.ParseHoleMessage where
+module Mote.ParseHoleMessage where
 
 import           Control.Applicative hiding (many)
 import           Data.Char             (isSpace)
@@ -9,7 +9,7 @@ import           Text.Parsec
 import           Text.Parsec.String
 import           Text.Regex.PCRE.Heavy
 
-import           Slick.Types
+import           Mote.Types
 
 -- Soooo brittle
 identAndType :: Parser (String, String)

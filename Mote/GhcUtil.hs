@@ -1,5 +1,5 @@
 {-# LANGUAGE LambdaCase, RecordWildCards #-}
-module Slick.GhcUtil where
+module Mote.GhcUtil where
 
 import           Bag (Bag, foldrBag)
 import           Control.Monad.Error
@@ -15,8 +15,8 @@ import           TcRnMonad
 import Type (isPredTy)
 import TypeRep (Type(..))
 
-import           Slick.Types
-import           Slick.Util
+import           Mote.Types
+import           Mote.Util
 
 exprType :: String -> M Type
 exprType = hsExprType <=< parseExpr

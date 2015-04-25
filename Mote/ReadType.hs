@@ -1,5 +1,5 @@
 {-# LANGUAGE LambdaCase #-}
-module Slick.ReadType where
+module Mote.ReadType where
 
 import           CoAxiom             (Role (Nominal))
 import           Control.Monad.Error
@@ -25,9 +25,9 @@ import           Var                 (mkTyVar)
 import Outputable (showSDoc, vcat)
 import ErrUtils (pprErrMsgBag)
 
-import           Slick.GhcUtil       (withTyVarsInScope)
-import           Slick.Types
-import           Slick.Util
+import           Mote.GhcUtil       (withTyVarsInScope)
+import           Mote.Types
+import           Mote.Util
 
 -- useful things
 -- RnTypes/rnHsTyKi

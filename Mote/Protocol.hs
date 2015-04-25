@@ -1,5 +1,5 @@
 {-# LANGUAGE LambdaCase, OverloadedStrings #-}
-module Slick.Protocol where
+module Mote.Protocol where
 
 import           Control.Applicative
 import           Control.Monad

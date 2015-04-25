@@ -1,6 +1,6 @@
 {-# LANGUAGE TupleSections, RecordWildCards, LambdaCase, NamedFieldPuns #-}
 
-module Slick.Search
+module Mote.Search
   ( transesInScope
   , WrappedType(..)
   , SyntacticFunc
@@ -12,15 +12,15 @@ module Slick.Search
   , applicatives
   ) where
 
-import Slick.Types
-import Slick.Util
-import Slick.GhcUtil (discardConstraints, splitPredTys)
+import Mote.Types
+import Mote.Util
+import Mote.GhcUtil (discardConstraints, splitPredTys)
 import Search.Graph
 import Search.Types
-import Slick.Suggest
-import Slick.Refine (tcRnExprTc)
-import Slick.Holes
-import Slick.ReadType
+import Mote.Suggest
+import Mote.Refine (tcRnExprTc)
+import Mote.Holes
+import Mote.ReadType
 
 import Control.Monad.Error
 import Control.Arrow (first)
@@ -49,8 +49,8 @@ import UniqSet (elementOfUniqSet)
 import Unique (getKey, getUnique)
 import Data.Hashable
 -- TODO: Debug imports. Delete
-import Slick.LoadFile
-import Slick.Debug
+import Mote.LoadFile
+import Mote.Debug
 import Debug.Trace
 
 {-

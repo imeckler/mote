@@ -29,25 +29,25 @@ import           System.Exit                (ExitCode (..), exitWith)
 import           System.FilePath
 import           System.IO
 
-import           Slick.Case
-import           Slick.GhcUtil
-import           Slick.Holes
-import qualified Slick.Init
-import           Slick.LoadFile             (loadFile)
-import           Slick.Protocol
-import           Slick.ReadType
-import           Slick.Refine
-import           Slick.Scope
-import           Slick.Suggest              (getAndMemoizeSuggestions)
-import           Slick.Types
-import           Slick.Util
+import           Mote.Case
+import           Mote.GhcUtil
+import           Mote.Holes
+import qualified Mote.Init
+import           Mote.LoadFile             (loadFile)
+import           Mote.Protocol
+import           Mote.ReadType
+import           Mote.Refine
+import           Mote.Scope
+import           Mote.Suggest              (getAndMemoizeSuggestions)
+import           Mote.Types
+import           Mote.Util
 
 -- DEBUG
 import Data.Time.Clock
-import Slick.Search
+import Mote.Search
 import Search.Types
 
-ghcInit :: GhcMonad m => Ref SlickState -> m ()
+ghcInit :: GhcMonad m => Ref MoteState -> m ()
 ghcInit stRef = do
   dfs <- getSessionDynFlags
   void . setSessionDynFlags . withFlags [DynFlags.Opt_DeferTypeErrors] $ dfs
@@ -59,7 +59,7 @@ ghcInit stRef = do
   where
   withFlags fs dynFs = foldl DynFlags.gopt_set dynFs fs
 
-getEnclosingHole :: Ref SlickState -> (Int, Int) -> M (Maybe AugmentedHoleInfo)
+getEnclosingHole :: Ref MoteState -> (Int, Int) -> M (Maybe AugmentedHoleInfo)
 getEnclosingHole stRef pos =
   M.foldrWithKey (\k hi r -> if k `spans` pos then Just hi else r) Nothing
   . holesInfo
@@ -70,10 +70,10 @@ srcLocPos :: SrcLoc -> (Int, Int)
 srcLocPos (RealSrcLoc l)  = (srcLocLine l, srcLocCol l)
 srcLocPos UnhelpfulLoc {} = error "srcLocPos: unhelpful loc"
 
-respond :: Ref SlickState -> FromClient -> Ghc ToClient
+respond :: Ref MoteState -> FromClient -> Ghc ToClient
 respond stRef msg = either (Error . show) id <$> runErrorT (respond' stRef msg)
 
-respond' :: Ref SlickState -> FromClient -> M ToClient
+respond' :: Ref MoteState -> FromClient -> M ToClient
 respond' stRef = \case
   Load p -> do
     t0 <- liftIO getCurrentTime
@@ -127,7 +127,7 @@ respond' stRef = \case
       True -> do
         suggsJSON <-
           if withSuggestions
-          then mkSuggsJSON <$> Slick.Suggest.getAndMemoizeSuggestions stRef ahi
+          then mkSuggsJSON <$> Mote.Suggest.getAndMemoizeSuggestions stRef ahi
           else return []
         return $
           JSON . Aeson.object $
@@ -142,7 +142,7 @@ respond' stRef = \case
       False -> do
         suggsStr <-
           if withSuggestions
-          then mkSuggsStr <$> Slick.Suggest.getAndMemoizeSuggestions stRef ahi
+          then mkSuggsStr <$> Mote.Suggest.getAndMemoizeSuggestions stRef ahi
           else return ""
 
         let goalStr = "Goal: " ++ holeNameString hi ++ " :: " ++ showType fs (holeType hi)
@@ -174,7 +174,7 @@ respond' stRef = \case
 
   -- Precondition here: Hole has already been entered
   CaseFurther var ClientState {} -> do
-    SlickState {..} <- gReadRef stRef
+    MoteState {..} <- gReadRef stRef
     FileData {path, hsModule} <- getFileDataErr stRef
     hi@(HoleInfo {holeEnv})   <- holeInfo <$> getCurrentHoleErr stRef
 
@@ -243,14 +243,14 @@ showM = showSDocM . ppr
 main :: IO ()
 main = do
   home <- getHomeDirectory
-  withFile (home </> "slickserverlog") WriteMode $ \logFile -> do
+  withFile (home </> "moteserverlog") WriteMode $ \logFile -> do
     stRef <- newRef =<< initialState logFile
     hSetBuffering logFile NoBuffering
     hSetBuffering stdout NoBuffering
     hPutStrLn logFile "Testing, testing"
     runGhc (Just libdir) $ do
       -- ghcInit stRef
-      Slick.Init.init stRef >>= \case
+      Mote.Init.init stRef >>= \case
         Left err -> liftIO $ do
           LB8.putStrLn (encode (Error err))
           exitWith (ExitFailure 1)
@@ -268,8 +268,8 @@ main = do
             liftIO $ hPutStrLn logFile ("Giving: " ++ show resp)
             liftIO $ LB8.putStrLn (encode resp)
 
-initialState :: Handle -> IO SlickState
-initialState logFile = mkSplitUniqSupply 'x' >>| \uniq -> SlickState
+initialState :: Handle -> IO MoteState
+initialState logFile = mkSplitUniqSupply 'x' >>| \uniq -> MoteState
   { fileData = Nothing
   , currentHole = Nothing
   , argHoles = S.empty
@@ -278,7 +278,7 @@ initialState logFile = mkSplitUniqSupply 'x' >>| \uniq -> SlickState
   , uniq
   }
 
-runWithTestRef :: (Ref SlickState -> Ghc b) -> IO b
+runWithTestRef :: (Ref MoteState -> Ghc b) -> IO b
 runWithTestRef x = do
   home <- getHomeDirectory
   withFile (home </> "testlog") WriteMode $ \logFile -> do
@@ -287,9 +287,9 @@ runWithTestRef x = do
 
 runWithTestRef' x = do
   home <- getHomeDirectory
-  withFile (home </> "prog/slick/testlog") WriteMode $ \logFile -> do
+  withFile (home </> "prog/mote/testlog") WriteMode $ \logFile -> do
     r <- newRef =<< initialState logFile
-    run $ do { Slick.Init.init r; x r }
+    run $ do { Mote.Init.init r; x r }
 
 run :: Ghc a -> IO a
 run = runGhc (Just libdir)

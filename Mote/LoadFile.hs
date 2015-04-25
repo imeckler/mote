@@ -1,5 +1,5 @@
 {-# LANGUAGE LambdaCase, NamedFieldPuns, ScopedTypeVariables #-}
-module Slick.LoadFile
+module Mote.LoadFile
   ( loadFile
   ) where
 
@@ -9,10 +9,10 @@ import           GHC
 import           GhcMonad
 import           HscTypes                (srcErrorMessages)
 import           Outputable
-import           Slick.Holes
-import           Slick.Scope
-import           Slick.Types
-import           Slick.Util
+import           Mote.Holes
+import           Mote.Scope
+import           Mote.Types
+import           Mote.Util
 
 import           Control.Applicative
 import           Control.Concurrent.MVar
@@ -22,7 +22,7 @@ import qualified Data.List               as List
 import qualified Data.Map                as M
 import           System.Directory        (getModificationTime)
 
-loadFile :: Ref SlickState -> FilePath -> M ()
+loadFile :: Ref MoteState -> FilePath -> M ()
 loadFile stRef p = do
   pmod  <- eitherThrow =<< lift handled -- bulk of time is here
   fdata <- getFileDataErr stRef
@@ -91,7 +91,7 @@ loadFile stRef p = do
   resetHolesInfo stRef =
     gModifyRef stRef (\s -> s { fileData = fileData s >>| \fd -> fd { holesInfo = M.empty } })
 
-setStateForData :: GhcMonad m => Ref SlickState -> FilePath -> TypecheckedModule -> HsModule RdrName -> m ()
+setStateForData :: GhcMonad m => Ref MoteState -> FilePath -> TypecheckedModule -> HsModule RdrName -> m ()
 setStateForData stRef path tcmod hsModule = do
   modifyTimeAtLastLoad <- liftIO $ getModificationTime path
   let argHoles = findArgHoles hsModule

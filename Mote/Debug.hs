@@ -1,12 +1,12 @@
 {-# LANGUAGE NamedFieldPuns #-}
-module Slick.Debug where
+module Mote.Debug where
 
-import Slick.Types
+import Mote.Types
 import GHC
 import           GHC.Paths (libdir)
-import Slick.Init
+import Mote.Init
 import System.IO
-import Slick.Util
+import Mote.Util
 import System.FilePath
 import System.Directory
 import qualified Data.Set as S
@@ -15,8 +15,8 @@ import DynFlags
 import Control.Monad
 
 
-initialState :: Handle -> IO SlickState
-initialState logFile = mkSplitUniqSupply 'x' >>| \uniq -> SlickState
+initialState :: Handle -> IO MoteState
+initialState logFile = mkSplitUniqSupply 'x' >>| \uniq -> MoteState
   { fileData = Nothing
   , currentHole = Nothing
   , argHoles = S.empty
@@ -25,23 +25,23 @@ initialState logFile = mkSplitUniqSupply 'x' >>| \uniq -> SlickState
   , uniq
   }
 
-runWithTestRef :: (Ref SlickState -> Ghc b) -> IO b
+runWithTestRef :: (Ref MoteState -> Ghc b) -> IO b
 runWithTestRef x = do
   home <- getHomeDirectory
-  withFile (home </> "prog/slick/testlog") WriteMode $ \logFile -> do
+  withFile (home </> "prog/mote/testlog") WriteMode $ \logFile -> do
     r <- newRef =<< initialState logFile
     run $ do { ghcInit r; x r }
 
 runWithTestRef' x = do
   home <- getHomeDirectory
-  withFile (home </> "prog/slick/testlog") WriteMode $ \logFile -> do
+  withFile (home </> "prog/mote/testlog") WriteMode $ \logFile -> do
     r <- newRef =<< initialState logFile
-    run $ do { Slick.Init.init r; x r }
+    run $ do { Mote.Init.init r; x r }
 
 run :: Ghc a -> IO a
 run = runGhc (Just libdir)
 
-ghcInit :: GhcMonad m => Ref SlickState -> m ()
+ghcInit :: GhcMonad m => Ref MoteState -> m ()
 ghcInit stRef = do
   dfs <- getSessionDynFlags
   void . setSessionDynFlags . withFlags [DynFlags.Opt_DeferTypeErrors] $ dfs

@@ -1,15 +1,15 @@
 {-# LANGUAGE ConstraintKinds, FlexibleContexts, LambdaCase, RecordWildCards,
              ScopedTypeVariables #-}
-module Slick.Init where
+module Mote.Init where
 
 import           Data.List                                     (intercalate)
 import           GHC
 import           Language.Haskell.GhcMod.Internal              hiding (getCompilerOptions,
                                                                 parseCabalFile)
 import           Outputable
-import           Slick.Protocol (ToClient(Error))
-import           Slick.Types
-import           Slick.Util
+import           Mote.Protocol (ToClient(Error))
+import           Mote.Types
+import           Mote.Util
 -- I had to write my own "getCompilerOptions" and "parseCabalFile"
 -- since the ghcmod versions die on new binary format cabal files.
 import           Control.Applicative
@@ -101,7 +101,7 @@ LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
 ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 POSSIBILITY OF SUCH DAMAGE. -}
 
-init :: GhcMonad m => Ref SlickState -> m (Either String ())
+init :: GhcMonad m => Ref MoteState -> m (Either String ())
 init stRef = initializeWithCabal stRef defaultOptions
 
 runGhcModT'' opt mx = do
@@ -109,7 +109,7 @@ runGhcModT'' opt mx = do
   (orErr, _log) <- runGhcModT' env defaultState mx
   return $ fmap fst orErr
 
-initializeWithCabal :: GhcMonad m => Ref SlickState -> Options -> m (Either String ())
+initializeWithCabal :: GhcMonad m => Ref MoteState -> Options -> m (Either String ())
 initializeWithCabal stRef opt = do
   c <- liftIO findCradle
   case cradleCabalFile c of

@@ -1,6 +1,6 @@
 {-# LANGUAGE LambdaCase, NamedFieldPuns, NoMonomorphismRestriction,
              RecordWildCards, TupleSections #-}
-module Slick.Holes where
+module Mote.Holes where
 
 import qualified Bag
 import           BasicTypes          (isTopLevel)
@@ -20,8 +20,8 @@ import           Inst                (tyVarsOfCt)
 import qualified OccName
 import           Outputable
 import qualified PrelNames
-import           Slick.Types
-import           Slick.Util
+import           Mote.Types
+import           Mote.Util
 import           TcMType             (zonkCt, zonkTcType)
 import           TcRnDriver          (tcTopSrcDecls)
 import           TcRnMonad           (TcM, captureConstraints, getConstraintVar,
@@ -142,7 +142,7 @@ getHoleInfos tcmod = ErrorT $ do
       fs <- getSessionDynFlags
       return $ case mayHoles of
         Just holes -> Right holes
-        Nothing    -> Left . GHCError . ("Slick.Holes.getHoleInfos: " ++) . showSDoc fs . vcat $ pprErrMsgBag errmsgs
+        Nothing    -> Left . GHCError . ("Mote.Holes.getHoleInfos: " ++) . showSDoc fs . vcat $ pprErrMsgBag errmsgs
   where
   wcCts (WC {wc_insol, wc_impl}) =
     Bag.bagToList wc_insol ++ Bag.foldrBag (\impl r -> wcCts (ic_wanted impl) ++ r) []  wc_impl
