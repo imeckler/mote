@@ -37,21 +37,26 @@ the Mote vim plugin is like.
 Mote provides the following vim commands.
 
 - `MoteLoadCurrentFile`
+
   (Re)loads the current file. By default, this is called on every file write.
   The first load takes a few seconds, but things should be snappy after that.
 
 - `MoteToggleModle`
+
   Toggles whether `MoteLoadCurrentFile` gets called on every write.
 
 - `MoteNextHole`
+
   Jumps the cursor to the next hole and displays bindings in scope in the hole as
   well as the goal type.
 
 - `MotePrevHole`
+
   Jumps the cursor to the previous hole and displays bindings in scope in the hole as
   well as the goal type.
 
 - `Casex`
+
   If `x` is a variable bound in a pattern match whose right hand side contains the
   current hole, `:Casex x` expands the pattern to case further on `x`. For example,
   if we have
@@ -67,6 +72,7 @@ Mote provides the following vim commands.
   ```
 
 - `CaseOn`
+
   Fills the current hole by casing on some expression. For example, if we have
   ```haskell
   f :: [a] -> Int
@@ -81,6 +87,7 @@ Mote provides the following vim commands.
   ```
 
 - `MoteRefine`
+
   Partially fill the current hole by providing a function that maps into the
   goal type. For example, if we have
   ```
@@ -94,6 +101,7 @@ Mote provides the following vim commands.
   ```
 
 - `MoteStart`
+
   Starts a Mote process running in the background. This is called automatically
   when a Haskell file is loaded and you should never need to call it.
 
