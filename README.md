@@ -44,7 +44,7 @@ Mote provides the following vim commands.
   (Re)loads the current file. By default, this is called on every file write.
   The first load takes a few seconds, but things should be snappy after that.
 
-- `MoteToggleModle`
+- `MoteToggleMode`
 
   Toggles whether `MoteLoadCurrentFile` gets called on every write.
 
