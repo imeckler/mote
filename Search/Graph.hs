@@ -154,9 +154,6 @@ componentOf v ng = go (S.singleton v) [v] where
   outPreds = outgoingPreds ng
   g        = digraph ng
 
-programToGraph :: Program f -> NaturalGraph f
-programToGraph = foldl1 (\acc g -> sequence acc g) . map moveToGraph
-
 moveToGraph :: Move f -> NaturalGraph f
 moveToGraph (ls, t, rs) =
   NaturalGraph
@@ -301,29 +298,6 @@ graphsOfSizeAtMostH tsList n start end = HashSet.toList $ runST $ do
           let progs' = if b == end then HashSet.insert (idGraph end) progs else progs
           writeArray arr n (M.insert b progs' memo)
           return progs'
-
-      Just ps -> return ps
-
-programsOfLengthAtMost :: (Hashable f, Ord f) => [Trans f] -> Int -> BraidState f -> BraidState f -> [Program f]
-programsOfLengthAtMost tsList n start end = runST $ do
-  arr <- newSTArray (0, n) M.empty
-  go arr n start
-  where 
-  ts = HashMap.fromListWith (++) (map (\t -> (from t, [t])) tsList)
-
-  newSTArray :: (Int, Int) -> Map k v -> ST s (STArray s Int (Map k v))
-  newSTArray = newArray
-
-  go arr 0 b = return $ if b == end then [[]] else []
-  go arr n b = do
-    memo <- readArray arr n
-    case M.lookup b memo of
-      Nothing -> do
-        progs <- fmap concat . forM (branchOut ts b) $ \(b', move) -> do
-          fmap (map (move :)) (go arr (n - 1) b')
-        let progs' = if b == end then [] : progs else progs
-        writeArray arr n (M.insert b progs' memo)
-        return progs'
 
       Just ps -> return ps
 

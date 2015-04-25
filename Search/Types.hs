@@ -3,19 +3,16 @@ module Search.Types
   ( TransName
   , Trans(..)
   , Move
-  , Program
   , Term(..)
   , AnnotatedTerm(..)
   ) where
 
-import Search.Types.Basic
 import Data.Monoid
 import Data.Hashable
 import Data.Aeson
 
 
 type Move f         = ([f], Trans f, [f]) -- (fs, t, gs) = fmap_{fs} (t at gs)
-type Program f      = CutFreeProof f
 
 data Term
   = Id
