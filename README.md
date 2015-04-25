@@ -14,7 +14,7 @@ the Mote vim plugin is like.
 1. If you trust me and are okay with programs being installed to `/usr/local/bin`,
    just do
    ```bash
-   curl https://raw.githubusercontent.com/imeckler/auto/master/scripts/install.sh | bash
+   curl https://raw.githubusercontent.com/imeckler/mote/master/scripts/install.sh | bash
    ```
 
    Mote does not set any key bindings for the commands it provides, but a suggested set
@@ -26,8 +26,8 @@ the Mote vim plugin is like.
   - Install `mote` via cabal install:
 
     ```bash
-    git clone https://github.com/imeckler/auto.git
-    cd auto
+    git clone https://github.com/imeckler/mote.git
+    cd mote
     cabal sandbox init
     cabal configure
     cabal install
