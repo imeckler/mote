@@ -6,6 +6,7 @@ module Mote.Search
   , SyntacticFunc
   -- DEBUG
   , search
+  , score
   , showTrans
   , traversables
   , monads
@@ -27,6 +28,7 @@ import           Data.Hashable
 import qualified Data.List           as List
 import           Data.Maybe
 import qualified Data.Set            as Set
+import qualified Data.Map            as Map
 
 import           GHC
 import           InstEnv             (ClsInst (..))
@@ -168,7 +170,7 @@ instance Hashable WrappedTyCon where
 instance Show WrappedTyCon where
   show (WrappedTyCon _ s) = show s
 
--- search :: [String] -> [String] -> Int ->  M [NaturalGraph (Int, Int)]
+search :: [String] -> [String] -> Int ->  M [NaturalGraph (Int, Int)]
 search src trg n = do
   let renderSyntacticFunc (tc, args) = (getKey (getUnique tc), hash args)
 --  let showSyntacticFunc = showSDoc fs . ppr
@@ -177,6 +179,10 @@ search src trg n = do
   to      <- fmap catMaybes $ mapM (fmap (fmap renderSyntacticFunc . extractUnapplied . dropForAlls) . readType) trg
   transes <- fmap (fmap (fmap renderSyntacticFunc)) transesInScope
   return $ graphsOfSizeAtMost transes n from to
+
+type Score = (Int, Int, Int)
+score :: (AnnotatedTerm, NaturalGraph f) -> Score
+score (t, g) = (numHoles t, Map.size (digraph g), length $ connectedComponents g)
 
 transesInScope :: M [Trans SyntacticFunc]
 transesInScope = do

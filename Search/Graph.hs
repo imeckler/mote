@@ -232,7 +232,7 @@ branchOut ts = concatMap possibilities . fineViews where
 -- TODO: Analyze program graphs
 
 graphsOfSizeAtMost :: (Hashable f, Ord f) => [Trans f] -> Int -> BraidState f -> BraidState f -> [NaturalGraph f]
-graphsOfSizeAtMost tsList n start end = HashSet.toList $ runST $ do
+graphsOfSizeAtMost tsList n start end = map deleteStrayVertices . HashSet.toList $ runST $ do
   arr <- newSTArray (0, n) M.empty
   go arr n start
   where 
@@ -260,7 +260,7 @@ graphsOfSizeAtMost tsList n start end = HashSet.toList $ runST $ do
 
 -- Search with heuristics
 graphsOfSizeAtMostH :: (Hashable f, Ord f) => [Trans f] -> Int -> BraidState f -> BraidState f -> [NaturalGraph f]
-graphsOfSizeAtMostH tsList n start end = HashSet.toList $ runST $ do
+graphsOfSizeAtMostH tsList n start end = map deleteStrayVertices . HashSet.toList $ runST $ do
   arr <- newSTArray (0, n) M.empty
   fmap HashSet.unions . forM (branchOut ts start) $ \(b', move@(_, t,_)) ->
     let g = moveToGraph move in
@@ -354,7 +354,7 @@ renderTerm = \case
 
 renderAnnotatedTerm = renderTerm . unannotatedTerm
 
-toTerm :: Show f => NaturalGraph f -> AnnotatedTerm
+toTerm :: NaturalGraph f -> AnnotatedTerm
 toTerm = toTerm' . compressPaths
 
 lastMay :: [a] -> Maybe a
@@ -370,7 +370,7 @@ lastMay (_:xs) = lastMay xs
 data TopOrBottom = Top | Bottom deriving (Eq, Show)
 
 data GoodVertexType = FloatingRightOf Int | AttachedTo DummyVertex
-toTerm' :: Show f => NaturalGraph f -> AnnotatedTerm
+toTerm' :: NaturalGraph f -> AnnotatedTerm
 toTerm' ng0 = case findGoodVertex ng of
   Nothing -> AnnotatedTerm Id 0
   Just (Top, (leftStrands, vGood, vGoodData)) ->

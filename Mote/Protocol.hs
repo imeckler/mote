@@ -72,7 +72,7 @@ data FromClient
   | CaseFurther Var ClientState
   | CaseOn String ClientState
   | SendStop
-  | Search 
+  | Search [String] [String]
   deriving (Show)
 
 instance FromJSON FromClient where
@@ -88,6 +88,7 @@ instance FromJSON FromClient where
       [String "Refine", String expr, state]     -> Refine (T.unpack expr) <$> parseJSON state
       [String "GetType", String e]              -> return . GetType $ T.unpack e
       [String "SendStop"]                       -> return SendStop
+      [String "Search", src, trg]               -> Search <$> parseJSON src <*> parseJSON trg
       _                                         -> mzero
     _                                           -> mzero
 

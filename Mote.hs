@@ -12,6 +12,7 @@ import qualified Data.ByteString.Lazy.Char8 as LB8
 import qualified Data.List                  as List
 import qualified Data.Map                   as M
 import qualified Data.Set                   as S
+import Data.Function (on)
 
 
 import qualified DynFlags
@@ -37,6 +38,8 @@ import           Mote.Refine
 import           Mote.Suggest              (getAndMemoizeSuggestions)
 import           Mote.Types
 import           Mote.Util
+import qualified Mote.Search
+import qualified Search.Graph
 
 getEnclosingHole :: Ref MoteState -> (Int, Int) -> M (Maybe AugmentedHoleInfo)
 getEnclosingHole stRef pos =
@@ -215,7 +218,18 @@ respond' stRef = \case
     unqual <- lift getPrintUnqual
     return . SetInfoWindow . showSDocForUser fs unqual $ ppr x
 
-  Search {} -> return Ok -- TODO
+  Search src trg -> do
+    gs <- Mote.Search.search src trg 5
+    return (SetInfoWindow (showResults gs)) 
+    where
+    showResults :: [Search.Graph.NaturalGraph f] -> String
+    showResults =
+      unlines
+      . map (\(_,(t,_)) -> Search.Graph.renderAnnotatedTerm t)
+      . take 5
+      . List.sortBy (compare `on` fst)
+      . map (\g ->
+        let pr = (Search.Graph.toTerm g, g) in (Mote.Search.score pr, pr))
 
 showM :: (GhcMonad m, Outputable a) => a -> m String
 showM = showSDocM . ppr
