@@ -11,7 +11,7 @@ import select
 # Need to kill processes properly. If I open two motes then they don't
 # get killed correctly
 
-log    = open(os.path.join(os.path.expanduser('~'), 'motelog'), 'w', 0)
+log    = open(os.path.join(os.path.expanduser('~'), '.motelog'), 'w', 0)
 reader = None
 
 def get_client_state():

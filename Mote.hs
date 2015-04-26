@@ -223,7 +223,7 @@ showM = showSDocM . ppr
 main :: IO ()
 main = do
   home <- getHomeDirectory
-  withFile (home </> "moteserverlog") WriteMode $ \logFile -> do
+  withFile (home </> ".moteserverlog") WriteMode $ \logFile -> do
     stRef <- newRef =<< initialState logFile
     hSetBuffering logFile NoBuffering
     hSetBuffering stdout NoBuffering
