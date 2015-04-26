@@ -11,6 +11,7 @@ as a vim plugin.
 
 # Installation
 Pick one of the following. 
+
 1. If you trust me and are okay with programs being installed to `/usr/local/bin`,
    just do
    ```bash
