@@ -118,28 +118,31 @@ freshWithPrefix pre = do
 -- Should be a normalized type as argument, though not with
 -- synonyms expanded
 typePrefix :: Type -> FastString
-typePrefix = \case
-  AppTy {}         -> fsLit "x"
-  -- TODO: This will probably break on infix tycons
-  -- TODO: Special case maybe
-  -- TODO: Special case either
-  -- TODO: Type variables
-  TyConApp tc args ->
-    if isListTyCon tc
-    then typePrefix (head args) `appendFS` fsLit "s"
-    else fsLit . initials $ occNameString (occName (tyConName tc))
+typePrefix = fsLit . typePrefix' where
+  typePrefix' = \case
+    AppTy {}         -> "x"
+    -- TODO: This will probably break on infix tycons
+    -- TODO: Special case maybe
+    -- TODO: Special case either
+    -- TODO: Type variables
+    TyConApp tc args ->
+      if isListTyCon tc
+      then typePrefix' (head args) ++ "s"
+      else if isTupleTyCon tc
+      then List.intercalate "_and_" (map typePrefix' args)
+      else initials $ occNameString (occName (tyConName tc))
 
-  FunTy s t     -> concatFS [typePrefix s, fsLit "_to_", typePrefix t]
-  ForAllTy _x t -> typePrefix t
-  LitTy t       -> case t of
-    StrTyLit fs -> fs
-    NumTyLit n  -> fsLit ('_' : show n)
-  TyVarTy _v    -> fsLit "x"
+    FunTy s t     -> concat [typePrefix' s, "_to_", typePrefix' t]
+    ForAllTy _x t -> typePrefix' t
+    LitTy t       -> case t of
+      StrTyLit fs -> unpackFS fs
+      NumTyLit n  -> '_' : show n
+    TyVarTy _v    -> "x"
 
-  where
-  initials :: String -> [Char]
-  initials (c : cs) = Char.toLower c : initials (dropWhile Char.isLower cs)
-  initials []       = []
+    where
+    initials :: String -> [Char]
+    initials (c : cs) = Char.toLower c : initials (dropWhile Char.isLower cs)
+    initials []       = []
 
 isListTyCon :: TyCon -> Bool
 isListTyCon tc = occNameString (occName (tyConName tc)) == "[]"
