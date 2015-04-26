@@ -74,8 +74,9 @@ def synchronous(cmd):
 
 class MoteProcess:
   def __init__(self):
-    self.pipe        = None
-    self.info_window = None
+    self.pipe             = None
+    self.info_window      = None
+    self.displaying_error = False
 
   # returns a bool. False = stop, True = keep going
 
@@ -100,11 +101,13 @@ class MoteProcess:
       pass
 
     elif  msg[0] == 'Error':
+      self.displaying_error = True
       self.set_info_window(msg[1])
 
     elif msg[0] == 'SetInfoWindow':
       log.write('setting info window\n')
       log.write('fo: ' + msg[1] + '\n')
+      self.displaying_error = False
       self.set_info_window(msg[1])
 
     elif msg[0] == 'SetCursor':
