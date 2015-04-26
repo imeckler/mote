@@ -182,7 +182,7 @@ respond' stRef = \case
               map (showMatch CaseAlt) matches
 
           SingleLambda _loc ->
-            Error "TODO: SingleLambda"
+            Error "SingleLambda case expansion not yet implemented"
 
   CaseOn exprStr (ClientState {..}) -> do
     expr <- parseExpr exprStr
