@@ -66,12 +66,12 @@ Mote provides the following vim commands.
 - `MoteNextHole`
 
   Jumps the cursor to the next hole and displays bindings in scope in the hole as
-  well as the goal type.
+  well as the goal type. I recommend binding this to `option+k`.
 
 - `MotePrevHole`
 
   Jumps the cursor to the previous hole and displays bindings in scope in the hole as
-  well as the goal type.
+  well as the goal type. I recommend binding this to `option+j`.
 
 - `Casex`
 
@@ -117,6 +117,7 @@ Mote provides the following vim commands.
   f :: [a] -> Int
   f xs = length _
   ```
+  I recommend binding this to `option+r`.
 
 - `MoteStart`
 
