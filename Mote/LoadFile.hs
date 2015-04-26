@@ -27,7 +27,7 @@ loadFile stRef p = do
   _pmod <- eitherThrow =<< lift handled -- bulk of time is here
   fdata <- getFileDataErr stRef
   let tcmod = typecheckedModule fdata
-  his   <- getHoleInfos tcmod
+  his   <- getHoleInfos stRef tcmod
   let augmentedHis = map augment his
   gModifyRef stRef (\s -> s {
       fileData = Just (fdata

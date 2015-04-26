@@ -15,6 +15,8 @@ import qualified OccName
 import           Outputable
 import           Mote.Types
 import           Mote.Util
+
+import HscTypes (hsc_dflags)
 import           TcMType             (zonkCt, zonkTcType)
 import           TcRnDriver          (tcTopSrcDecls)
 import           TcRnMonad           (TcM, captureConstraints)
@@ -113,13 +115,16 @@ getRelevantBindings ct = go 100 (tcl_bndrs lcl_env)
 
 -- When you do anything in TcM, set TcGblEnv from the ParsedModule
 -- and TcLocalEnv from the Ct's. Make sure ScopedTypeVariables is on
-getHoleInfos :: TypecheckedModule -> M [HoleInfo]
-getHoleInfos tcmod = ErrorT $ do
+getHoleInfos :: Ref MoteState -> TypecheckedModule -> M [HoleInfo]
+getHoleInfos stRef tcmod = do
   let (_, mod_details) = tm_internals_ tcmod
   case tm_renamed_source tcmod of
-    Nothing             -> return (Right []) -- TODO: Error
+    Nothing             -> return [] -- TODO: Error
     Just (grp, _, _, _) -> do
-      hsc_env <- getSession
+      hsc_env0 <- lift getSession
+      FileData {typecheckedModule} <- getFileDataErr stRef
+      let summary = pm_mod_summary (tm_parsed_module typecheckedModule)
+          hsc_env = hsc_env0 { hsc_dflags = ms_hspp_opts summary }
       -- TODO: this is a hack to fix a problem with an unknown cause
       -- let hsc_env' = hsc_env { hsc_dflags = hsc_dflags hsc_env `xopt_set` Opt_OverlappingInstances }
       -- Actually this didn't work.
@@ -128,10 +133,10 @@ getHoleInfos tcmod = ErrorT $ do
         let cts = filter isHoleCt $ wcCts wc
         mapM (zonkCt >=> (\ct -> HoleInfo ct <$> getRelevantBindings ct)) cts
 
-      fs <- getSessionDynFlags
-      return $ case mayHoles of
-        Just holes -> Right holes
-        Nothing    -> Left . GHCError . ("Mote.Holes.getHoleInfos: " ++) . showSDoc fs . vcat $ pprErrMsgBag errmsgs
+      fs <- lift getSessionDynFlags
+      case mayHoles of
+        Just holes -> return holes
+        Nothing    -> throwError . GHCError . ("Mote.Holes.getHoleInfos: " ++) . showSDoc fs . vcat $ pprErrMsgBag errmsgs
   where
   wcCts (WC {wc_insol, wc_impl}) =
     Bag.bagToList wc_insol ++ Bag.foldrBag (\impl r -> wcCts (ic_wanted impl) ++ r) []  wc_impl
