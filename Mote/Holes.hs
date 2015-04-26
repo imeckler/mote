@@ -16,7 +16,7 @@ import           Outputable
 import           Mote.Types
 import           Mote.Util
 
-import HscTypes (hsc_dflags)
+import HscTypes (hsc_dflags, hsc_HPT)
 import           TcMType             (zonkCt, zonkTcType)
 import           TcRnDriver          (tcTopSrcDecls)
 import           TcRnMonad           (TcM, captureConstraints)
@@ -25,7 +25,7 @@ import           TcRnTypes           (Ct (..), CtEvidence (..),
                                       TcLclEnv (..), WantedConstraints (..),
                                       ctEvPred, ctEvidence, ctLoc, ctLocEnv,
                                       ctLocSpan, isHoleCt)
-
+import UniqFM
 -- Be careful with guessTarget. It might grab a compiled version
 -- of a module instead of interpreting
 
@@ -124,10 +124,20 @@ getHoleInfos stRef tcmod = do
       hsc_env0 <- lift getSession
       FileData {typecheckedModule} <- getFileDataErr stRef
       let summary = pm_mod_summary (tm_parsed_module typecheckedModule)
-          hsc_env = hsc_env0 { hsc_dflags = ms_hspp_opts summary }
-      -- TODO: this is a hack to fix a problem with an unknown cause
-      -- let hsc_env' = hsc_env { hsc_dflags = hsc_dflags hsc_env `xopt_set` Opt_OverlappingInstances }
-      -- Actually this didn't work.
+          mod_name = moduleName $ ms_mod summary
+          dflags  = ms_hspp_opts summary
+          -- TODOThe reason the overlapping instances bug was occuring
+          -- is that the instances from the current module were hanging around
+          -- in the hsc_env (in hsc_HPT) from when the file was loaded. To
+          -- remedy this I delete the module's entry, which I think is
+          -- kosher.
+          hsc_HPT0 = hsc_HPT hsc_env0
+          hsc_env =
+            hsc_env0
+            { hsc_dflags = dflags
+            , hsc_HPT    = delFromUFM hsc_HPT0 mod_name
+            }
+
       ((_warningmsgs, errmsgs), mayHoles) <- liftIO . runTcInteractive hsc_env $ do
         (_, wc) <- captureConstraints $ tcTopSrcDecls mod_details grp
         let cts = filter isHoleCt $ wcCts wc
