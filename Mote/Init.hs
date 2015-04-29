@@ -350,7 +350,7 @@ configDependencies thisPkg config = map fromInstalledPackageId deps
 
     deps22 :: Either String [InstalledPackageId]
     deps22 = do
-      (xs :: [(ComponentName, C22.ComponentLocalBuildInfo, [ComponentName])]) <- 
+      (xs :: [(ComponentName, C22.ComponentLocalBuildInfo, [ComponentName])]) <-
         readEither =<< extractField config "componentsConfigs"
       return (map fst $ filterInternal22 xs)
 
@@ -360,7 +360,7 @@ configDependencies thisPkg config = map fromInstalledPackageId deps
       , (ipkgid, pkgid) <- C22.componentPackageDeps clbi
       , not (internal . packageIdentifierFrom22 $ pkgid)
       ]
-      
+
 
     packageIdentifierFrom22 (C22.PackageIdentifier (C22.PackageName myName) myVersion) =
         PackageIdentifier (PackageName myName) myVersion

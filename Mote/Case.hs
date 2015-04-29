@@ -3,15 +3,18 @@ module Mote.Case where
 
 import           Bag                 (bagToList)
 import           BasicTypes          (Boxity (..))
+
 import           Control.Applicative ((<$), (<$>), (<*>), (<|>))
 import           Control.Arrow       (second)
 import           Control.Monad.Error (throwError)
 import           Control.Monad.State
+
 import qualified Data.List           as List
 import           Data.Maybe          (fromMaybe, mapMaybe)
 import qualified Data.Set            as S
 import qualified Data.Char as Char
 import qualified Data.IntervalMap.FingerTree as I
+
 import           DataCon             (DataCon, dataConFieldLabels,
                                       dataConInstArgTys, dataConIsInfix,
                                       dataConName, isTupleDataCon,
