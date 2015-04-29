@@ -1,5 +1,5 @@
 {-# LANGUAGE LambdaCase, RecordWildCards #-}
-module Slick.GhcUtil where
+module Mote.GhcUtil where
 
 import           Bag                 (Bag, foldrBag)
 import           Control.Monad.Error
@@ -12,9 +12,11 @@ import           RdrName             (RdrName (Exact), extendLocalRdrEnvList)
 import           SrcLoc              (realSrcSpanEnd, realSrcSpanStart)
 import           TcRnDriver          (tcRnExpr)
 import           TcRnMonad
+import Type (isPredTy)
+import TypeRep (Type(..))
 
-import           Slick.Types
-import           Slick.Util
+import           Mote.Types
+import           Mote.Util
 
 exprType :: String -> M Type
 exprType = hsExprType <=< parseExpr
@@ -55,13 +57,6 @@ withTyVarsInScope tvNames inner = do
   TcRnMonad.setLocalRdrEnv
     (extendLocalRdrEnvList lcl_rdr_env tvNames)
     inner
-
-{-
-withTyVarsInScope' :: [Name] -> TcRn a -> TcRn a
-withTyVarsInScope' tvNames inner = do
--- check out
--- RnTypes/bindHsTyVars
--}
 
 rdrNameToName :: HasOccName name => name -> IOEnv (Env gbl lcl) Name
 rdrNameToName rdrName = do
@@ -110,3 +105,9 @@ withBindings bs mx = do
 
 discardConstraints :: TcRn a -> TcRn a
 discardConstraints = fmap fst . captureConstraints
+
+
+splitPredTys :: Type -> ([PredType], Type)
+splitPredTys (FunTy t1 t2) | isPredTy t1 = let (ps, t) = splitPredTys t2 in (t1:ps, t)
+splitPredTys t                           = ([], t)
+

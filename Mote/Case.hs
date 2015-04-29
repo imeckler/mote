@@ -1,41 +1,52 @@
 {-# LANGUAGE LambdaCase, NamedFieldPuns, RecordWildCards, TupleSections #-}
-module Slick.Case where
+module Mote.Case where
 
 import           Bag                 (bagToList)
-import           BasicTypes          (Boxity (..), Origin (..))
-import           Control.Applicative ((<$>), (<|>))
+import           BasicTypes          (Boxity (..))
+
+import           Control.Applicative ((<$), (<$>), (<*>), (<|>))
 import           Control.Arrow       (second)
-import           Control.Monad.Error (lift, throwError)
+import           Control.Monad.Error (throwError)
+import           Control.Monad.State
+
 import qualified Data.List           as List
 import           Data.Maybe          (fromMaybe, mapMaybe)
-import           DataCon             (DataCon, dataConInstArgTys,
-                                      dataConIsInfix, dataConName,
-                                      isTupleDataCon, isUnboxedTupleCon)
+import qualified Data.Set            as S
+import qualified Data.Char as Char
+import qualified Data.IntervalMap.FingerTree as I
+
+import           DataCon             (DataCon, dataConFieldLabels,
+                                      dataConInstArgTys, dataConIsInfix,
+                                      dataConName, isTupleDataCon,
+                                      isUnboxedTupleCon)
 import           DynFlags            (ExtensionFlag (Opt_PolyKinds))
 import           FamInst             (tcGetFamInstEnvs)
 import qualified FamInstEnv
-import           FastString          (fsLit)
+import           FastString
 import qualified GHC
 import           GhcMonad
-import           HsBinds             (HsBindLR (..), HsLocalBindsLR (..))
+import           HsBinds             (HsBindLR (..), HsLocalBindsLR (..),
+                                      HsValBindsLR (..))
 import           HsDecls             (ClsInstDecl (..), HsDecl (..),
                                       InstDecl (..))
 import           HsExpr              (GRHS (..), GRHSs (..), HsExpr (..),
                                       HsTupArg (..), LHsExpr, LMatch,
-                                      Match (..), MatchGroup (..), StmtLR (..))
+                                      Match (..), StmtLR (..))
 import           HsPat
 import           HsSyn               (HsModule (..))
 import           Name                (Name)
-import           RdrName             (RdrName, mkVarUnqual, nameRdrName)
-import           SrcLoc              (GenLocated (..), Located, SrcSpan, getLoc,
-                                      isSubspanOf, noLoc)
+import           OccName             (occNameString, occNameFS, occName)
+import           RdrName             (RdrName (..), mkVarUnqual, nameRdrName)
+import           SrcLoc              (GenLocated (..), Located, SrcLoc(..), SrcSpan,
+                                      getLoc, isSubspanOf, noLoc, realSrcSpanStart)
 import           TcRnDriver          (runTcInteractive)
 import           TcRnMonad           (setXOptM)
 import           TyCon
 import           Type
+import           TypeRep
 
-import           Slick.Types
-import           Slick.Util
+import           Mote.Types
+import           Mote.Util
 
 type SatDataConRep = (Name, [Type])
 
@@ -60,6 +71,9 @@ unpeel t =
       fmap (map (\dc -> (dc, dataConInstArgTys dc args)))
         (tyConDataCons_maybe tc)
 
+type Scoped = State (S.Set FastString)
+
+
 -- algorithm for expanding variable.
 -- > be in a hole.
 -- > walk down parse tree looking for srcpos of that hole
@@ -67,28 +81,77 @@ unpeel t =
 -- > after finding the hole, walk back up and find the closest
 --   one that has a variable named as requested.
 -- > replace case exprs with expanded one
--- conPattern :: TypedDataCon -> UniqSM (Pat Name)
-conPattern :: (DataCon, [Type]) -> Pat RdrName
-conPattern (dc, argTys)
+
+conPattern :: S.Set FastString -> (DataCon, [Type]) -> Pat RdrName
+conPattern scope (dc, argTys)
   | isTupleDataCon dc =
     let b    = if isUnboxedTupleCon dc then Unboxed else Boxed
-        pats = zipWith varPat argTys [0..]
+        pats = evalState (mapM varPat argTys) scope
     in
     TuplePat pats b argTys
-  | otherwise =
-    ConPatIn (noLoc . nameRdrName $ dataConName dc) deets
+  | otherwise = ConPatIn (noLoc (nameRdrName (dataConName dc))) deets
+    -- ConPatIn (noLoc . nameRdrName $ dataConName dc) deets
   where
+  deets :: HsConPatDetails RdrName
   deets
     | dataConIsInfix dc = case argTys of
-        [x, y] -> InfixCon (varPat x 0) (varPat y 1)
+        [x, y] -> evalState (InfixCon <$> varPat x <*> varPat y) scope
         _      -> error "Unexpected number of arguments to an infix constructor."
     -- TODO: Records
-    | otherwise = PrefixCon $ zipWith varPat argTys [0..]
+    | otherwise = 
+      case dataConFieldLabels dc of
+        [] -> PrefixCon (evalState (mapM varPat argTys) scope)
+        fs -> RecCon $
+          HsRecFields
+          { rec_flds   = map (\l -> HsRecField (noLoc (Exact l)) (noLoc $ WildPat undefined) pun) fs
+          , rec_dotdot = Nothing
+          }
+          where pun = True
 
-varPat :: Type -> Int -> LPat RdrName
-varPat _t i = noLoc . VarPat . mkVarUnqual . fsLit $ "x" ++ show i
+varPat :: Type -> Scoped (LPat RdrName)
+varPat t = noLoc . VarPat . mkVarUnqual <$> freshWithPrefix (typePrefix t)
 
--- zipWithM f xs = sequence . zipWith f xs
+freshWithPrefix :: FastString -> Scoped FastString
+freshWithPrefix pre = do
+  s <- get 
+  if not (pre `S.member` s)
+    then pre <$ modify (S.insert pre)
+    else freshWithPrefix (appendFS pre (fsLit "'"))
+
+-- Should be a normalized type as argument, though not with
+-- synonyms expanded
+typePrefix :: Type -> FastString
+typePrefix = fsLit . typePrefix' where
+  typePrefix' = \case
+    AppTy {}         -> "x"
+    -- TODO: This will probably break on infix tycons
+    -- TODO: Special case maybe
+    -- TODO: Special case either
+    -- TODO: Type variables
+    TyConApp tc args ->
+      if isListTyCon tc
+      then typePrefix' (head args) ++ "s"
+      else if isTupleTyCon tc
+      then List.intercalate "_and_" (map typePrefix' args)
+      else initials $ occNameString (occName (tyConName tc))
+
+    FunTy s t     -> concat [typePrefix' s, "_to_", typePrefix' t]
+    ForAllTy _x t -> typePrefix' t
+    LitTy t       -> case t of
+      StrTyLit fs -> unpackFS fs
+      NumTyLit n  -> '_' : show n
+    TyVarTy _v    -> "x"
+
+    where
+    initials :: String -> [Char]
+    initials (c : cs) = Char.toLower c : initials (dropWhile Char.isLower cs)
+    initials []       = []
+
+isListTyCon :: TyCon -> Bool
+isListTyCon tc = occNameString (occName (tyConName tc)) == "[]"
+-- TODO: This version not working for some reason
+-- isListTyCon tc = tc `hasKey` consDataConKey
+
 
 -- noLoc
 dummyLocated :: a -> Located a
@@ -130,7 +193,16 @@ namesBound (L _ (Match pats t rhs)) = listyPat (\pats' -> Match pats' t rhs) pat
     ConPatIn c deets -> case deets of
       InfixCon a1 a2 -> listyPat (\[a1', a2'] -> ConPatIn c (InfixCon a1' a2')) [a1, a2]
       PrefixCon args -> listyPat (ConPatIn c . PrefixCon) args
-      RecCon {}      -> error "TODO: Record field namesBound"
+      RecCon (HsRecFields {rec_flds, rec_dotdot}) -> case rec_dotdot of
+        Just _  -> [] -- TODO: This should really expand out the dotdot
+        Nothing ->
+          concatMap (\(pre,fld,post) ->
+            wrapWith (wrap pre fld post) . goLPat $ hsRecFieldArg fld)
+            (listViews rec_flds)
+          where
+          wrap pre fld post lp =
+            ConPatIn c $
+              RecCon (HsRecFields (pre ++ fld { hsRecFieldArg = lp } : post) Nothing)
 
     ConPatOut {}     -> error "TODO: ConPatOut"
     ViewPat {}       -> error "TODO: ViewPat"
@@ -155,21 +227,30 @@ namesBound (L _ (Match pats t rhs)) = listyPat (\pats' -> Match pats' t rhs) pat
     go pre (x:xs) = (pre, x, xs) : go (x:pre) xs
 
 
-patternsForType :: Type -> M [LPat RdrName]
-patternsForType ty =
+patternsForType :: S.Set FastString -> Type -> M [LPat RdrName]
+patternsForType scope ty =
   lift (unpeel ty) >>| \case
-    Just dt -> map (noLoc . conPattern) dt
-    Nothing -> [varPat ty 0] -- TODO: Variable names
+    Just dt -> map (noLoc . conPattern scope) dt
+    Nothing -> [evalState (varPat ty) scope]
 
-matchesForType :: Type -> M [Match RdrName (LHsExpr RdrName)]
-matchesForType = fmap (map (\p -> Match [p] Nothing holyGRHSs)) . patternsForType where
+scopeAt :: Ref MoteState -> SrcLoc -> M (S.Set FastString)
+scopeAt stRef loc = do
+  FileData {scopeMap} <- getFileDataErr stRef
+  return $ S.fromList . map (occNameFS . occName . snd) . I.search loc $ scopeMap
+
+matchesForTypeAt :: Ref MoteState -> Type -> SrcLoc -> M [Match RdrName (LHsExpr RdrName)]
+matchesForTypeAt stRef ty loc = do
+  scope <- scopeAt stRef loc
+  fmap (map (\p -> Match [p] Nothing holyGRHSs)) (patternsForType scope ty)
+  where
   holyGRHSs :: GRHSs RdrName (LHsExpr RdrName)
   holyGRHSs = GRHSs [noLoc $ GRHS [] (noLoc EWildPat)] EmptyLocalBinds
 
--- TODO: We have an actual Var at are disposal now when we call this so the
+-- TODO: We have an actual Var at our disposal now when we call this so the
 -- string argument can be replaced with a Var argument
 expansions
-  :: String
+  :: Ref MoteState
+     -> String
      -> Type
      -> SrcSpan
      -> HsModule RdrName
@@ -177,13 +258,17 @@ expansions
              ((LMatch RdrName (LHsExpr RdrName),
                MatchInfo RdrName),
               [Match RdrName (LHsExpr RdrName)]))
-expansions var ty loc mod =
+expansions stRef var ty loc mod =
   case findMap (\mgi@(lm,_) -> fmap (mgi,) . aListLookup varName . namesBound $ lm) mgs of
     Just (mgi, patPosn) -> do
       dcsMay <- lift $ unpeel ty
-      return $ case dcsMay of
-        Nothing  -> Nothing
-        Just dcs -> Just (mgi, map (patPosn . conPattern) dcs)
+      scope  <- scopeAt stRef (RealSrcLoc $ realSrcSpanStart (toRealSrcSpan loc))
+      case dcsMay of
+        Nothing  -> return Nothing
+        Just dcs -> do
+          let matches = map (patPosn . conPattern scope) dcs
+          logS stRef . show $ map (\(dc, args) -> (dataConIsInfix dc, map typePrefix args)) dcs -- lift (showSDocM . vcat . map (pprMatch (CaseAlt :: HsMatchContext RdrName)) $ matches)
+          return $ Just (mgi, matches)
 
     Nothing -> throwError $ NoVariable var
   where
@@ -215,7 +300,20 @@ containingMatchGroups loc = goDecls [] . GHC.hsmodDecls where
 
   goLMatch mi acc lm@(L _ (Match _pats _ty grhss)) = goGRHSs ((lm, mi):acc) grhss
 
-  goGRHSs acc (GRHSs { grhssGRHSs }) = goGRHS acc $ nextSubexpr loc grhssGRHSs
+  goGRHSs acc (GRHSs { grhssGRHSs, grhssLocalBinds }) =
+    case nextSubexpr' loc grhssGRHSs of
+      Just g -> goGRHS acc g
+      Nothing -> goLocalBinds acc grhssLocalBinds
+
+  goLocalBinds acc = \case
+    HsValBinds vb -> goValBinds acc vb
+    HsIPBinds {} -> acc
+    EmptyLocalBinds -> acc
+
+  goValBinds acc vbs = goBind acc . nextSubexpr loc $ case vbs of
+    ValBindsIn bs _sigs   -> bagToList bs
+    ValBindsOut rbs _sigs -> concatMap (bagToList . snd) rbs
+
 
   -- TODO: Guards should be returned too
   goGRHS acc (GRHS _gs b) = goLExpr acc b

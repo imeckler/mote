@@ -1,20 +1,22 @@
-module Slick.Types (Hole, FileData (..), SlickState (..),
-                    HoleInfo (..), ErrorType (..), AugmentedHoleInfo(..), M, Ref) where
+module Mote.Types (Hole, FileData (..), MoteState (..),
+                    HoleInfo (..), ErrorType (..), AugmentedHoleInfo(..), M, Ref, ScopeMap) where
 
+import           Control.Concurrent.MVar
 import           Control.Monad.Error
-import qualified Data.Map            as M
-import qualified Data.Set            as S
+import           Data.IntervalMap.FingerTree (IntervalMap)
+import qualified Data.Map                    as M
+import qualified Data.Set                    as S
 import           Data.Time.Clock
 import           GHC
 import           System.IO
+import           TcRnTypes                   (Ct (..))
 import           UniqSupply
-import           TcRnTypes           (Ct (..))
-import Control.Concurrent.MVar
 
 type Hole = SrcSpan
 
 type Ref = MVar
 
+type ScopeMap = IntervalMap SrcLoc RdrName
 data FileData = FileData
   { path                 :: FilePath
   -- This is apparently stored in the ModSummary. Check it out.
@@ -22,9 +24,10 @@ data FileData = FileData
   , hsModule             :: HsModule RdrName
   , typecheckedModule    :: TypecheckedModule
   , holesInfo            :: M.Map SrcSpan AugmentedHoleInfo
+  , scopeMap             :: ScopeMap
   }
 
-data SlickState = SlickState
+data MoteState = MoteState
   { fileData    :: Maybe FileData
   , currentHole :: Maybe AugmentedHoleInfo
   , logFile     :: Handle
@@ -49,8 +52,8 @@ data HoleInfo = HoleInfo
 -- | Possible errors from the server.
 data ErrorType
   = NoHole             -- ^ No hole at the current location.
-  | NotInMap           -- ^ The current hole has not been loaded properly into Slick.
-  | NoFile             -- ^ The given file was not loaded properly into Slick.
+  | NotInMap           -- ^ The current hole has not been loaded properly into Mote.
+  | NoFile             -- ^ The given file was not loaded properly into Mote.
   | NoVariable String  -- ^ The variable with the given name does not exist.
   | TypeNotInEnv       -- ^ The type does not make sense in the current environment.
   | NoRefine           -- ^ The provided expression for refinement didn't match the hole type.

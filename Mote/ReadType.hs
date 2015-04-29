@@ -1,5 +1,5 @@
 {-# LANGUAGE LambdaCase #-}
-module Slick.ReadType where
+module Mote.ReadType where
 
 import           CoAxiom             (Role (Nominal))
 import           Control.Monad.Error
@@ -7,25 +7,22 @@ import           DynFlags            (ExtensionFlag (Opt_PolyKinds))
 import           FamInst             (tcGetFamInstEnvs)
 import           FamInstEnv          (normaliseType)
 import           GHC                 (Type, runTcInteractive)
-import           GhcMonad            (GhcMonad, getSession, getSessionDynFlags)
-import           HsTypes             (LHsType, mkImplicitHsForAllTy)
-import           Kind                (anyKind)
+import           GhcMonad            (getSession, getSessionDynFlags)
+import           HsTypes             (mkImplicitHsForAllTy)
 import           Name                (Name)
 import           Parser              (parseType)
-import           RnEnv               (HsDocContext (GHCiCtx),
-                                      bindLocatedLocalsRn)
+import           RnEnv               (HsDocContext (GHCiCtx))
 import           RnTypes             (rnLHsType)
 import           SrcLoc              (noLoc)
-import           TcEnv               (tcExtendTyVarEnv)
 import           TcHsType            (tcHsSigType)
 import           TcRnMonad           (setXOptM)
 import           TcType              (UserTypeCtxt (GhciCtxt))
-import           UniqSet             (uniqSetToList)
-import           Var                 (mkTyVar)
+import Outputable (showSDoc, vcat)
+import ErrUtils (pprErrMsgBag)
 
-import           Slick.GhcUtil       (withTyVarsInScope)
-import           Slick.Types
-import           Slick.Util
+import           Mote.GhcUtil       (withTyVarsInScope)
+import           Mote.Types
+import           Mote.Util
 
 -- useful things
 -- RnTypes/rnHsTyKi
@@ -64,7 +61,6 @@ readTypeWithTyVarsInScope tvNames str =
 -- doesn't work properly yet.
 tcGetType rdr_type = do
   hsc_env <- getSession
-  fs <- getSessionDynFlags
   liftIO . runTcInteractive hsc_env . setXOptM Opt_PolyKinds $ do
     (rn_type, _fvs) <- rnLHsType GHCiCtx (noLoc $ mkImplicitHsForAllTy (noLoc []) rdr_type)
     ty <- tcHsSigType GhciCtxt rn_type
@@ -73,10 +69,11 @@ tcGetType rdr_type = do
     return ty'
 
 readType :: String -> M Type
-readType str =
+readType str = do
+  fs <- lift getSessionDynFlags
   lift (runParserM parseType str) >>= \case
     Left s  -> throwError $ ParseError s
     Right t -> do
-      (_, mt) <- lift (tcGetType t)
-      maybe (throwError (OtherError "hi")) return mt
+      ((_warns, errs), mt) <- lift (tcGetType t)
+      maybe (throwError (OtherError . showSDoc fs . vcat $ pprErrMsgBag errs)) return mt
 

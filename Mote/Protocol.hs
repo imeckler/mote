@@ -1,5 +1,5 @@
 {-# LANGUAGE LambdaCase, OverloadedStrings #-}
-module Slick.Protocol where
+module Mote.Protocol where
 
 import           Control.Applicative
 import           Control.Monad
@@ -72,6 +72,7 @@ data FromClient
   | CaseFurther Var ClientState
   | CaseOn String ClientState
   | SendStop
+  | Search 
   deriving (Show)
 
 instance FromJSON FromClient where

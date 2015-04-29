@@ -1,27 +1,21 @@
-{-# LANGUAGE ConstraintKinds, FlexibleContexts, LambdaCase,
-             RecordWildCards, ScopedTypeVariables #-}
-module Slick.Init where
+{-# LANGUAGE ConstraintKinds, FlexibleContexts, LambdaCase, RecordWildCards,
+             ScopedTypeVariables #-}
+module Mote.Init where
 
 import           Data.List                                     (intercalate)
 import           GHC
 import           Language.Haskell.GhcMod.Internal              hiding (getCompilerOptions,
                                                                 parseCabalFile)
 import           Outputable
-import           Slick.Protocol (ToClient(Error))
-import           Slick.Types
-import           Slick.Util
+import           Mote.Types
+import           Mote.Util
 -- I had to write my own "getCompilerOptions" and "parseCabalFile"
 -- since the ghcmod versions die on new binary format cabal files.
 import           Control.Applicative
-import qualified Control.Exception
 import           Control.Monad
 import           Control.Monad.Error
-import           Data.Aeson                                    (encode)
-import qualified Data.ByteString.Lazy.Char8 as LB8
-import qualified Data.Map                                      as M
 import qualified Data.Set                                      as S
 import           DynFlags
-import           GhcMonad
 import           Language.Haskell.GhcMod
 import ErrUtils
 
@@ -60,7 +54,6 @@ import qualified CabalVersions.Cabal21                         as C21
 import qualified CabalVersions.Cabal22                         as C22
 import           Data.List                                     (find, isInfixOf,
                                                                 isPrefixOf, nub,
-                                                                splitAt,
                                                                 stripPrefix,
                                                                 tails)
 import           Data.List.Split                               (splitOn)
@@ -101,7 +94,7 @@ LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
 ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 POSSIBILITY OF SUCH DAMAGE. -}
 
-init :: GhcMonad m => Ref SlickState -> m (Either String ())
+init :: GhcMonad m => Ref MoteState -> m (Either String ())
 init stRef = initializeWithCabal stRef defaultOptions
 
 runGhcModT'' opt mx = do
@@ -109,7 +102,7 @@ runGhcModT'' opt mx = do
   (orErr, _log) <- runGhcModT' env defaultState mx
   return $ fmap fst orErr
 
-initializeWithCabal :: GhcMonad m => Ref SlickState -> Options -> m (Either String ())
+initializeWithCabal :: GhcMonad m => Ref MoteState -> Options -> m (Either String ())
 initializeWithCabal stRef opt = do
   c <- liftIO findCradle
   case cradleCabalFile c of
@@ -144,7 +137,7 @@ setOptions stRef (Options {..}) (CompilerOptions{..}) = do
         { hscTarget  = HscInterpreted
         , ghcLink    = LinkInMemory
         , ghcMode    = CompManager
-        , log_action = \dfs sev span pprsty msgdoc ->
+        , log_action = \dfs sev span _pprsty msgdoc ->
             let msg =
                   showSDocForUser dfs neverQualify
                   $ mkLocMessage sev span msgdoc
@@ -156,11 +149,6 @@ setOptions stRef (Options {..}) (CompilerOptions{..}) = do
             else
               gModifyRef stRef (\s ->
                 s { loadErrors = msg : loadErrors s })
-        {- TODO: Debug
-        , traceLevel = 2
-        , log_action = \dfs sev span pprsty msgdoc ->
-            logS stRef $ showSDoc dfs msgdoc
-        -}
         }
 
   void $ setSessionDynFlags =<< addCmdOpts ghcOptions
@@ -188,6 +176,7 @@ ghcDbOpt db
   | s == "GlobalDb"                    = ["-global-package-db"]
   | s == "UserDb"                      = ["-user-package-db"]
   | ("PackageDb ",s') <-  splitAt 10 s = ["-no-user-package-db", "-package-db", read s']
+  | otherwise                          = []
   where s = show db
 
 -- begin implementation of parseCabalFile

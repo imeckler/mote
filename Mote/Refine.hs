@@ -1,48 +1,30 @@
 {-# LANGUAGE FlexibleContexts, LambdaCase, MultiParamTypeClasses,
              NamedFieldPuns, RecordWildCards, TupleSections #-}
-module Slick.Refine where
+module Mote.Refine where
 
 import           Bag                 (bagToList)
-import           Control.Applicative ((<$>))
-import           Control.Monad.Error (ErrorT (..), MonadError, lift, throwError)
-import           Control.Monad.Trans (MonadIO, MonadTrans)
-import           Data.IORef          (IORef)
+import           Control.Monad.Error (throwError)
 import qualified Data.Set            as S
-import           ErrUtils            (pprErrMsgBag)
-import           GHC                 (TypecheckedModule (..))
-import           GhcMonad
 import           HsExpr              (HsExpr (..), LHsExpr)
-import           OccName             (mkVarOcc, occName)
-import           Outputable          (showSDoc, vcat)
+import           OccName             (mkVarOcc)
 import           RdrName             (RdrName (Unqual))
-import           SrcLoc              (noLoc, noSrcSpan, unLoc)
-import           TcRnDriver          (runTcInteractive)
-import           TcRnTypes           (CtOrigin (..))
-import           TcType              (TcSigmaType)
-import           Type                (PredType, TyVar, dropForAlls, isPredTy,
-                                      mkForAllTys, mkPiTypes, splitForAllTys,
-                                      splitFunTy_maybe)
+import           SrcLoc              (noLoc, unLoc)
+import           Type                (PredType, TyVar, mkForAllTys, mkPiTypes,
+                                      splitForAllTys, splitFunTy_maybe)
 import           TypeRep             (Type (..))
 
-import           Slick.GhcUtil
-import           Slick.Holes
-import           Slick.ReadType
-import           Slick.Types
-import           Slick.Util
+import           Mote.GhcUtil
+import           Mote.Holes
+import           Mote.Types
+import           Mote.Util
 
 -- Imports for doing subtype testing
-import           Data.Either         (rights)
-import           Name                (mkInternalName)
-import           Parser              (parseType)
 import           PrelNames           (itName)
 import           RnExpr              (rnLExpr)
-import           RnTypes             (extractHsTysRdrTyVars)
 import           SrcLoc              (getLoc)
 import           TcEvidence          (EvBind (..), EvTerm (..), HsWrapper (..))
 import           TcExpr              (tcInferRho)
 import           TcMType             (zonkTcType)
-import           TcRnMonad           (captureConstraints, failIfErrsM,
-                                      newUnique)
 import           TcRnMonad
 import           TcSimplify          (simplifyInteractive)
 import           TcSimplify          (simplifyInfer)
@@ -103,11 +85,15 @@ refineMatch goalTy rty = go [] [] [] rty where
 refineNumArgs :: Type -> Type -> TcRn (Maybe Int)
 refineNumArgs goalTy rty = fmap (length . refineArgTys) <$> refineMatch goalTy rty
 
-refine :: Ref SlickState -> String -> M (LHsExpr RdrName)
+-- TODO: If the return type doesn't match, assume it's in the
+-- middle of a composition. Eg., if the user tries to refine with f
+-- and the type of f doesn't match, insert 
+-- _ $ f _ _ _ 
+-- for the number of args f has
+refine :: Ref MoteState -> String -> M (LHsExpr RdrName)
 refine stRef eStr = do
   hi    <- holeInfo <$> getCurrentHoleErr stRef
   isArg <- S.member (holeSpan hi) . argHoles <$> gReadRef stRef
-  fs    <- lift getSessionDynFlags
   let goalTy = holeType hi
 
   expr <- parseExpr eStr
@@ -148,9 +134,6 @@ withNHoles :: Int -> LHsExpr RdrName -> LHsExpr RdrName
 withNHoles n e = app e $ replicate n hole where
   app f args = foldl (\f' x -> noLoc $ HsApp f' x) f args
   hole       = noLoc $ HsVar (Unqual (mkVarOcc "_"))
-
-splitPredTys (FunTy t1 t2) | isPredTy t1 = let (ps, t) = splitPredTys t2 in (t1:ps, t)
-splitPredTys t                           = ([], t)
 
 -- TODO: There's a bug where goal type [a_a2qhr] doesn't accept refinement
 -- type [HoleInfo]

@@ -8,10 +8,10 @@ import select
 # This doesn't work in vim 7.3. Window doesn't have a "valid" attribute,
 # among other things
 
-# Need to kill processes properly. If I open two slicks then they don't
+# Need to kill processes properly. If I open two motes then they don't
 # get killed correctly
 
-log    = open(os.path.join(os.path.expanduser('~'), 'slicklog'), 'w', 0)
+log    = open(os.path.join(os.path.expanduser('~'), '.motelog'), 'w', 0)
 reader = None
 
 def get_client_state():
@@ -72,10 +72,11 @@ def synchronous(cmd):
     return self.handle(s)
   return sync_cmd
 
-class SlickProcess:
+class MoteProcess:
   def __init__(self):
-    self.pipe        = None
-    self.info_window = None
+    self.pipe             = None
+    self.info_window      = None
+    self.displaying_error = False
 
   # returns a bool. False = stop, True = keep going
 
@@ -100,11 +101,13 @@ class SlickProcess:
       pass
 
     elif  msg[0] == 'Error':
+      self.displaying_error = True
       self.set_info_window(msg[1])
 
     elif msg[0] == 'SetInfoWindow':
       log.write('setting info window\n')
       log.write('fo: ' + msg[1] + '\n')
+      self.displaying_error = False
       self.set_info_window(msg[1])
 
     elif msg[0] == 'SetCursor':
@@ -141,7 +144,7 @@ class SlickProcess:
       log.write('got message: ' + s + '\n')
       return self.handle(s)
 
-      # On load, slick may send multiple messages due to errors.
+      # On load, mote may send multiple messages due to errors.
       # Need some way of handling that. The below doesn't work.
 
       #keepgoing = self.handle(s)
@@ -165,7 +168,7 @@ class SlickProcess:
 
   def start(self):
     try:
-      self.pipe = subprocess.Popen(['slick'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log) #TODO:debug
+      self.pipe = subprocess.Popen(['mote'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log) #TODO:debug
     except OSError as e:
       raise e
 
@@ -175,7 +178,7 @@ class SlickProcess:
   def get_info_window(self):
     if self.info_window == None or not window_is_valid(self.info_window):
       # why did I get invalid expression on this?
-      self.info_window = vim.windows[int(vim.eval('slick#CreateInfoWindow()')) - 1]
+      self.info_window = vim.windows[int(vim.eval('mote#CreateInfoWindow()')) - 1]
     return self.info_window
 
   def load(self, path):
@@ -188,7 +191,7 @@ class SlickProcess:
   def get_env(self):
     hole_info_options = {
       'sendOutputAsData' : False,
-      'withSuggestions' : True }
+      'withSuggestions' : False }
     self._send_message(['GetHoleInfo', get_client_state(), hole_info_options])
 
   def get_type(self, expr):
@@ -201,27 +204,27 @@ def window_is_valid(w):
   except:
     return False
 
-slick_process = None
-def get_slick_process():
-  global slick_process
+mote_process = None
+def get_mote_process():
+  global mote_process
 
-  if not slick_process:
-    slick_process = SlickProcess()
-    slick_process.start()
+  if not mote_process:
+    mote_process = MoteProcess()
+    mote_process.start()
 
-  return slick_process
+  return mote_process
 
 def wait_for_messages():
   keep_going = True
 
   while keep_going:
-    slick = get_slick_process()
-    if slick.pipe.returncode == None:
+    mote = get_mote_process()
+    if mote.pipe.returncode == None:
       log.write('returncode was none\n')
-      s = slick.pipe.stdout.readline()
+      s = mote.pipe.stdout.readline()
 
       log.write('got message: ' + s + '\n')
-      keep_going = slick.handle(s)
+      keep_going = mote.handle(s)
     else:
       log.write('returncode was not none\n')
       break
@@ -233,33 +236,33 @@ def start():
   #log.write('called start\n')
 
 def stop():
-  get_slick_process().send_stop()
+  get_mote_process().send_stop()
 
 def load_current_file():
   log.write('called load\n')
-  get_slick_process().load(vim.current.buffer.name)
+  get_mote_process().load(vim.current.buffer.name)
 
 def get_env():
-  get_slick_process().get_env()
+  get_mote_process().get_env()
 
 def get_type(expr):
-  get_slick_process().get_type(expr)
+  get_mote_process().get_type(expr)
 
 def enter_hole():
-  get_slick_process().enter_hole()
+  get_mote_process().enter_hole()
 
 def next_hole():
-  get_slick_process()._send_message(['NextHole', get_client_state()])
+  get_mote_process()._send_message(['NextHole', get_client_state()])
 
 def prev_hole():
-  get_slick_process()._send_message(['PrevHole', get_client_state()])
+  get_mote_process()._send_message(['PrevHole', get_client_state()])
 
 def case_further(var):
-  get_slick_process()._send_message(['CaseFurther', var, get_client_state()])
+  get_mote_process()._send_message(['CaseFurther', var, get_client_state()])
 
 def case_on(expr):
-  get_slick_process()._send_message(['CaseOn', expr, get_client_state()])
+  get_mote_process()._send_message(['CaseOn', expr, get_client_state()])
 
 def refine(expr):
-  get_slick_process()._send_message(['Refine', expr, get_client_state()])
+  get_mote_process()._send_message(['Refine', expr, get_client_state()])
 

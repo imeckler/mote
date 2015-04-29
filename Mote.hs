@@ -2,188 +2,67 @@
              ScopedTypeVariables, TupleSections #-}
 module Main where
 
-import           Control.Applicative        ((<$), (<$>))
-import Control.Concurrent (forkIO)
+import           Control.Applicative        ((<$>))
+import           Control.Concurrent         (forkIO)
 import           Control.Monad.Error
 import           Data.Aeson                 (decodeStrict, encode, (.=))
-import qualified Data.Aeson as Aeson
+import qualified Data.Aeson                 as Aeson
 import qualified Data.ByteString            as B
 import qualified Data.ByteString.Lazy.Char8 as LB8
-import           Control.Concurrent.MVar
 import qualified Data.List                  as List
 import qualified Data.Map                   as M
-import           Data.Maybe                 (isNothing)
 import qualified Data.Set                   as S
 
+
 import qualified DynFlags
-import           ErrUtils                   (pprErrMsgBag)
-import           Exception
-import           FastString                 (fsLit, unpackFS)
+import           FastString                 (fsLit)
 import           GHC                        hiding (exprType)
 import           GHC.Paths
-import           HscTypes                   (srcErrorMessages)
 import           Name
 import           Outputable
 import           UniqSupply                 (mkSplitUniqSupply)
 
-import           System.Directory           (getHomeDirectory,
-                                             getModificationTime)
-import           System.Exit (exitWith, ExitCode(..))
+import           System.Directory           (getHomeDirectory)
+import           System.Exit                (ExitCode (..), exitWith)
 import           System.FilePath
 import           System.IO
 
-import           Slick.Case
-import           Slick.GhcUtil
-import           Slick.Holes
-import qualified Slick.Init
-import           Slick.Protocol
-import           Slick.ReadType
-import           Slick.Refine
-import Slick.Suggest (getAndMemoizeSuggestions)
-import           Slick.Types
-import           Slick.Util
+import           Mote.Case
+import           Mote.GhcUtil
+import           Mote.Holes
+import qualified Mote.Init
+import           Mote.LoadFile             (loadFile)
+import           Mote.Protocol
+import           Mote.Refine
+import           Mote.Suggest              (getAndMemoizeSuggestions)
+import           Mote.Types
+import           Mote.Util
 
--- DEBUG
-import Data.Time.Clock
-
-ghcInit :: GhcMonad m => Ref SlickState -> m ()
-ghcInit stRef = do
-  dfs <- getSessionDynFlags
-  void . setSessionDynFlags . withFlags [DynFlags.Opt_DeferTypeErrors] $ dfs
-    { hscTarget  = HscInterpreted
-    , ghcLink    = LinkInMemory
-    , ghcMode    = CompManager
-    , traceLevel = 10
-    }
-  where
-  withFlags fs dynFs = foldl DynFlags.gopt_set dynFs fs
-
-getEnclosingHole :: Ref SlickState -> (Int, Int) -> M (Maybe AugmentedHoleInfo)
+getEnclosingHole :: Ref MoteState -> (Int, Int) -> M (Maybe AugmentedHoleInfo)
 getEnclosingHole stRef pos =
   M.foldrWithKey (\k hi r -> if k `spans` pos then Just hi else r) Nothing
   . holesInfo
   <$> getFileDataErr stRef
 -- TODO: access ghci cmomands from inside vim too. e.g., kind
 
-loadFile :: Ref SlickState -> FilePath -> M ()
-loadFile stRef p = do
-  pmod  <- eitherThrow =<< lift handled -- bulk of time is here
-  fdata <- getFileDataErr stRef
-  let tcmod = typecheckedModule fdata
-  his   <- getHoleInfos tcmod
-  augmentedHis <- mapM (augment tcmod) his
-  gModifyRef stRef (\s -> s {
-      fileData = Just (fdata
-        { holesInfo = M.fromList $ map (\hi -> (holeSpan $ holeInfo hi, hi)) augmentedHis })
-    })
-  where
-  logTimeSince t0 = liftIO $ do
-    t <- getCurrentTime
-    logS stRef . show $ diffUTCTime t t0
-
-  -- getting suggestions took far too long, so we only compute them if
-  -- they're explicitly requested later on
-  augment :: TypecheckedModule -> HoleInfo -> M AugmentedHoleInfo
-  augment tcmod hi =
-    return (AugmentedHoleInfo { holeInfo = hi, suggestions = Nothing })
-
-  -- bulk of time spent here unsurprisingly
-  loadModuleAt :: GhcMonad m => FilePath -> m (Either ErrorType ParsedModule)
-  loadModuleAt p = do
-    -- TODO: I think we can used the parsed and tc'd module that we get
-    -- ourselves and then call GHC.loadMoudle to avoid duplicating work
-    setTargets . (:[]) =<< guessTarget p Nothing
-    load LoadAllTargets >>= \case
-      Succeeded ->
-        (List.find ((== p) . GHC.ms_hspp_file) <$> GHC.getModuleGraph) >>= \case
-          Just m  -> do
-            setContext [IIModule . moduleName . ms_mod $ m]
-            Right <$> GHC.parseModule m
-          Nothing -> error "Could not load module" -- TODO: Throw real error here
-      Failed -> 
-        Left . GHCError . unlines . reverse . loadErrors <$> gReadRef stRef
-
-  getModules = do
-    t0 <- liftIO getCurrentTime
-    clearOldHoles
-    clearErrors
-    _fs <- getSessionDynFlags
-    loadModuleAt p >>= \case
-      Left err -> return (Left err)
-      Right mod -> do
-        tcmod <- typecheckModule mod
-        setStateForData stRef p tcmod (unLoc $ parsedSource mod)
-        gReadRef stRef >>| loadErrors >>| \case
-          []   -> Right mod
-          errs -> Left . GHCError . ("getModules: " ++) . unlines $ reverse errs
-
-  handled :: Ghc (Either ErrorType ParsedModule)
-  handled = do
-    fs <- getSessionDynFlags
-    ghandle (\(e :: SomeException) -> Left (OtherError $ show e) <$ clearState stRef) $
-      handleSourceError (\e ->
-        (Left . GHCError . ("handled:" ++) . showErr fs $ srcErrorMessages e) <$ clearState stRef)
-        getModules
-
-  clearOldHoles =
-    liftIO $ readMVar stRef >>= \s -> case fileData s of
-      Nothing                                         -> return ()
-      Just (FileData {path, modifyTimeAtLastLoad}) -> do
-        t <- getModificationTime path
-        when (t /= modifyTimeAtLastLoad) (resetHolesInfo stRef)
-
-  clearErrors = gModifyRef stRef (\s -> s { loadErrors = [] })
-
-  clearState stRef     = gModifyRef stRef (\s -> s {fileData = Nothing, currentHole = Nothing})
-  showErr fs           = showSDocForUser fs neverQualify . vcat . pprErrMsgBag
-  resetHolesInfo stRef =
-    gModifyRef stRef (\s -> s { fileData = fileData s >>| \fd -> fd { holesInfo = M.empty } })
-
-setStateForData :: GhcMonad m => Ref SlickState -> FilePath -> TypecheckedModule -> HsModule RdrName -> m ()
-setStateForData stRef path tcmod hsModule = do
-  modifyTimeAtLastLoad <- liftIO $ getModificationTime path
-  let argHoles = findArgHoles hsModule
-  gModifyRef stRef (\st -> st
-    { fileData    = Just $
-        FileData
-        { path
-        , hsModule
-        , modifyTimeAtLastLoad
-        , typecheckedModule=tcmod
-         -- This emptiness is temporary. It gets filled in at the end of
-         -- loadFile. I had to separate this since I painted myself into
-         -- a bit of a monadic corner. "augment" (necessary for generating
-         -- the holesInfo value, runs in M rather than Ghc.
-        , holesInfo = M.empty
-        }
-    , currentHole = Nothing
-    , argHoles
-    })
-  logS stRef $ "These be the argHoles:" ++ show argHoles
-
 srcLocPos :: SrcLoc -> (Int, Int)
 srcLocPos (RealSrcLoc l)  = (srcLocLine l, srcLocCol l)
 srcLocPos UnhelpfulLoc {} = error "srcLocPos: unhelpful loc"
 
-respond :: Ref SlickState -> FromClient -> Ghc ToClient
+respond :: Ref MoteState -> FromClient -> Ghc ToClient
 respond stRef msg = either (Error . show) id <$> runErrorT (respond' stRef msg)
 
-respond' :: Ref SlickState -> FromClient -> M ToClient
+respond' :: Ref MoteState -> FromClient -> M ToClient
 respond' stRef = \case
   Load p -> do
-    t0 <- liftIO getCurrentTime
     loadFile stRef p
     liftIO . forkIO $ do
       fmap fileData (gReadRef stRef) >>= \case
         Nothing -> return ()
-        Just (FileData {holesInfo}) ->
+        Just (FileData {holesInfo=_}) ->
           return ()
           -- no idea if this is kosher
           -- void . runGhc (Just libdir) $ runErrorT (mapM_ (getAndMemoizeSuggestions stRef) (M.elems holesInfo))
-
-    -- TODO: would like 
-    -- t <- liftIO getCurrentTime
-    -- logS stRef $ show $ diffUTCTime t t0
     return Ok
 
   NextHole (ClientState {path, cursorPos=(line,col)}) ->
@@ -226,7 +105,7 @@ respond' stRef = \case
       True -> do
         suggsJSON <-
           if withSuggestions
-          then mkSuggsJSON <$> Slick.Suggest.getAndMemoizeSuggestions stRef ahi
+          then mkSuggsJSON <$> Mote.Suggest.getAndMemoizeSuggestions stRef ahi
           else return []
         return $
           JSON . Aeson.object $
@@ -241,12 +120,18 @@ respond' stRef = \case
       False -> do
         suggsStr <-
           if withSuggestions
-          then mkSuggsStr <$> Slick.Suggest.getAndMemoizeSuggestions stRef ahi
+          then mkSuggsStr <$> Mote.Suggest.getAndMemoizeSuggestions stRef ahi
           else return ""
 
         let goalStr = "Goal: " ++ holeNameString hi ++ " :: " ++ showType fs (holeType hi)
                     ++ "\n" ++ replicate 40 '-'
-            envStr = unlines $ map (\(x, t) -> x ++ " :: " ++ t) env
+            envStr =
+              -- TODO: Wow, this is total for the strangest reason. If env
+              -- is empty then maxIdentLength never gets used to pad so
+              -- maximum doesn't fail.
+              let maxIdentLength = maximum $ map (\(x,_) -> length x) env in
+              unlines $ map (\(x, t) ->
+                take maxIdentLength (x ++ repeat ' ') ++ " :: " ++ t) env
         return . SetInfoWindow $ unlines [goalStr, envStr, "", suggsStr]
         where
         mkSuggsStr suggs = 
@@ -257,33 +142,35 @@ respond' stRef = \case
     hi    <- getCurrentHoleErr stRef
     expr' <- refine stRef exprStr
     fs    <- lift getSessionDynFlags
+    unqual <- lift getPrintUnqual
     return $
       Replace (toSpan . holeSpan $ holeInfo hi) path
-        (showSDocForUser fs neverQualify (ppr expr'))
+        (showSDocForUser fs unqual (ppr expr'))
 
 
   SendStop -> return Stop 
 
   -- Precondition here: Hole has already been entered
   CaseFurther var ClientState {} -> do
-    SlickState {..} <- gReadRef stRef
+    MoteState {..} <- gReadRef stRef
     FileData {path, hsModule} <- getFileDataErr stRef
     hi@(HoleInfo {holeEnv})   <- holeInfo <$> getCurrentHoleErr stRef
 
     (id, ty) <- maybeThrow (NoVariable var) $
       List.find (\(id,_) -> var == occNameToString (getOccName id)) holeEnv
 
-    expansions (occNameToString (getOccName id)) ty (holeSpan hi) hsModule >>= \case
+    expansions stRef (occNameToString (getOccName id)) ty (holeSpan hi) hsModule >>= \case
       Nothing                        -> return (Error "Variable not found")
       Just ((L sp _mg, mi), matches) -> do
         fs <- lift getSessionDynFlags
+        unqual <- lift getPrintUnqual
         let span              = toSpan sp
             indentLevel       = subtract 1 . snd . fst $ span
             indentTail []     = error "indentTail got []"
             indentTail (s:ss) = s : map (replicate indentLevel ' ' ++) ss
 
             showMatch :: HsMatchContext RdrName -> Match RdrName (LHsExpr RdrName) -> String
-            showMatch ctx = showSDocForUser fs neverQualify . pprMatch ctx
+            showMatch ctx = showSDocForUser fs unqual . pprMatch ctx
         return $ case mi of
           Equation (L _l name) ->
             Replace (toSpan sp) path . unlines . indentTail $
@@ -295,7 +182,7 @@ respond' stRef = \case
               map (showMatch CaseAlt) matches
 
           SingleLambda _loc ->
-            Error "TODO: SingleLambda"
+            Error "SingleLambda case expansion not yet implemented"
 
   CaseOn exprStr (ClientState {..}) -> do
     expr <- parseExpr exprStr
@@ -305,21 +192,30 @@ respond' stRef = \case
     ty <- getEnclosingHole stRef cursorPos >>= \case
       Nothing -> hsExprType expr
       Just hi -> inHoleEnv typecheckedModule (holeInfo hi) $ tcRnExprTc expr
-    ms <- matchesForType ty
+    let (line, col) = cursorPos
+    ms <- matchesForTypeAt stRef ty (mkSrcLoc (fsLit "") line col)
+
+    indentLevel <- liftIO $
+      LB8.length . LB8.takeWhile (== ' ') . (!! (line - 1)) . LB8.lines <$> LB8.readFile path
+
     fs <- lift getSessionDynFlags
+    unqual <- lift getPrintUnqual
     let indent n  = (replicate n ' ' ++)
-        showMatch = showSDocForUser fs neverQualify . pprMatch (CaseAlt :: HsMatchContext RdrName)
+        showMatch = showSDocForUser fs unqual . pprMatch (CaseAlt :: HsMatchContext RdrName)
     return
       . Insert cursorPos path
       . unlines
-      $ ("case " ++ exprStr ++ " of") : map (indent 2 . showMatch) ms
+      $ ("case " ++ exprStr ++ " of") : map (indent (2 + fromIntegral indentLevel) . showMatch) ms
 
   -- every message should really send current file name (ClientState) and
   -- check if it matches the currently loaded file
   GetType e -> do
     fs <- lift getSessionDynFlags
     x  <- exprType e
-    return . SetInfoWindow . showSDocForUser fs neverQualify $ ppr x
+    unqual <- lift getPrintUnqual
+    return . SetInfoWindow . showSDocForUser fs unqual $ ppr x
+
+  Search {} -> return Ok -- TODO
 
 showM :: (GhcMonad m, Outputable a) => a -> m String
 showM = showSDocM . ppr
@@ -327,14 +223,14 @@ showM = showSDocM . ppr
 main :: IO ()
 main = do
   home <- getHomeDirectory
-  withFile (home </> "slickserverlog") WriteMode $ \logFile -> do
+  withFile (home </> ".moteserverlog") WriteMode $ \logFile -> do
     stRef <- newRef =<< initialState logFile
     hSetBuffering logFile NoBuffering
     hSetBuffering stdout NoBuffering
     hPutStrLn logFile "Testing, testing"
     runGhc (Just libdir) $ do
       -- ghcInit stRef
-      Slick.Init.init stRef >>= \case
+      Mote.Init.init stRef >>= \case
         Left err -> liftIO $ do
           LB8.putStrLn (encode (Error err))
           exitWith (ExitFailure 1)
@@ -352,8 +248,8 @@ main = do
             liftIO $ hPutStrLn logFile ("Giving: " ++ show resp)
             liftIO $ LB8.putStrLn (encode resp)
 
-initialState :: Handle -> IO SlickState
-initialState logFile = mkSplitUniqSupply 'x' >>| \uniq -> SlickState
+initialState :: Handle -> IO MoteState
+initialState logFile = mkSplitUniqSupply 'x' >>| \uniq -> MoteState
   { fileData = Nothing
   , currentHole = Nothing
   , argHoles = S.empty
@@ -362,23 +258,29 @@ initialState logFile = mkSplitUniqSupply 'x' >>| \uniq -> SlickState
   , uniq
   }
 
-testStateRef :: IO (Ref SlickState)
-testStateRef = do
-  h <- openFile "testlog" WriteMode
-  newRef =<< initialState h
-
-runWithTestRef :: (Ref SlickState -> Ghc b) -> IO b
+runWithTestRef :: (Ref MoteState -> Ghc b) -> IO b
 runWithTestRef x = do
   home <- getHomeDirectory
-  withFile (home </> "prog/slick/testlog") WriteMode $ \logFile -> do
+  withFile (home </> "testlog") WriteMode $ \logFile -> do
     r <- newRef =<< initialState logFile
-    run $ do { ghcInit r; x r }
+    run $ do { ghcInit; x r }
+  where
+  ghcInit = do
+    dfs <- getSessionDynFlags
+    void . setSessionDynFlags . withFlags [DynFlags.Opt_DeferTypeErrors] $ dfs
+      { hscTarget  = HscInterpreted
+      , ghcLink    = LinkInMemory
+      , ghcMode    = CompManager
+      , traceLevel = 10
+      }
+    where
+    withFlags fs dynFs = foldl DynFlags.gopt_set dynFs fs
 
 runWithTestRef' x = do
   home <- getHomeDirectory
-  withFile (home </> "prog/slick/testlog") WriteMode $ \logFile -> do
+  withFile (home </> "prog/mote/testlog") WriteMode $ \logFile -> do
     r <- newRef =<< initialState logFile
-    run $ do { Slick.Init.init r; x r }
+    run $ do { Mote.Init.init r; x r }
 
 run :: Ghc a -> IO a
 run = runGhc (Just libdir)

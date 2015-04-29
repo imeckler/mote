@@ -1,8 +1,16 @@
-" should be something like: call slick#register()
-call slick#start()
+call mote#start()
 
 " Possible key bindings:
-" nnoremap <leader>n :call slick#nextHole()<cr>:call slick#getEnv()<cr>
-" nnoremap <leader>p :call slick#prevHole()<cr>:call slick#getEnv()<cr>
-" nnoremap <leader>e :call slick#getEnv()<cr>
-" nnoremap <leader>l :call slick#loadCurrentFile()<cr>
+" nnoremap <leader>n :call mote#nextHole()<cr>:call mote#getEnv()<cr>
+" nnoremap <leader>p :call mote#prevHole()<cr>:call mote#getEnv()<cr>
+" nnoremap <leader>e :call mote#getEnv()<cr>
+" nnoremap <leader>l :MoteLoadCurrentFile<cr>
+" autocmd BufWritePost *.hs MoteLoadCurrentFile
+"
+" or
+"
+" nnoremap <Esc>e :call mote#nextHole()<cr>:call mote#getEnv()<cr>
+" nnoremap <Esc>n :call mote#prevHole()<cr>:call mote#getEnv()<cr>
+" nnoremap <Esc>r :call mote#prevHole()<cr>:MoteRefine 
+" nnoremap <Esc>l :MoteLoadCurrentFile <cr>
+
