@@ -108,7 +108,7 @@ respond' stRef = \case
           then mkSuggsJSON <$> Mote.Suggest.getAndMemoizeSuggestions stRef ahi
           else return []
         return $
-          JSON . Aeson.object $
+          HoleInfoJSON . Aeson.object $
             [ "environment" .= map (\(x, t) -> Aeson.object ["name" .= x, "type" .= t]) env
             , "goal" .= Aeson.object ["name" .= holeNameString hi, "type" .= showType fs (holeType hi) ]
             ]

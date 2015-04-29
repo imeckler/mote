@@ -12,7 +12,7 @@ type Span = (Pos, Pos)
 
 data ToClient
   = Replace Span FilePath String
-  | JSON Value
+  | HoleInfoJSON Value
   | Insert Pos FilePath String
   | SetInfoWindow String
   | SetCursor Pos
@@ -30,7 +30,7 @@ instance ToJSON ToClient where
     Error t         -> tag "Error" [toJSON t]
     Stop            -> tag "Stop" []
     Insert pos p t  -> tag "Insert" [toJSON pos, toJSON p, toJSON t]
-    JSON v          -> tag "JSON" [toJSON v]
+    HoleInfoJSON v  -> tag "HoleInfoJSON" [toJSON v]
     where tag :: String -> [Value] -> Value
           tag name values = Array . V.fromList $ toJSON name : values
 
@@ -77,7 +77,7 @@ data FromClient
 
 instance FromJSON FromClient where
   parseJSON = \case
-    Array a                                     -> case V.toList a of
+    Array a                                   -> case V.toList a of
       [String "Load", String path]              -> return (Load (T.unpack path))
       [String "CaseFurther", String var, state] -> CaseFurther (T.unpack var) <$> parseJSON state
       [String "CaseOn", String expr, state]     -> CaseOn (T.unpack expr) <$> parseJSON state
