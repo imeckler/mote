@@ -79,7 +79,10 @@ innerArgs t = case splitAppTys t of
 
 matchInnerArgs :: Type -> Type -> TcRn [RefineMatch]
 matchInnerArgs goalTy ty = mapMaybeM (refineMatch goalTy) (innerArgs ty)
+-- fmap catMaybes . sequence . map (refineMatch goalTy) . innerArgs ty
 
+-- discardConstraints . fmap catMaybes . forM (holeEnv hi) $ \(id, ty) -> score True goalTy ty (getName id)
+-- discardConstraints . fmap catMaybes . sequence . map (\(id, ty) -> score True goalTy ty (getName id)) $ (holeEnv hi)
 score :: Bool -> Type -> Type -> Name -> TcRn (Maybe (Score, (Name, Type)))
 score hole goalTy ty n = do
   let loc       = if hole then Hole else locality n

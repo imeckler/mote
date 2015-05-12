@@ -4,6 +4,7 @@ import subprocess
 import json
 import os.path
 import select
+import re
 
 # This doesn't work in vim 7.3. Window doesn't have a "valid" attribute,
 # among other things
@@ -13,6 +14,27 @@ import select
 
 log    = open(os.path.join(os.path.expanduser('~'), '.motelog'), 'w', 0)
 reader = None
+
+# returns (x, s') where x is the result and s' is the remaining string
+def parse_functor(s):
+  s = s.strip()
+  if s[0] == '{':
+    (x, s1) = parse_functor(s[1:])
+    if s1[0] == '}':
+      return (x, s1[1:])
+    else:
+      raise Exception('Bad parse')
+  else:
+    [x, rest] = s.split(' ', 1)
+    return (x, rest)
+
+def parse_functor_list(s):
+  res = []
+  while s:
+    (x, s1) = parse_functor(s)
+    res.push(x)
+    s = s1
+  return x
 
 def get_client_state():
   (l, c)      = vim.current.window.cursor
