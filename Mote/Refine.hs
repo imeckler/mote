@@ -113,6 +113,7 @@ refine stRef eStr = do
               HsLit {}     -> True
               HsPar {}     -> True
               EWildPat     -> True
+              ArithSeq {}  -> True
               _            -> False
       in
       return $ if isArg && not atomic then noLoc (HsPar expr') else expr'

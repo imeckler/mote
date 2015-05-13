@@ -19,6 +19,7 @@ executable mote
   main-is: Mote.hs
   build-depends:       base >= 4.7 && < 4.8,
                        containers >= 0.5,
+                       bifunctors >= 4.2.1,
                        unordered-containers >= 0.2,
                        hashable >= 1.2,
                        vector >= 0.10.12.2,

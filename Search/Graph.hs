@@ -1,6 +1,6 @@
 {-# LANGUAGE RecordWildCards, NamedFieldPuns, LambdaCase,
              ScopedTypeVariables, BangPatterns, ViewPatterns,
-             TupleSections #-}
+             TupleSections, DeriveFunctor #-}
 module Search.Graph where
 
 import Prelude hiding (sequence)
@@ -21,16 +21,14 @@ import qualified Data.List as List
 import Control.Arrow (first)
 import Data.Either (isRight)
 
-import Data.Aeson
 import Data.Monoid
-import qualified Data.ByteString.Lazy as BL
-import qualified Data.Text as T
 
 import Data.Hashable
 import qualified Data.HashSet as HashSet
 import qualified Data.HashMap.Strict as HashMap
 
-type BraidState f = [f]
+import Search.Util
+
 type BraidView  f = ([f], [f])
 
 -- TODO: Perhaps add the ability to filter the results by those which
@@ -45,6 +43,11 @@ data Vert
   | Dummy DummyVertex
   deriving (Show, Eq, Ord)
 
+data OrIntoTheVoid a
+  = Alive a
+  | IntoTheVoid
+  deriving (Show, Eq, Ord, Functor)
+
 -- We occasionally require this representation. Notably in
 -- connectedComponents (and we could have used it in
 -- isomorphic/hashWithSaltGraph).
@@ -56,35 +59,38 @@ data UnambiguousVert
 data InOrOut = In | Out
   deriving (Show, Eq, Ord)
 
-type Vertex        = Int
-type DummyVertex   = Vertex
-data VertexData f = VertexData
+type Vertex         = Int
+type DummyVertex    = Vertex
+data VertexData f o = VertexData
   { label    :: TransName
   -- We store both the incoming and the outgoing vertices (in the proper
   -- order!) at every vertex to make traversal and obtaining the bimodal
   -- ordering easier. 
-  , incoming :: [(Vert, f)]
-  , outgoing :: [(Vert, f)]
+  , incoming :: Word (Vert, f) (Vert, o)
+  -- In principle I should also store voided outgoing vertices. In that
+  -- case the type of outgoing should be Word (Vert, f) (Either o [f])
+  , outgoing :: Word (Vert, f) (Vert, o) 
+--  [(OrIntoTheVoid Vert, f)]
   }
   deriving (Show, Eq)
 -- Invariant: The incoming dummys are labeled 0 to incomingCount - 1 and
 -- the outgoing dummys are labeled 0 to outgoingCount - 1
-data NaturalGraph f = NaturalGraph
-  { incomingLabels :: [f]
-  , incomingSuccs  :: Map DummyVertex Vert
+data NaturalGraph f o = NaturalGraph
+  { incomingLabels :: Word f o
+  , incomingSuccs  :: Map DummyVertex (OrIntoTheVoid Vert)
   , incomingCount  :: Int
 
   , outgoingPreds  :: Map DummyVertex Vert
   , outgoingCount  :: Int
 
-  , digraph        :: Map Vertex (VertexData f)
+  , digraph        :: Map Vertex (VertexData f o)
   }
   deriving (Show)
 
-instance Hashable f => Eq (NaturalGraph f) where
+instance (Hashable f, Hashable o) => Eq (NaturalGraph f o) where
   (==) g1 g2 = hashWithSalt 0 g1 == hashWithSalt 0 g2 && hashWithSalt 10 g1 == hashWithSalt 10 g2
 
-instance Hashable f => Hashable (NaturalGraph f) where
+instance (Hashable f, Hashable o) => Hashable (NaturalGraph f o) where
   hashWithSalt = hashWithSaltGraph
 
 -- Any stray vertex is reachable from a vertex that has no incoming edges.
@@ -98,13 +104,27 @@ deleteStrayVertices ng = ng { digraph = go g possibleStrays } where
         then go (deleteFrom acc comp) (deleteFrom remaining' comp)
         else go acc (deleteFrom remaining' comp)
 
-  possibleStrays = M.filter (\vd -> length (incoming vd) == 0) g
+  possibleStrays = M.filter (\vd -> wordLength (incoming vd) == 0) g
   g              = digraph ng
   isStray        = S.fold (\x r -> case x of {UDummy {} -> False; _ -> r}) True 
   deleteFrom acc = S.fold (\x h -> case x of {UReal r -> M.delete r h; _ -> h}) acc
 
+{-
+deleteStrayVertices' :: NaturalGraph f o -> NaturalGraph f o
+deleteStrayVertices' ng = ng { digraph = go g possibleStrays } where
+  go acc remaining =
+    case M.minViewWithKey remaining of
+      Nothing -> acc
+      Just ((r, _vd), remaining') ->
+        let comp = componentOf (UReal r) ng in
+        _
 
-connectedComponents :: NaturalGraph f -> [[UnambiguousVert]]
+  g              = digraph ng
+  possibleStrays = M.filter (\vd -> length (incoming vd) =  = 0) g
+  isStray        = S.fold (\x r -> case x of {UDummy
+-}
+
+connectedComponents :: NaturalGraph f o -> [[UnambiguousVert]]
 connectedComponents ng = go [] vs
   where
   go acc remaining = case S.maxView remaining of
@@ -152,7 +172,7 @@ componentOf v ng = go (S.singleton v) [v] where
   outPreds = outgoingPreds ng
   g        = digraph ng
 
-moveToGraph :: Move f -> NaturalGraph f
+moveToGraph :: Move f o -> NaturalGraph f o
 moveToGraph (ls, t, rs) =
   NaturalGraph
   { incomingLabels = ls ++ from t ++ rs
@@ -182,7 +202,7 @@ moveToGraph (ls, t, rs) =
   nt_i = length (from t)
   nt_o = length (to t)
 
-idGraph :: [f] -> NaturalGraph f
+idGraph :: [f] -> NaturalGraph f o
 idGraph fs =
   NaturalGraph
   { incomingLabels = fs
@@ -199,19 +219,34 @@ idGraph fs =
 -- vertices are created and destroyed
 -- vertex N for each natural transformation
 
-splittings :: [f] -> [([f],[f])]
-splittings = go [] where
-  go pre l@(f : fs) = (reverse pre, l) : go (f:pre) fs
-  go pre [] = [(reverse pre, [])]
-
+wordViews :: Word f o -> [WordView f o]
+wordViews w@(Word fs mo) =
+  concatMap (\(pre, post0) ->
+    End pre (Word post0 mo)
+    : map (\(mid,post) -> Middle pre mid (Word post mo)) (splittings post0))
+    (splittings fs)
+  {-
+  End (fs, mo) () :
+  concatMap (\(pre, post0) ->
+    map (\(mid,post) -> Middle pre mid (post, mo)) (splittings post0))
+    (splittings fs)
+    -}
+  where
+  splittings :: [f] -> [([f],[f])]
+  splittings = go [] where
+    go pre l@(f : fs) = (reverse pre, l) : go (f:pre) fs
+    go pre [] = [(reverse pre, [])]
+{-
 fineViews :: [f] -> [([f], [f], [f])]
 fineViews = concatMap (\(pre, post) -> map (\(x,y) -> (pre,x,y)) (splittings post)) . splittings
+-}
 
+{-
 tryRewrite :: Eq f => Trans f -> BraidView f -> Maybe (BraidState f, Move f)
 tryRewrite t@(Trans {from, to}) (pre, fs) = case leftFromRight from fs of
   Nothing  -> Nothing
   Just fs' -> Just (pre ++ to ++ fs', (pre, t, fs'))
-
+-}
 -- Consider using hash table to jump to possible moves rather than trying all
 -- of them. Note that this essentially requires looping over all substrings
 -- of the current BraidState. If the BraidState is small compared to the
@@ -221,17 +256,75 @@ tryRewrite t@(Trans {from, to}) (pre, fs) = case leftFromRight from fs of
 branchOut :: Eq f => [Trans f] -> BraidState f -> [(BraidState f, Move f)]
 branchOut ts b = concatMap (\v -> mapMaybe (\t -> tryRewrite t v) ts) (braidViews b)
 -}
-branchOut :: (Eq f, Hashable f) => HashMap.HashMap [f] [Trans f] -> BraidState f -> [(BraidState f, Move f)]
-branchOut ts = concatMap possibilities . fineViews where
-  possibilities (pre, foc, post) =
+branchOut
+  :: (Eq f, Hashable f)
+  => HashMap.HashMap (Word f o) [Trans f o]
+  -> Word f o
+  -> [(Word f o, Move f o)]
+branchOut ts = concatMap possibilities . wordViews
+  where
+  possibilities :: WordView f o -> [(Word f o, Move f o)]
+  possibilities wv = map newWordAndMove matches
+    where
+    matches = fromMaybe [] (HashMap.lookup focus ts)
+
+    -- TODO: Can reduce branching by computing pre <> focus <> post inside
+    -- the case
+
+    -- TODO: Types not as tight as they could be. These cases really belong
+    -- in separate functions
+    (focus, newWordAndMove) = case wv of
+      Middle pre foc post ->
+        ( Word foc Nothing
+        , \t ->
+          (Word pre Nothing <> to t <> post, Middle pre t post)
+        )
+
+      End pre foc ->
+        ( foc
+        , \t ->
+          ( Word pre Nothing <> to t, End pre t)
+        )
+
+{-
+      YesOMid pre foc post o -> 
+        ( Word foc Nothing
+        , \t ->
+          (Word pre Nothing <> to t <> Word post (Just o), YesOMid pre t post o)
+        )
+
+      YesOEnd pre fsFoc o () ->
+        ( Word fsFoc (Just o)
+        , \t ->
+          let Word fs mo = to t
+              move = case mo of
+                Just o' -> YesOEnd pre 
+          in
+          (Word (pre ++ fs) mo, case mo of { Just o' -> _ } )
+        )
+ -}   
+    {- case wv of
+      FocusTail pre w      -> (Word pre Nothing, w, mempty)
+      FocusMid pre fs post -> (Word pre Nothing, Word fs Nothing, post)
+      FocusEnd _ o         -> (, Word [] (Just o), mempty) -}
+
+  {-
+  (pre, foc, post) =
     let matches = fromMaybe [] (HashMap.lookup foc ts) in
     map (\t -> (pre ++ to t ++ post, (pre, t, post))) matches
+    -}
 -- concatMap (\v -> mapMaybe (\t -> tryRewrite t v) ts) (braidViews b)
 
 -- TODO: Convert real Haskell programs into lists of moves
 -- TODO: Analyze program graphs
 
-graphsOfSizeAtMost :: (Hashable f, Ord f) => [Trans f] -> Int -> BraidState f -> BraidState f -> [NaturalGraph f]
+graphsOfSizeAtMost
+  :: (Hashable f, Ord f, Hashable o, Ord o)
+  => [Trans f o]
+  -> Int
+  -> Word f o
+  -> Word f o
+  -> [NaturalGraph f o]
 graphsOfSizeAtMost tsList n start end = map deleteStrayVertices . HashSet.toList $ runST $ do
   arr <- newSTArray (0, n) M.empty
   go arr n start
@@ -259,7 +352,10 @@ graphsOfSizeAtMost tsList n start end = map deleteStrayVertices . HashSet.toList
         Just ps -> return ps
 
 -- Search with heuristics
-graphsOfSizeAtMostH :: (Hashable f, Ord f) => [Trans f] -> Int -> BraidState f -> BraidState f -> [NaturalGraph f]
+graphsOfSizeAtMostH
+  :: (Hashable f, Ord f, Hashable o, Ord o)
+  => [Trans f o] -> Int -> Word f o -> Word f o
+  -> [NaturalGraph f o]
 graphsOfSizeAtMostH tsList n start end = map deleteStrayVertices . HashSet.toList $ runST $ do
   arr <- newSTArray (0, n) M.empty
   fmap HashSet.unions . forM (branchOut ts start) $ \(b', move@(_, t,_)) ->
@@ -298,7 +394,9 @@ graphsOfSizeAtMostH tsList n start end = map deleteStrayVertices . HashSet.toLis
 
       Just ps -> return ps
 
-juxtapose :: NaturalGraph f -> NaturalGraph f -> NaturalGraph f
+{-
+TODO: Rewrite this function to work with the new changes
+juxtapose :: NaturalGraph f o -> NaturalGraph f o -> NaturalGraph f o
 juxtapose ng1 ng2 =
   NaturalGraph
   { incomingLabels = incomingLabels ng1 ++ incomingLabels ng2
@@ -324,9 +422,7 @@ juxtapose ng1 ng2 =
   g1 = digraph ng1
   g2 = digraph ng2
   n1 = M.size g1
-
-findMap :: (a -> Maybe b) -> [a] -> Maybe b
-findMap f = foldr (\x r -> case f x of { Just y -> Just y; _ -> r }) Nothing
+-}
 
 -- TODO: Remove incomingCount. It's just M.size incomingSuccs
 
@@ -354,13 +450,8 @@ renderTerm = \case
 
 renderAnnotatedTerm = renderTerm . unannotatedTerm
 
-toTerm :: NaturalGraph f -> AnnotatedTerm
+toTerm :: NaturalGraph f o -> AnnotatedTerm
 toTerm = toTerm' . compressPaths
-
-lastMay :: [a] -> Maybe a
-lastMay []     = Nothing
-lastMay [x]    = Just x
-lastMay (_:xs) = lastMay xs
 
 -- Three cases:
 -- There are incoming vertices
@@ -370,7 +461,7 @@ lastMay (_:xs) = lastMay xs
 data TopOrBottom = Top | Bottom deriving (Eq, Show)
 
 data GoodVertexType = FloatingRightOf Int | AttachedTo DummyVertex
-toTerm' :: NaturalGraph f -> AnnotatedTerm
+toTerm' :: NaturalGraph f o -> AnnotatedTerm
 toTerm' ng0 = case findGoodVertex ng of
   Nothing -> AnnotatedTerm Id 0
   Just (Top, (leftStrands, vGood, vGoodData)) ->
@@ -613,7 +704,7 @@ dropComponentStraights ng =
   in
   ng { incomingSuccs = incoming', outgoingPreds = outgoing' }
 
-countAndDropFMapStraights :: NaturalGraph f -> (Int, NaturalGraph f)
+countAndDropFMapStraights :: NaturalGraph f o -> (Int, NaturalGraph f o)
 countAndDropFMapStraights ng =
   let numFMapStraights =
         length $ takeWhile (\((_dumIn, inSucc), (dumOut, outPred)) -> case (inSucc, outPred) of
@@ -634,62 +725,9 @@ countAndDropFMapStraights ng =
   , ng { incomingSuccs = incoming', outgoingPreds = outgoing', digraph = g' }
   )
 
-checkGraph :: Show f => NaturalGraph f -> Either String ()
-checkGraph ng = do
-  throwIfNot "Incoming bad" $ all (uncurry (==)) $ zip [0..] (M.keys (incomingSuccs ng))
-  throwIfNot "Outgoing bad" $ all (uncurry (==)) $ zip [0..] (M.keys (outgoingPreds ng))
-  forM_ (M.toList (incomingSuccs ng)) $ \(dum, ve) ->
-    case ve of
-      Dummy d ->
-        throwIfNot "Dummy out didn't agree with dummy in" $
-          M.lookup d (outgoingPreds ng) == Just (Dummy dum)
-      Real r -> do
-        vd <- lookupThrow r g
-        throwIfNot "Out suc didn't think it was coming in" $
-          Dummy dum `elem` map fst (incoming vd)
-
-  forM_ (M.toList (outgoingPreds ng)) $ \(dum, ve) ->
-    case ve of
-      Dummy d ->
-        throwIfNot "Dummy out didn't agree with dummy in" $
-          M.lookup d (incomingSuccs ng) == Just (Dummy dum)
-      Real r -> do
-        vd <- lookupThrow r g
-        throwIfNot "Out suc didn't think it was coming in" $
-          Dummy dum `elem` map fst (outgoing vd)
-
-  forM_ (M.toList g) $ \(v, vd) -> do
-    forM_ (incoming vd) $ \(ve, _) -> case ve of
-      Dummy d ->
-        throwIfNot ("Disagreement: " ++ show v ++ " has pred Dummy " ++ show d ++ " but Dummy does not have it as suc") $
-          M.lookup d (incomingSuccs ng) == Just (Real v)
-
-      Real r -> do
-        vd' <- lookupThrow r g
-        throwIfNot "Am I Not your neighbor" $
-          Real v `elem` map fst (outgoing vd')
-
-    forM_ (outgoing vd) $ \(ve, _) -> case ve of
-      Dummy d ->
-        throwIfNot ("Disagreement: " ++ show v ++ " has suc Dummy " ++ show d ++ " but Dummy does not have it as pred") $
-          M.lookup d (outgoingPreds ng) == Just (Real v)
-
-      Real r -> do
-        vd' <- lookupThrow r g
-        throwIfNot "Am I Not your neighbor" $
-          Real v `elem` map fst (incoming vd')
-  where
-  lookupThrow r g = case M.lookup r g of
-    Nothing -> Left ("I got nothing for: " ++ show r)
-    Just x  -> Right x
-
-  throwIf e x  = if x then Left e else Right ()
-  throwIfNot e = throwIf e . not
-  g = digraph ng
-
 -- TODO: This breaks the assumption that internal vertices are labelled 0..n, but I don't
 -- think I ever use that assumption
-compressPaths :: NaturalGraph f -> NaturalGraph f
+compressPaths :: NaturalGraph f o -> NaturalGraph f o
 compressPaths ng = let g' = evalState (go $ digraph ng) (S.empty, []) in ng { digraph = g' }
   where
   outPreds = outgoingPreds ng
@@ -731,7 +769,7 @@ compressPaths ng = let g' = evalState (go $ digraph ng) (S.empty, []) in ng { di
 -- isomorphic graphs will hash to the same value
 -- TODO: There's either a bug in this or in isomorphic. There are more
 -- unique hashes then the length of the nub by isomorphic
-hashWithSaltGraph :: Hashable f => Int -> NaturalGraph f -> Int
+hashWithSaltGraph :: (Hashable f, Hashable o) => Int -> NaturalGraph f o -> Int
 hashWithSaltGraph s ng =
   let vs         = M.elems $ incomingSuccs ng
       (s', _, _) = execState go (s, S.fromList vs, vs)
@@ -749,23 +787,23 @@ hashWithSaltGraph s ng =
       (Real v : next') -> do
         let Just vd    = M.lookup v g
             s'         = s `hashWithSalt` label vd
-            (s'', new) = foldl f' (foldl f (s',[]) (incoming vd)) (outgoing vd)
+            (s'', new) = foldWord f' f' (foldWord f f (s',[]) (incoming vd)) (outgoing vd) -- foldl f' (foldl f (s',[]) (incoming vd)) (outgoing vd)
             pushed'    = foldl (\s x -> S.insert x s) pushed new
         put (s'', pushed', new ++ next')
         go
         where
-        f (!salt, !xs) (x,lab) =
+        f (x,lab) (!salt, !xs) =
           ( salt `hashWithSalt` lab
           , case x of { Dummy _ -> xs; _ -> if x `S.member` pushed then xs else (x:xs) })
 
-        f' (!salt, !xs) (x,lab) =
+        f' (x,lab) (!salt, !xs)  =
           ( salt `hashWithSalt` lab
           , if x `S.member` pushed then xs else (x:xs) )
 
 -- all we need to do is use something more canonical for Vertex IDs and
 -- isomorphism becomes equality. perhaps some coordinates involving the
 -- length of the shortest path to the vertex?
-isomorphic :: NaturalGraph f -> NaturalGraph f -> Bool
+isomorphic :: NaturalGraph f o -> NaturalGraph f o -> Bool
 isomorphic ng1 ng2
   | incomingCount ng1 /= incomingCount ng1 || outgoingCount ng1 /= outgoingCount ng2  = False
   | otherwise =
@@ -826,71 +864,8 @@ shiftBy n g =
   where
   shiftEs = map (\(v,f) -> (case v of {Real r -> Real (r + n); _ -> v}, f))
 
-idName i = "net" ++ show i
-
-graphToJSON :: NaturalGraph String -> Value
-graphToJSON (NaturalGraph {..}) = 
-  object
-  [ T.pack "nodes" .= nodes
-  , T.pack "edges" .= edges
-  ]
-  where
-  nodeObj id lab col  = object [T.pack "id" .= id, T.pack "label" .= lab , T.pack "color" .= col ]
-  edgeObj from to lab =
-    object
-    [ T.pack "from" .= from
-    , T.pack "to" .= to
-    , T.pack "label" .= lab
-    , T.pack "style" .= "arrow"
-    ]
-  nodes =
-    map (\i -> nodeObj ("in" ++ show i) "" "green") [0..(incomingCount - 1)]
-    ++ map (\i -> nodeObj ("out" ++ show i) "" "red") [0..(outgoingCount - 1)]
-    ++ map (\(i, vd) -> nodeObj ("real" ++ show i) (label vd) "gray") (M.toList digraph)
-
-  edges =
-    concatMap (\(v, vd) -> map (\(u,f) ->
-      edgeObj ("real" ++ show v)
-        (case u of { Real r -> "real" ++ show r; Dummy d -> "out" ++ show d })
-        f) (outgoing vd))
-      (M.toList digraph)
-    ++ map (\(lab, (i, vert)) -> 
-        let v = case vert of {Dummy d -> "out" ++ show d; Real r -> "real" ++ show r} in
-        edgeObj ("in" ++ show i) v lab)
-        (zip incomingLabels $ M.toList incomingSuccs)
-
-graphToJS id ng = mconcat
-  [ "network = new vis.Network("
-  , "document.getElementById(" ,  show id , "),"
-  , map (toEnum . fromEnum) . BL.unpack $ encode (graphToJSON ng)
-  , ",{});"
-  ]
-
-graphsToHTML ngs =
-  let js = unlines $ zipWith graphToJS (map idName [0..]) ngs
-  in
-  unlines
-  [ "<html>"
-  , "<head>"
-  ,   "<style type='text/css'>"
-  ,   ".network { width: 500px; height:500px; }"
-  ,   "</style>"
-  ,   "<script type='text/javascript' src='vis.min.js'></script>"
-  ,   "<script type='text/javascript'>" ++ "function draw(){" ++ js ++ "}" ++ "</script>"
-  , "</head>"
-  , "<body onload='draw()'>"
-  ,   unlines $ zipWith (\i ng ->
-        "<div>"
-        ++ "<div class='network' id=" ++ show (idName i) ++ "></div>" 
-        ++ "<div>" ++ renderAnnotatedTerm (toTerm ng) ++ "</div>"
-        ++ "</div>"
-        ) [0..] ngs
-  , "</body>"
-  , "</html>"
-  ]
-
 -- ng1 -> ng2
-sequence :: NaturalGraph f -> NaturalGraph f -> NaturalGraph f
+sequence :: NaturalGraph f o -> NaturalGraph f o -> NaturalGraph f o
 sequence ng1 ng2 =
   NaturalGraph
   { incomingLabels = incomingLabels ng1
@@ -906,7 +881,6 @@ sequence ng1 ng2 =
   g1  = digraph ng1
   g2  = digraph ng2
   g2' = shiftBy n1 g2
---  M.map (\(t, es) -> (t, map (\(v, f) -> (case v of {Real r -> Real (r+n1); _ -> v}, f)) es)) g2
   n1  = M.size g1
 
   outPreds1 = outgoingPreds ng1
@@ -971,15 +945,22 @@ sequence ng1 ng2 =
 
 updateNeighborListAtAll x v es = map (\e@(y,f) -> if x == y then (v, f) else e) es
 
+{-
 updateIncomingAtAll i v vd = vd { incoming = updateNeighborListAtAll i v (incoming vd) }
 updateOutgoingAtAll i v vd = vd { outgoing = updateNeighborListAtAll i v (outgoing vd) }
+-}
 
 updateNeighborListAtFirst x v = \case
   []          -> []
   e@(y, f):es -> if y == x then (v, f) : es else e : updateNeighborListAtFirst x v es
 
-updateIncomingAtFirst x v vd = vd { incoming = updateNeighborListAtFirst x v (incoming vd) }
-updateOutgoingAtFirst x v vd = vd { outgoing = updateNeighborListAtFirst x v (outgoing vd) }
+updateNeighborWordAtFirst x v (Word fs mo) =
+  case mo of
+    Nothing     -> Word (updateNeighborListAtFirst x v fs) Nothing
+    Just (y, o) -> if y == x then Word fs (Just (v,o)) else Word (updateNeighborListAtFirst x v fs) mo
+
+updateIncomingAtFirst x v vd = vd { incoming = updateNeighborWordAtFirst x v (incoming vd) }
+updateOutgoingAtFirst x v vd = vd { outgoing = updateNeighborWordAtFirst x v (outgoing vd) }
 
 contiguous (x:xs@(y:_)) = y == x + 1 && contiguous xs
 contiguous _            = True
@@ -991,6 +972,60 @@ leftFromRight (x : xs) (y : ys)
   | otherwise = Nothing
 leftFromRight [] ys = Just ys
 
+{-
+checkGraph :: (Show o, Show f) => NaturalGraph f o -> Either String ()
+checkGraph ng = do
+  throwIfNot "Incoming bad" $ all (uncurry (==)) $ zip [0..] (M.keys (incomingSuccs ng))
+  throwIfNot "Outgoing bad" $ all (uncurry (==)) $ zip [0..] (M.keys (outgoingPreds ng))
+  forM_ (M.toList (incomingSuccs ng)) $ \(dum, ve) ->
+    case ve of
+      Dummy d ->
+        throwIfNot "Dummy out didn't agree with dummy in" $
+          M.lookup d (outgoingPreds ng) == Just (Dummy dum)
+      Real r -> do
+        vd <- lookupThrow r g
+        throwIfNot "Out suc didn't think it was coming in" $
+          Dummy dum `elem` map fst (incoming vd)
+
+  forM_ (M.toList (outgoingPreds ng)) $ \(dum, ve) ->
+    case ve of
+      Dummy d ->
+        throwIfNot "Dummy out didn't agree with dummy in" $
+          M.lookup d (incomingSuccs ng) == Just (Dummy dum)
+      Real r -> do
+        vd <- lookupThrow r g
+        throwIfNot "Out suc didn't think it was coming in" $
+          Dummy dum `elem` map fst (outgoing vd)
+
+  forM_ (M.toList g) $ \(v, vd) -> do
+    forM_ (incoming vd) $ \(ve, _) -> case ve of
+      Dummy d ->
+        throwIfNot ("Disagreement: " ++ show v ++ " has pred Dummy " ++ show d ++ " but Dummy does not have it as suc") $
+          M.lookup d (incomingSuccs ng) == Just (Real v)
+
+      Real r -> do
+        vd' <- lookupThrow r g
+        throwIfNot "Am I Not your neighbor" $
+          Real v `elem` map fst (outgoing vd')
+
+    forM_ (outgoing vd) $ \(ve, _) -> case ve of
+      Dummy d ->
+        throwIfNot ("Disagreement: " ++ show v ++ " has suc Dummy " ++ show d ++ " but Dummy does not have it as pred") $
+          M.lookup d (outgoingPreds ng) == Just (Real v)
+
+      Real r -> do
+        vd' <- lookupThrow r g
+        throwIfNot "Am I Not your neighbor" $
+          Real v `elem` map fst (incoming vd')
+  where
+  lookupThrow r g = case M.lookup r g of
+    Nothing -> Left ("I got nothing for: " ++ show r)
+    Just x  -> Right x
+
+  throwIf e x  = if x then Left e else Right ()
+  throwIfNot e = throwIf e . not
+  g = digraph ng
+-}
 -- UTIL
 -- lookupExn :: Ord k => k -> M.Map k v -> v
 lookupExn k = fromMaybe (error ("M.lookup failed for key: " ++ show k)) . M.lookup k
