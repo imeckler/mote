@@ -1011,4 +1011,3 @@ checkGraph ng = do
 -}
 -- UTIL
 -- lookupExn :: Ord k => k -> M.Map k v -> v
-lookupExn k = fromMaybe (error ("M.lookup failed for key: " ++ show k)) . M.lookup k
