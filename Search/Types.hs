@@ -6,7 +6,7 @@ import Data.Hashable
 import Data.Aeson
 import GHC.Generics
 import Data.Bifunctor
-import Search.Word
+import Search.Types.Word
 
 -- (fs, t, gs) = fmap_{fs} (t at gs)
 type Move f o = InContext f o (Trans f o) (Trans f o)

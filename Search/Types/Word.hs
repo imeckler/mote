@@ -1,5 +1,5 @@
 {-# LANGUAGE DeriveGeneric #-}
-module Search.Graph.Types.Word where
+module Search.Types.Word where
 
 import Data.Hashable
 import Data.Bifunctor

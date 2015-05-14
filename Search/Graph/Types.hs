@@ -8,8 +8,12 @@ import qualified Data.Map as M
 import qualified Data.Set as S
 import Control.Monad.State
 import Data.Maybe
-import qualified Search.Graph.Types.Word as Word
-import Search.Graph.Types.Word (Word)
+import qualified Search.Types.Word as Word
+import Search.Types.Word (Word)
+import qualified Search.Graph.Types.NeighborList
+import Search.Graph.Types.NeighborList (NeighborList(..))
+import Search.Graph.Types.Vertex
+import qualified Data.List as List
 
 data VertexData f o = VertexData
   { label    :: TransName
@@ -69,12 +73,36 @@ hashWithSaltGraph s ng =
 
       (Clear (Real v) : next') -> do
         let Just vd    = M.lookup v g
-            s'         = s `hashWithSalt` label vd
-            (s'', new) = Word.fold f' f' (Word.fold f f (s',[]) (incoming vd)) (outgoing vd) -- foldl f' (foldl f (s',[]) (incoming vd)) (outgoing vd)
-            pushed'    = foldl (\s x -> S.insert x s) pushed new
-        put (s'', pushed', map Clear new ++ next')
+            s0         = s `hashWithSalt` label vd
+
+            (s1, new0) =
+              case incoming vd of
+                WithFogged pre w ->
+                  let (s', new') = List.foldl' (flip f) (s0, []) pre
+                  in
+                  (Word.fold (flip hashWithSalt) (flip hashWithSalt) s' w, new')
+
+                NoFogged w -> Word.fold f f (s0, []) w
+            
+            -- Word.fold f' f' (Word.fold f f (s',[]) (incoming vd)) (outgoing vd)
+            -- -- foldl f' (foldl f (s',[]) (incoming vd)) (outgoing vd)
+
+            (s2, new1) =
+              case outgoing vd of
+                WithFogged pre w ->
+                  let (s', new') = List.foldl' (flip f') (s1,new0) pre
+                  in
+                  (Word.fold (flip hashWithSalt) (flip hashWithSalt) s' w, new')
+
+                NoFogged w -> Word.fold f' f' (s1,new0) w
+
+            pushed'    = foldl (\s x -> S.insert x s) pushed new1
+        put (s2, pushed', map Clear new1 ++ next')
         go
         where
+        -- slideDown :: NeighborList f o -> (Int, [Vert]) -> (Int, [Vert])
+
+        -- We don't push incoming dummies.
         f :: Hashable a => (Vert, a) -> (Int, [Vert]) -> (Int, [Vert])
         f (x,lab) (!salt, !xs) =
           ( salt `hashWithSalt` lab
