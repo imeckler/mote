@@ -30,7 +30,7 @@ import Search.Util
 import Search.Types
 import Search.Graph.Types
 import qualified Search.Word as Word
-import Search.Word (Word(Word), InContext(..))
+import Search.Word (Word(Word), InContext(..), View(..))
 
 -- TODO: Perhaps add the ability to filter the results by those which
 -- satisfy some test cases.
@@ -77,18 +77,21 @@ componentOf v ng = go (S.singleton v) [v] where
 
           UDummy In d ->
             case lookupExn d inSuccs of
-              IntoTheVoid -> go seen q
-              Alive ambigSuc ->
+              CoveredInFog -> go seen q
+              Clear ambigSuc ->
                 let suc         = disambiguate Out ambigSuc
                     (q', seen') = if suc `S.member` seen then (q, seen) else (suc : q, S.insert suc seen)
                 in
                 go seen' q'
 
           UDummy Out d ->
-            let pred = disambiguate In (lookupExn d outPreds)
-                (q', seen') = if pred `S.member` seen then (q, seen) else (pred : q, S.insert pred seen)
-            in
-            go seen' q'
+            case lookupExn d outPreds of
+              CoveredInFog -> go seen q
+              Clear ambigPred ->
+                let pred = disambiguate Out ambigPred
+                    (q', seen') = if pred `S.member` seen then (q, seen) else (pred : q, S.insert pred seen)
+                in
+                go seen' q'
 
   inSuccs          = incomingSuccs ng
   outPreds         = outgoingPreds ng
@@ -117,20 +120,22 @@ moveToGraph move = case move of
   Middle pre t post ->
     let (postSucc, trailingOuts) =
           case Word.end (to t) of
-            Nothing -> (\i -> Alive (Dummy (nl + nt_o + i)), nr)
-            Just _  -> (\_ -> IntoTheVoid, 0)
+            Nothing ->
+              (\i -> Clear (Dummy (nl + nt_o + i)), nr)
+            Just _  ->
+              (\_ -> CoveredInFog, 0)
     in
     NaturalGraph
     { incomingLabels = Word pre Nothing <> from t <> post
     , incomingSuccs = M.fromList $
-        map (\i -> (i, Alive $ Dummy i)) [0..(nl - 1)]
-        ++ map (\i -> (i, Alive $ Real 0)) [nl..(nl + nt_i - 1)]
+        map (\i -> (i, Clear $ Dummy i)) [0..(nl - 1)]
+        ++ map (\i -> (i, Clear $ Real 0)) [nl..(nl + nt_i - 1)]
         ++ map (\i -> (nl + nt_i + i, postSucc i))  [0..(nr - 1)]
 
     , outgoingPreds = M.fromList $
-        map (\i -> (i, Dummy i)) [0..(nl - 1)]
-        ++ map (\i -> (i, Real 0)) [nl..(nl + nt_o - 1)]
-        ++ map (\i -> (nl + nt_o + i, Dummy (nl + nt_i + i))) [0..(trailingOuts - 1)]
+        map (\i -> (i, Clear $ Dummy i)) [0..(nl - 1)]
+        ++ map (\i -> (i, Clear $ Real 0)) [nl..(nl + nt_o - 1)]
+        ++ map (\i -> (nl + nt_o + i, Clear $ Dummy (nl + nt_i + i))) [0..(trailingOuts - 1)]
 
     , digraph = M.fromList
       [ ( 0
@@ -147,8 +152,8 @@ moveToGraph move = case move of
       ]
     }
     where
-    nl = length pre
-    nr = Word.length post
+    nl   = length pre
+    nr   = Word.length post
     nt_i = Word.length (from t)
     nt_o = Word.length (to t)
 
@@ -160,12 +165,12 @@ moveToGraph move = case move of
     { incomingLabels = Word pre Nothing <> from t
 
     , incomingSuccs = M.fromList $
-        map (\i -> (i, Alive $ Dummy i)) [0..(nl - 1)]
-        ++ map (\i -> (i, Alive $ Real 0)) [nl..(nl + nt_i - 1)]
+        map (\i -> (i, Clear $ Dummy i)) [0..(nl - 1)]
+        ++ map (\i -> (i, Clear $ Real 0)) [nl..(nl + nt_i - 1)]
 
     , outgoingPreds = M.fromList $
-        map (\i -> (i, Dummy i)) [0..(nl - 1)]
-        ++ map (\i -> (i, Real 0)) [nl..(nl + nt_o - 1)]
+        map (\i -> (i, Clear $ Dummy i)) [0..(nl - 1)]
+        ++ map (\i -> (i, Clear $ Real 0)) [nl..(nl + nt_o - 1)]
 
     , digraph = M.fromList
         [ ( 0
@@ -193,43 +198,21 @@ idGraph :: [f] -> NaturalGraph f o
 idGraph fs =
   NaturalGraph
   { incomingLabels = Word fs Nothing
-  , incomingSuccs = M.fromList $ map (\i -> (i, Alive $ Dummy i)) [0..n]
-  , outgoingPreds = M.fromList $ map (\i -> (i, Dummy i)) [0..n]
+  , incomingSuccs = M.fromList $ map (\i -> (i, Clear $ Dummy i)) [0..n]
+  , outgoingPreds = M.fromList $ map (\i -> (i, Clear $ Dummy i)) [0..n]
   , digraph = M.empty
   }
   where
   n = length fs - 1
 
-
-{-
-fineViews :: [f] -> [([f], [f], [f])]
-fineViews = concatMap (\(pre, post) -> map (\(x,y) -> (pre,x,y)) (splittings post)) . splittings
--}
-
-{- begin debug
-{-
-tryRewrite :: Eq f => Trans f -> BraidView f -> Maybe (BraidState f, Move f)
-tryRewrite t@(Trans {from, to}) (pre, fs) = case leftFromRight from fs of
-  Nothing  -> Nothing
-  Just fs' -> Just (pre ++ to ++ fs', (pre, t, fs'))
--}
--- Consider using hash table to jump to possible moves rather than trying all
--- of them. Note that this essentially requires looping over all substrings
--- of the current BraidState. If the BraidState is small compared to the
--- number of Transes (which it likely will be in practice), this should be
--- a win.
-{-
-branchOut :: Eq f => [Trans f] -> BraidState f -> [(BraidState f, Move f)]
-branchOut ts b = concatMap (\v -> mapMaybe (\t -> tryRewrite t v) ts) (braidViews b)
--}
 branchOut
-  :: (Eq f, Hashable f)
+  :: (Eq f, Hashable f, Eq o, Hashable o)
   => HashMap.HashMap (Word f o) [Trans f o]
   -> Word f o
   -> [(Word f o, Move f o)]
-branchOut ts = concatMap possibilities . wordViews
+branchOut ts = concatMap possibilities . Word.views
   where
-  possibilities :: WordView f o -> [(Word f o, Move f o)]
+  -- possibilities :: Word.View f o -> [(Word f o, Move f o)]
   possibilities wv = map newWordAndMove matches
     where
     matches = fromMaybe [] (HashMap.lookup focus ts)
@@ -242,46 +225,198 @@ branchOut ts = concatMap possibilities . wordViews
 
     -- Invariant : focus == from t
     (focus, newWordAndMove) = case wv of
-      Middle pre foc post ->
+      NoO pre foc post ->
         ( Word foc Nothing
         , \t ->
-          (Word pre Nothing <> to t <> post, Middle pre t post)
+          (Word pre Nothing <> to t <> Word post Nothing, Middle pre t (Word post Nothing))
         )
 
-      End pre foc ->
-        ( foc
-        , \t ->
-          ( Word pre Nothing <> to t, End pre t)
-        )
-
-{-
-      YesOMid pre foc post o -> 
+      -- YesOMid and NoO can be unified with Middle, but it is a bit confusing.
+      YesOMid pre foc post o ->
         ( Word foc Nothing
         , \t ->
-          (Word pre Nothing <> to t <> Word post (Just o), YesOMid pre t post o)
+          (Word pre Nothing <> to t <> Word post (Just o), Middle pre t (Word post (Just o)))
         )
 
-      YesOEnd pre fsFoc o () ->
-        ( Word fsFoc (Just o)
+      YesOEnd pre (foc, o) ->
+        ( Word foc (Just o)
         , \t ->
-          let Word fs mo = to t
-              move = case mo of
-                Just o' -> YesOEnd pre 
-          in
-          (Word (pre ++ fs) mo, case mo of { Just o' -> _ } )
+          (Word pre Nothing <> to t, End pre t)
         )
- -}   
-    {- case wv of
-      FocusTail pre w      -> (Word pre Nothing, w, mempty)
-      FocusMid pre fs post -> (Word pre Nothing, Word fs Nothing, post)
-      FocusEnd _ o         -> (, Word [] (Just o), mempty) -}
 
-  {-
-  (pre, foc, post) =
-    let matches = fromMaybe [] (HashMap.lookup foc ts) in
-    map (\t -> (pre ++ to t ++ post, (pre, t, post))) matches
-    -}
--- concatMap (\v -> mapMaybe (\t -> tryRewrite t v) ts) (braidViews b)
+-- Es importante que no cambia (incomingDummys ng1) o
+-- (outgoingDummys ng2)
+
+shiftBy n g =
+  M.map (\vd -> vd { incoming = shiftEs (incoming vd), outgoing = shiftEs (outgoing vd) })
+  $ M.mapKeysMonotonic (+ n) g
+  where
+  shift   = first $ \v -> case v of {Real r -> Real (r + n); _ -> v}
+  shiftEs = bimap shift shift
+
+spreadFog :: NaturalGraph f o -> NaturalGraph f o
+spreadFog ng =
+  _
+  where
+  ((dummyMay,hitConst), (toDelete,_)) =
+    runState (travelUpTheRightCoast _) (S.empty, S.empty)
+
+  (outPreds0, g0) =
+    -- TODO: Possibly ineffecient. Use Map x () instead of Set so we can do
+    -- Map.difference
+    S.fold (\ve (outPreds', g') ->
+      case ve of
+        Dummy d ->
+          (M.insert d CoveredInFog outPreds', g')
+        Real r ->
+          (outPreds', M.delete r g')
+        )
+        (outgoingPreds ng, g)
+        toDelete
+
+  (outPred1, g1) = 
+    ( outPreds0 -- I think this is right...If the outpred of d was added to toDelete, then d was too
+    , M.map (\vd ->
+        _
+        )
+        g0 
+    )
+
+  -- State is things to speculatively delete on the right and things which
+  -- we know we should delete on the left.
+  -- The Bool is whether or not we actually traversed a constant functor edge 
+  -- in our journey to the top right. If we did, we should delete
+  -- everything to the right of the dummy.
+  travelUpTheRightCoast :: Vert -> State (S.Set Vert, S.Set Vert) (Maybe DummyVertex, Bool)
+  travelUpTheRightCoast ve = case ve of
+    Dummy d ->
+      return (Just d)
+
+    Real r -> do
+      result@(dummyMay,_) <-
+        case mConst of
+          Nothing ->
+            loop vs
+
+          Just (v,_) -> do
+            (safe, speculative) <- get
+            put (S.union safe speculative, S.empty)
+            (md, _) <- travelUpTheRightCoast v
+            return (md, True)
+
+      case dummyMay of
+        -- If all children fail, we should speculatively delete the current
+        -- vertex.
+        Nothing -> do
+          (safe, speculative) <- get
+          put (safe, S.insert ve speculative)
+
+        Just _ ->
+          return ()
+
+      return result
+      where
+      Word vs mConst = incoming (lookupExn r g)
+
+    where
+    loop = \case
+      [] -> do
+        (safe, speculative) <- get
+--        put (safe, S.insert ve speculative)
+        return Nothing
+
+      (v, _) : vs ->
+        travelUpTheRightCoast v >>= \res@(md,_) -> case md of
+          Just _ -> return res
+          Nothing -> loop vs
+
+  g = digraph ng
+
+data FunctorType = Constant | NonConstant
+
+{- begin debug
+-- ng1 -> ng2
+sequence :: NaturalGraph f o -> NaturalGraph f o -> NaturalGraph f o
+sequence ng1 ng2 =
+  NaturalGraph
+  { incomingLabels = incomingLabels ng1
+  , incomingSuccs  = incomingSuccs'
+
+  , outgoingPreds  = outgoingPreds'
+
+  , digraph        = digraph'
+  }
+  where
+  g1  = digraph ng1
+  g2  = digraph ng2
+  g2' = shiftBy n1 g2
+  n1  = M.size g1
+
+  outPreds1 = outgoingPreds ng1
+  inSuccs2  = incomingSuccs ng2
+
+  (replacements, outgoingPreds', incomingSuccs') =
+    foldl upd
+      ( M.empty
+      , M.map (\case {Real v -> Real (n1+v); x -> x}) (outgoingPreds ng2)
+      , incomingSuccs ng1)
+      [0..(M.size outPreds1)]
+
+  digraph' =
+    M.foldWithKey (\r (io, rep) g ->
+      let replace = first $ \x -> case M.lookup x rep of
+            Nothing -> x
+            Just x' -> x'
+      in
+      case io of
+        In  -> M.adjust (\vd -> vd { incoming = map replace (incoming vd) }) r g
+        Out -> M.adjust (\vd -> vd { outgoing = map replace (outgoing vd) }) r g)
+      (M.union g1 g2')
+      replacements 
+
+  -- There should really be a few pictures describing what this code does.
+
+--  replacements :: Map RealVertex (InOrOut, Map Vert Vert)
+    
+  upd (replacements, 
+
+  -- TODO: Basically do the smae thing as before, then go "up and to the
+  -- right from the rightmost outgoing dummy of the bottom graph and then
+  -- mist out everything to the right
+  upd (replacements, outPreds, inSuccs) i =
+    case (M.lookup i outPreds1, M.lookup i inSuccs2) of
+      (Just x, Just y) -> case (x, y) of
+        (Real u, Real v)    ->
+          let v' = v + n1 in
+          ( M.insertWith merge u (Out, M.singleton (Dummy i) (Real v'))
+            $ M.insertWith merge v' (In, M.singleton (Dummy i) (Real u))
+            $ replacements
+          , outPreds
+          , inSuccs
+          )
+
+        (Real u, Dummy d)   ->
+          ( M.insertWith merge u (Out, M.singleton (Dummy i) (Dummy d)) replacements
+          , M.insert d (Real u) outPreds
+          , inSuccs
+          )
+
+        (Dummy d, Real v)   ->
+          let v' = v + n1 in
+          ( M.insertWith merge v' (In, M.singleton (Dummy i) (Dummy d)) replacements
+          , outPreds
+          , M.insert d (Real v') inSuccs
+          )
+
+        (Dummy d, Dummy d') ->
+          ( replacements
+          , M.insert d' (Dummy d) outPreds
+          , M.insert d (Dummy d') inSuccs
+          )
+
+      _ -> (replacements, outPreds, inSuccs) -- TODO: This should throw an error actually
+      where
+      merge (io, replacements) (_io', replacements') = (io, M.union replacements replacements')
 
 -- TODO: Convert real Haskell programs into lists of moves
 -- TODO: Analyze program graphs
@@ -790,93 +925,6 @@ isomorphic ng1 ng2
     zipErr xs ys =
       if length xs == length ys then return (zip xs ys) else throwError "zipErr"
 
--- Es importante que no cambia (incomingDummys ng1) o
--- (outgoingDummys ng2)
-
-shiftBy n g =
-  M.map (\vd -> vd { incoming = shiftEs (incoming vd), outgoing = shiftEs (outgoing vd) })
-  $ M.mapKeysMonotonic (+ n) g
-  where
-  shiftEs = map (\(v,f) -> (case v of {Real r -> Real (r + n); _ -> v}, f))
-
--- ng1 -> ng2
-sequence :: NaturalGraph f o -> NaturalGraph f o -> NaturalGraph f o
-sequence ng1 ng2 =
-  NaturalGraph
-  { incomingLabels = incomingLabels ng1
-  , incomingSuccs  = incomingSuccs'
-  , incomingCount  = incomingCount ng1
-
-  , outgoingPreds  = outgoingPreds'
-  , outgoingCount  = outgoingCount ng2
-
-  , digraph        = digraph'
-  }
-  where
-  g1  = digraph ng1
-  g2  = digraph ng2
-  g2' = shiftBy n1 g2
-  n1  = M.size g1
-
-  outPreds1 = outgoingPreds ng1
-  inSuccs2  = incomingSuccs ng2
-
-  (replacements, outgoingPreds', incomingSuccs') =
-    foldl upd
-      ( M.empty
-      , M.map (\case {Real v -> Real (n1+v); x -> x}) (outgoingPreds ng2)
-      , incomingSuccs ng1)
-      [0..(M.size outPreds1)]
-
-  digraph' =
-    M.foldWithKey (\r (io, rep) g ->
-      let replace = first $ \x -> case M.lookup x rep of
-            Nothing -> x
-            Just x' -> x'
-      in
-      case io of
-        In  -> M.adjust (\vd -> vd { incoming = map replace (incoming vd) }) r g
-        Out -> M.adjust (\vd -> vd { outgoing = map replace (outgoing vd) }) r g)
-      (M.union g1 g2')
-      replacements 
-
-  -- There should really be a few pictures describing what this code does.
-
---  replacements :: Map RealVertex (InOrOut, Map Vert Vert)
-  upd (replacements, outPreds, inSuccs) i =
-    case (M.lookup i outPreds1, M.lookup i inSuccs2) of
-      (Just x, Just y) -> case (x, y) of
-        (Real u, Real v)    ->
-          let v' = v + n1 in
-          ( M.insertWith merge u (Out, M.singleton (Dummy i) (Real v'))
-            $ M.insertWith merge v' (In, M.singleton (Dummy i) (Real u))
-            $ replacements
-          , outPreds
-          , inSuccs
-          )
-
-        (Real u, Dummy d)   ->
-          ( M.insertWith merge u (Out, M.singleton (Dummy i) (Dummy d)) replacements
-          , M.insert d (Real u) outPreds
-          , inSuccs
-          )
-
-        (Dummy d, Real v)   ->
-          let v' = v + n1 in
-          ( M.insertWith merge v' (In, M.singleton (Dummy i) (Dummy d)) replacements
-          , outPreds
-          , M.insert d (Real v') inSuccs
-          )
-
-        (Dummy d, Dummy d') ->
-          ( replacements
-          , M.insert d' (Dummy d) outPreds
-          , M.insert d (Dummy d') inSuccs
-          )
-
-      _ -> (replacements, outPreds, inSuccs) -- TODO: This should throw an error actually
-      where
-      merge (io, replacements) (_io', replacements') = (io, M.union replacements replacements')
 
 updateNeighborListAtAll x v es = map (\e@(y,f) -> if x == y then (v, f) else e) es
 
