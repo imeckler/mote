@@ -8,8 +8,8 @@ import qualified Search.Types.Word as Word
 
 -- If an edge is foggy then every edge to its right should be as well
 data NeighborList f o
-  = WithFogged [(Vert, f)] (Word f o) -- technically this Word f o should be nonempty
-  | NoFogged (Word (Vert, f) (Vert, o))
+  = WithFogged [(OrBoundary Vertex, f)] (Word f o) -- technically this Word f o should be nonempty
+  | NoFogged (Word (OrBoundary Vertex, f) (OrBoundary Vertex, o))
   deriving (Show, Eq, Ord)
 
 -- Mote was awesome for this instance

@@ -1,15 +1,18 @@
-{-# LANGUAGE BangPatterns, LambdaCase #-}
+{-# LANGUAGE BangPatterns, LambdaCase, NamedFieldPuns #-}
 module Search.Graph.Types 
   ( VertexData (..)
   , NaturalGraph (..)
+  , EdgeID
+  , EdgeData (..)
   , module Search.Graph.Types.Vertex
   ) where
 
 import Search.Types
 import Data.Hashable
+import qualified Data.Map as Map
 import Data.Map (Map)
-import qualified Data.Map as M
-import qualified Data.Set as S
+import qualified Data.Set as Set
+import Data.Set (Set)
 import Control.Monad.State
 import Data.Maybe
 import qualified Search.Types.Word as Word
@@ -18,6 +21,7 @@ import qualified Search.Graph.Types.NeighborList
 import Search.Graph.Types.NeighborList (NeighborList(..))
 import Search.Graph.Types.Vertex
 import qualified Data.List as List
+import Data.Bifunctor
 
 data VertexData f o = VertexData
   { label    :: TransName
@@ -28,6 +32,7 @@ data VertexData f o = VertexData
   , outgoing :: NeighborList f o
   }
   deriving (Show, Eq)
+{-
 -- Invariant: The incoming dummys are labeled 0 to incomingCount - 1 and
 -- the outgoing dummys are labeled 0 to outgoingCount - 1
 data NaturalGraph f o = NaturalGraph
@@ -41,6 +46,22 @@ data NaturalGraph f o = NaturalGraph
   , digraph        :: Map Vertex (VertexData f o)
   }
   deriving (Show)
+-}
+type EdgeID = Int
+
+data EdgeData = EdgeData 
+  { source :: OrBoundary (Foggy Vertex)
+  , sink   :: OrBoundary (Foggy Vertex)
+  }
+
+data NaturalGraph f o = NaturalGraph
+  { top     :: NeighborList (EdgeID, f) (EdgeID, o)
+  , bottom  :: NeighborList (EdgeID, f) (EdgeID, o)
+  , digraph :: Map Vertex (VertexData (EdgeID, f) (EdgeID, o))
+  , edges   :: Map EdgeID EdgeData
+  }
+
+-- It is convenient for edges to have ids. 
 
 instance (Hashable f, Hashable o) => Eq (NaturalGraph f o) where
   (==) g1 g2 = hashWithSalt 0 g1 == hashWithSalt 0 g2 && hashWithSalt 10 g1 == hashWithSalt 10 g2
@@ -48,72 +69,50 @@ instance (Hashable f, Hashable o) => Eq (NaturalGraph f o) where
 instance (Hashable f, Hashable o) => Hashable (NaturalGraph f o) where
   hashWithSalt = hashWithSaltGraph
 
--- isomorphic graphs will hash to the same value
--- TODO: There's either a bug in this or in isomorphic. There are more
--- unique hashes then the length of the nub by isomorphic
 hashWithSaltGraph :: (Hashable f, Hashable o) => Int -> NaturalGraph f o -> Int
-hashWithSaltGraph s ng =
-  let vs         = M.elems $ incomingSuccs ng
-      (s', _, _) =
-        execState go
-        ( s
-        , S.fromList (mapMaybe (\case {Clear v -> Just v; _ -> Nothing}) vs)
-        , vs
-        )
-  in s'
+hashWithSaltGraph s_orig ng =
+  let
+    vs = fromNeighborList (top ng)
+    (s', _, _) = execState go (s_orig, Set.fromList (map fst vs), vs)
+  in
+  s'
   where
-  g  = digraph ng
-  -- TODO: Possibly the states should just be S.Set Vert
-  go :: State (Int, S.Set Vert, [Foggy Vert]) ()
+  go :: State (Int, Set (OrBoundary Vertex), [(OrBoundary Vertex, Either f o)]) ()
   go = do
-    (s, pushed, next) <- get
+    (s, pushed, next) <- get -- :: State (Int, Set (OrBoundary Vertex), [OrBoundary Vertex])(Int, Set (OrBoundary Vertex), [(OrBoundary Vertex, f)])
     case next of
-      []                -> return ()
+      [] -> return ()
 
-      CoveredInFog : next' -> put (s `hashWithSalt` (0::Int), pushed, next')
+       -- boundary means bottom in this function
+      (Boundary, lab) : next' ->
+        let
+          s' = s `hashWithSalt` lab
 
-      (Clear (Dummy d) : next') ->
-        put (s `hashWithSalt` d, pushed, next') >> go
+          toPush = filter (\(bv,_) -> bv `Set.member` pushed) (fromNeighborList (bottom ng))
+        in
+        put (s', List.foldl' (flip Set.insert) pushed (map fst toPush), toPush ++ next')
 
-      (Clear (Real v) : next') -> do
-        let Just vd    = M.lookup v g
-            s0         = s `hashWithSalt` label vd
+      (Inner v, lab) : next' ->
+        let
+          Just (VertexData { label, incoming, outgoing }) =
+            Map.lookup v g
 
-            (s1, new0) =
-              case incoming vd of
-                WithFogged pre w ->
-                  let (s', new') = List.foldl' (flip f) (s0, []) pre
-                  in
-                  (Word.fold (flip hashWithSalt) (flip hashWithSalt) s' w, new')
+          s' =
+            (s `hashWithSalt` lab) `hashWithSalt` label
 
-                NoFogged w -> Word.fold f f (s0, []) w
-            
-            -- Word.fold f' f' (Word.fold f f (s',[]) (incoming vd)) (outgoing vd)
-            -- -- foldl f' (foldl f (s',[]) (incoming vd)) (outgoing vd)
+          toPush =
+            filter (\(bv, _) -> bv `Set.member` pushed) (fromNeighborList incoming ++ fromNeighborList outgoing)
+        in
+        put (s', List.foldl' (flip Set.insert) pushed (map fst toPush), toPush ++ next')
 
-            (s2, new1) =
-              case outgoing vd of
-                WithFogged pre w ->
-                  let (s', new') = List.foldl' (flip f') (s1,new0) pre
-                  in
-                  (Word.fold (flip hashWithSalt) (flip hashWithSalt) s' w, new')
+  fromNeighborList =
+    \case
+      WithFogged pre w ->
+        map (\(bv, (_,f)) -> (bv, Left f)) pre
 
-                NoFogged w -> Word.fold f' f' (s1,new0) w
+      NoFogged w ->
+        Word.toList $
+          bimap (\(bv,(_,f)) -> (bv, Left f)) (\(bv, (_,o)) -> (bv, Right o)) w
 
-            pushed'    = foldl (\s x -> S.insert x s) pushed new1
-        put (s2, pushed', map Clear new1 ++ next')
-        go
-        where
-        -- slideDown :: NeighborList f o -> (Int, [Vert]) -> (Int, [Vert])
-
-        -- We don't push incoming dummies.
-        f :: Hashable a => (Vert, a) -> (Int, [Vert]) -> (Int, [Vert])
-        f (x,lab) (!salt, !xs) =
-          ( salt `hashWithSalt` lab
-          , case x of { Dummy _ -> xs; _ -> if x `S.member` pushed then xs else x:xs })
-
-        f' :: Hashable a => (Vert, a) -> (Int, [Vert]) -> (Int, [Vert])
-        f' (x,lab) (!salt, !xs)  =
-          ( salt `hashWithSalt` lab
-          , if x `S.member` pushed then xs else x:xs )
+  g = digraph ng
 

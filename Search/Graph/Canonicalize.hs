@@ -9,6 +9,7 @@ import Search.Graph.Types
 import qualified Data.List as List
 import Data.Bifunctor
 import Data.Maybe
+import Data.Monoid
 
 import Control.Monad.State
 
@@ -16,6 +17,7 @@ import Search.Graph.Types.NeighborList (NeighborList(..))
 import qualified Search.Types.Word as Word
 import Search.Types.Word (Word(..))
 
+{-
 data ExplicitVert
   = Regular Vertex
   | Source
@@ -30,41 +32,26 @@ data StandardEdge =
   , sourceIndex :: Int -- the index of this edge in the ordering on the outgoing edges from the source
   }
   deriving (Eq, Ord, Show)
-
--- If only I had quotient types...
-
-Source -> Vertex with DummyVertex
-Source -> Fog with DummyVertex
-Source -> Sink with DummyVertex
-
-Vertex -> Vertex with sourceIndex
-Vertex -> Fog with sourceIndex
-Vertex -> Sink with sourceIndex (or DummyVertex, or both)
-
-Fog -> Fog
-Fog -> Sink with DummyVertex
-Fog -> Vertex with targetIndex
-
-data OrTheSpecialVertex a = SpecialVertex | Regular a
-
-type Source = OrTheSpecialVertex (Foggy Vertex)
-type Sink   = OrTheSpecialVertex (Foggy Vertex)
-
+ -}
 data FogTarget
   = FogToFog
-  | FogToRegular Int
+  | FogToRegular Vertex Int
   | FogToSink DummyVertex
+  deriving (Eq, Ord, Show)
 
 data RegularTarget
-  = RegularToFog Int
-  | RegularToRegular Vertex Int
+  = RegularToFog Vertex Int
+  | RegularToRegular Vertex Int -- source, source index
   | RegularToSink Int DummyVertex
+  deriving (Eq, Ord, Show)
 
 data TopTarget
   = TopToFog DummyVertex
   | TopToRegular DummyVertex Int
   | TopToSink DummyVertex DummyVertex
+  deriving (Eq, Ord, Show)
 
+-- If only I had quotient types...
 data Edge
   = FromTop TopTarget
   | FromRegular RegularTarget
@@ -94,8 +81,75 @@ data Wedge =
   , rightPath :: [Edge]
   }
 
-obliterateFrom :: NaturalGraph f o -> Edge -> NaturalGraph f o
-obliterateFrom ng0 e =
+obliterateFrom :: NaturalGraph f o -> EdgeID -> NaturalGraph f o
+obliterateFrom ng0 e0 =
+  Set.foldl' (\ng e ->
+    let EdgeData {source, sink} = lookupExn e
+    in
+    fogSource e source (fogSink e sink ng))
+    ng0
+    (edgesRightOf e0)
+
+  where
+  edgeInfo = edges ng0
+
+  fogSource :: EdgeID -> OrBoundary (Foggy Vertex) -> NaturalGraph f o -> NaturalGraph f o
+  fogSource e source ng =
+    case source of
+      Boundary ->
+        ng { top = fogAt e (top ng) }
+
+      Inner (Clear v) ->
+        ng { digraph = Map.adjust (\vd -> vd { outgoing = fogAt e (outgoing vd) }) v (digraph ng) }
+
+      Inner CoveredInFog ->
+        ng
+
+  fogSink :: EdgeID -> OrBoundary (Foggy Vertex) -> NaturalGraph f o -> NaturalGraph f o
+  fogSink e sink ng =
+    case sink of
+      Boundary ->
+        ng { bottom = fogAt e (bottom ng) }
+
+      Inner (Clear v) ->
+        ng { digraph = Map.adjust (\vd -> vd { incoming = fogAt e (incoming vd) }) v (digraph ng) }
+
+      Inner CoveredInFog ->
+        ng
+
+
+fogAt :: EdgeID -> NeighborList (EdgeID, f) (EdgeID, o) -> NeighborList (EdgeID, f) (EdgeID, o)
+fogAt = \e ns ->
+  case ns of
+    WithFogged fs w ->
+      case splitAt (\(_, (e',_)) -> e == e') fs of
+        Just (pre, fogged) ->
+          WithFogged pre (Word (map snd fogged) Nothing <> w)
+
+        Nothing -> ns
+
+    NoFogged (Word fs mo) ->
+      case splitAt (\(_, (e',_)) -> e == e') fs of
+        Just (pre, fogged) ->
+          WithFogged pre (Word (map snd fogged) mo)
+
+        Nothing ->
+          case mo of
+            Nothing ->
+              error "Search.Graph.Canonicalize.fogAt: inconsistent state. Got Nothing"
+
+            Just (bv, (e',o)) ->
+              if e /= e'
+              then error "Search.Graph.Canonicalize.fogAt: inconsistent state. e /= e'"
+              else WithFogged [] (Word (map snd fs) (Just (e', o)))
+
+  where
+  splitAt p xs = case xs of
+    [] -> Nothing
+    x : xs' -> if p x then Just ([], xs) else fmap (\(pre,ys) -> (x:pre,ys)) (splitAt p xs)
+
+
+{-
   Set.foldl' (\ng e ->
     case e of
       Standard (StandardEdge {source, sink, sourceIndex}) ->
@@ -113,7 +167,6 @@ obliterateFrom ng0 e =
       ToFog ev i -> ng -- already obliterated
     )
     ng0 (edgesRightOf ng0 e)
-
   where
   fogSource :: ExplicitVert -> Int -> NaturalGraph f o -> NaturalGraph f o
   fogSource source sourceIndex ng = case source of
@@ -161,6 +214,7 @@ obliterateFrom ng0 e =
         ng
 
       Source -> error "fogSink: Got sink = Source"
+-}
 
 
 reachability :: RightnessGraph -> Map Edge (Set Edge)
@@ -194,8 +248,10 @@ reachability = goTop Map.empty
               descs = List.foldl' (flip Set.insert) (Set.unions childrens'Descendants) children
           in
           (Map.insert e descs acc1, descs)
-          
-edgesRightOf :: NaturalGraph f o -> Edge -> Set Edge
+
+edgesRightOf :: NaturalGraph f o -> EdgeID -> Set EdgeID
+edgesRightOf = _
+{-
 edgesRightOf ng e
   | e `Set.member` topTendrils =
   -- If e is a top tendril and e' is a bottom tendril such that e is not
@@ -248,7 +304,7 @@ isRightOf rg e1 e2 = e1 /= e2 && dfs Set.empty [e1]
         else if e `Set.member` seen
         then dfs seen next'
         else dfs (Set.insert e seen) (lookupExn e rg ++ next')
-
+-}
 
 
 diamondRightnessgraph :: NaturalGraph f o -> RightnessGraph
@@ -268,6 +324,7 @@ diamondRightnessgraph ng =
 -- simpler.
 -- Returns
 -- (edges belonging to a from-top tendril, edges belonging to a from-bottom tendril)
+{-
 tendrils :: NaturalGraph f o -> (Set Edge, Set Edge)
 tendrils ng = (topTendrils, botTendrils)
   where
@@ -276,12 +333,15 @@ tendrils ng = (topTendrils, botTendrils)
       case fve of
         Clear ve -> return (Just (i,ve))
         CoveredInFog -> do
-          modify (\s -> Set.insert (ToFog Source i) s)
+          modify _ -- (\s -> Set.insert (ToFog Source i) s)
           return Nothing
 
-    topGoOnSuccs Source succs
+    topGoOnSuccs
+      (\dum v -> FromTop . TopToRegular dum $ findIndex g incoming (Dummy dum) v)
+      succs
+    where
 
-  topGoOnSuccs ev0 enumedSuccs =
+  topGoOnSuccs mkEdge enumedSuccs =
     fmap and $
       forM enumedSuccs $ \(i, suc) -> case suc of
         Dummy _ ->
@@ -290,9 +350,11 @@ tendrils ng = (topTendrils, botTendrils)
         Real v -> topTendrilous v >>= \case
           True -> do
             modify (\s ->
-              Set.insert
+              Set.insert 
+                (mkEdge i v)
+              {-
                 (Standard
-                  (StandardEdge {source=ev0, sink=Regular v, sourceIndex = i}))
+                  (StandardEdge {source=ev0, sink=Regular v, sourceIndex = i})) -}
                 s)
             return True
 
@@ -301,7 +363,9 @@ tendrils ng = (topTendrils, botTendrils)
   topTendrilous :: Vertex -> State (Set Edge) Bool
   topTendrilous v0 = do
     succs <- getSuccs
-    topGoOnSuccs (Regular v0) (zip [0..] succs)
+    topGoOnSuccs
+      (\i v -> FromRegular $ RegularToRegular v i)
+      (zip [0..] succs)
     where
     getSuccs :: State (Set Edge) [Vert]
     getSuccs =
@@ -311,22 +375,29 @@ tendrils ng = (topTendrils, botTendrils)
           let n = length pre
               nw = Word.length w
 
-          modify (\s0 -> List.foldl' (\s i -> Set.insert (ToFog (Regular v0) i) s) s0 [n..(n + nw - 1)])
+          modify (\s0 ->
+            List.foldl' (\s i ->
+              Set.insert (FromRegular $ RegularToFog v0 i) s)
+              s0
+              [n..(n + nw - 1)])
+
           return (map fst pre)
 
   botTendrils = flip execState Set.empty $ do
     preds <- fmap catMaybes . forM (Map.toList (outgoingPreds ng)) $ \(dum, fve) ->
       case fve of
-        Clear v -> return (Just v)
+        Clear v -> return (Just (dum, v))
         CoveredInFog -> do
-          modify (\s -> Set.insert (FromFog Sink dum) s)
+          modify (\s -> Set.insert (FromFog $ FogToSink dum) s) -- Set.insert (FromFog Sink dum) s)
           return Nothing
 
-    botGoOnPreds Sink preds
+    botGoOnPreds
+      (\dum v -> FromRegular $ RegularToSink dum (findIndex g outgoing (Dummy dum) v)
+      preds
 
-  botGoOnPreds ev0 preds =
+  botGoOnPreds mkEdge enumedPreds =
     fmap and $
-      forM preds $ \case
+      forM enumedPreds $ \(i,v) -> case v of
         Dummy _ ->
           return False
 
@@ -334,8 +405,9 @@ tendrils ng = (topTendrils, botTendrils)
           True -> do
             modify (\s ->
               Set.insert
-                (Standard
-                  (StandardEdge {source=Regular v,sink=ev0,sourceIndex=findSourceIndex g ev0 v}))
+                (mkEdge i v)
+                {- (Standard
+                  (StandardEdge {source=Regular v,sink=ev0,sourceIndex=findSourceIndex g ev0 v})) -}
               s)
             return True
 
@@ -346,22 +418,31 @@ tendrils ng = (topTendrils, botTendrils)
   botTendrilous :: Vertex -> State (Set Edge) Bool
   botTendrilous v0 = do
     preds <- getPreds
-    botGoOnPreds (Regular v0) preds
+    botGoOnPreds
+      (\i v -> FromRegular $ RegularToRegular v _) -- shiz
+--      (Regular v0) 
+      (zip [0..] preds)
     where
     getPreds :: State (Set Edge) [Vert]
     getPreds = 
       case incoming (lookupExn v0 g) of
-        NoFogged w -> return . Word.toList $ bimap fst fst w
+        NoFogged w ->
+          return . Word.toList $ bimap fst fst w
  
         WithFogged pre w -> do
           let n = length pre
               nw = Word.length w
 
-          modify (\s0 -> List.foldl' (\s i -> Set.insert (FromFog (Regular v0) i) s) s0 [n..(n + nw - 1)])
+          modify (\s0 ->
+            List.foldl' (\s i ->
+              Set.insert (FromFog $ FogToRegular v0 i) s)
+              s0
+              [n..(n + nw - 1)])
+
           return (map fst pre)
 
   g = digraph ng
-
+-}
 vees :: NaturalGraph f o -> [Wedge]
 vees = _
   where {-
@@ -384,6 +465,7 @@ carets = _
 
 -- clean up
 
+{-
 componentOf v ng = go (Set.singleton v) [v] where
   go seen q0 =
     case q0 of
@@ -443,7 +525,7 @@ deleteStrayVertices ng = ng { digraph = go g possibleStrays } where
   g              = digraph ng
   isStray        = Set.foldl' (\x r -> case x of {UDummy {} -> False; _ -> r}) True 
   deleteFrom acc = Set.foldl' (\x h -> case x of {UReal r -> Map.delete r h; _ -> h}) acc
-
+-}
 -- UTIL
 
 lookupExn :: Ord k => k -> Map k a -> a
@@ -452,16 +534,16 @@ lookupExn k m = case Map.lookup k m of
   Nothing -> error "lookupExn: Lookup failed"
 
 
+{-
 findSourceIndex g ev0 v =
   fromJust . List.findIndex (== ev0) . neighborListToExplicitVerts . outgoing $ lookupExn v g
-  where
+-}
 
-  neighborListToExplicitVerts :: NeighborList f o -> [ExplicitVert]
-  neighborListToExplicitVerts = \case
-    NoFogged w -> Word.toList $ bimap (vertToExplicitVert . fst) (vertToExplicitVert . fst) w
-    WithFogged pre _w -> map (vertToExplicitVert . fst) pre
+findIndex g inout ve0 v =
+  fromJust . List.findIndex (== ve0) . neighborListToExplicitVerts . inout $ lookupExn v g
 
-  vertToExplicitVert :: Vert -> ExplicitVert
-  vertToExplicitVert = \case
-    Dummy _ -> Sink
-    Real r -> Regular r
+neighborListToExplicitVerts :: NeighborList f o -> [Vert]
+neighborListToExplicitVerts = \case
+  NoFogged w -> Word.toList $ bimap fst fst w
+  WithFogged pre _w -> map fst pre
+
