@@ -42,6 +42,9 @@ map f = bimap f f
 end :: Word a o -> Maybe o
 end (Word _ mo) = mo
 
+beginning :: Word f o -> [f]
+beginning (Word xs _) = xs
+
 -- eh...
 zip :: Word f o -> Word g p -> Word (f, g) (o, p)
 zip (Word fs mo) (Word gs mp) = Word (Prelude.zip fs gs) (liftA2 (,) mo mp)

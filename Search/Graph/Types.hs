@@ -1,5 +1,9 @@
 {-# LANGUAGE BangPatterns, LambdaCase #-}
-module Search.Graph.Types where
+module Search.Graph.Types 
+  ( VertexData (..)
+  , NaturalGraph (..)
+  , module Search.Graph.Types.Vertex
+  ) where
 
 import Search.Types
 import Data.Hashable
