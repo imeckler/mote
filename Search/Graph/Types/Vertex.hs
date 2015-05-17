@@ -1,8 +1,8 @@
 {-# LANGUAGE DeriveFunctor #-}
 module Search.Graph.Types.Vertex where
 
-type Vertex         = Int
-type DummyVertex    = Vertex
+type Vertex      = Int
+type DummyVertex = Vertex
 
 -- In our context, we work with digraphs where some subsets of the edges
 -- are detached at one of their terminals. Specifically, there is a set
@@ -29,6 +29,6 @@ data OrBoundary a = Boundary | Inner a
 -- isomorphic/hashWithSaltGraph).
 data UnambiguousVert
   = UReal Vertex
-  | UDummy InOrOut DummyVertex
+  | UDummy InOrOut Int -- TODO: this Int should be EdgeID
   deriving (Show, Eq, Ord)
 

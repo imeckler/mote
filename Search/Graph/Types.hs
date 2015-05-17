@@ -12,6 +12,7 @@ import Data.Hashable
 import qualified Data.Map as Map
 import Data.Map (Map)
 import qualified Data.Set as Set
+import Data.Set (Set)
 import Control.Monad.State
 import qualified Search.Types.Word as Word
 import Search.Graph.Types.NeighborList (NeighborList(..))
@@ -47,15 +48,16 @@ data NaturalGraph f o = NaturalGraph
 type EdgeID = Int
 
 data EdgeData = EdgeData 
-  { source :: OrBoundary (Foggy Vertex)
-  , sink   :: OrBoundary (Foggy Vertex)
+  { source :: Foggy (OrBoundary Vertex)
+  , sink   :: Foggy (OrBoundary Vertex)
   }
 
 data NaturalGraph f o = NaturalGraph
-  { top     :: NeighborList (EdgeID, f) (EdgeID, o)
-  , bottom  :: NeighborList (EdgeID, f) (EdgeID, o)
-  , digraph :: Map Vertex (VertexData (EdgeID, f) (EdgeID, o))
-  , edges   :: Map EdgeID EdgeData
+  { top           :: NeighborList (EdgeID, f) (EdgeID, o)
+  , bottom        :: NeighborList (EdgeID, f) (EdgeID, o)
+  , digraph       :: Map Vertex (VertexData (EdgeID, f) (EdgeID, o))
+  , edges         :: Map EdgeID EdgeData
+  , constantEdges :: Set EdgeID -- For easy canonicalization
   }
 
 -- It is convenient for edges to have ids. 

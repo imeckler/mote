@@ -1,5 +1,5 @@
 {-# LANGUAGE LambdaCase, NamedFieldPuns, BangPatterns #-}
-module Canonicalize where
+module Search.Graph.Canonicalize where
 
 import qualified Data.Map as Map
 import Data.Map (Map)
@@ -16,7 +16,7 @@ import Control.Monad.State
 import Search.Graph.Types.NeighborList (NeighborList(..))
 import qualified Search.Types.Word as Word
 import Search.Types.Word (Word(..))
-import Search.Util (lastMay, headMay)
+import Search.Util -- (lastMay, headMay)
 
 {-
 data ExplicitVert
@@ -341,20 +341,18 @@ vees ng = wedges ng (bottom ng) incoming
 carets :: NaturalGraph f o -> [Wedge]
 carets ng = wedges ng (top ng) outgoing
 
-fromNeighborList :: NeighborList (EdgeID, f) (EdgeID, o) -> [(Foggy (OrBoundary Vertex), EdgeID)]
-fromNeighborList nl =
-  case nl of
-    WithFogged pre w ->
-      map (\(bv, (e,_)) -> (Clear bv, e)) pre
-      ++ Word.toList (bimap (\(e,_) -> (CoveredInFog, e)) (\(e,_) -> (CoveredInFog, e)) w)
-
-    NoFogged w -> 
-      let f (bv, (e,_)) = (Clear bv, e) in
-      Word.toList (bimap f f w)
 
 -- clean up
-
 {-
+componentOf :: Vertex -> 
+componentOf v ng = _
+  where
+  go :: [OrBoundary
+  go seen next0 =
+    case next0 of
+      [] -> seen
+      (
+
 componentOf v ng = go (Set.singleton v) [v] where
   go seen q0 =
     case q0 of
@@ -409,21 +407,63 @@ deleteStrayVertices ng = ng { digraph = go g possibleStrays } where
         if isStray comp
         then go (deleteFrom acc comp) (deleteFrom remaining' comp)
         else go acc (deleteFrom remaining' comp)
-
   possibleStrays = Map.filter (\vd -> Word.length (incoming vd) == 0) g
   g              = digraph ng
   isStray        = Set.foldl' (\x r -> case x of {UDummy {} -> False; _ -> r}) True 
   deleteFrom acc = Set.foldl' (\x h -> case x of {UReal r -> Map.delete r h; _ -> h}) acc
+
 -}
+
+deleteStrayVertices :: NaturalGraph f o -> NaturalGraph f o
+deleteStrayVertices ng =
+  ng
+  { edges = Map.filter notStrayEdge (edges ng)
+  , digraph = Set.foldl' (flip Map.delete) g nonStray  -- TODO: Use difference function
+  , constantEdges = Set.filter notStrayEdge (constantEdges ng)
+  }
+  where
+  nonStray = go Set.empty (map fst (fromNeighborList (top ng) ++ fromNeighborList (bottom ng)))
+
+  notStrayEdge (EdgeData {source,sink}) =
+    case (source, sink) of
+      (Inner CoveredInFog, Inner CoveredInFog) -> False
+      (Inner (Clear v), Inner (Clear v'))      -> (v `Set.member` nonStray) && (v' `Set.member` nonStray)
+      (Boundary, _)                            -> True
+      (_, Boundary)                            -> True
+
+  go :: Set Vertex -> [Foggy (OrBoundary Vertex)] -> Set Vertex
+  go seen next =
+    case next of
+      [] ->
+        seen
+
+      Clear (Inner v) : next' ->
+        if v `Set.member` seen
+        then go seen next'
+        else
+          let VertexData {incoming, outgoing} = lookupExn v g in
+          go
+            (Set.insert v seen)
+            (map fst (fromNeighborList incoming ++ fromNeighborList outgoing) ++ next')
+
+      CoveredInFog : next' ->
+        go seen next'
+
+      Clear Boundary : next' ->
+        go seen next'
+
+  g = digraph ng
+
+
 -- UTIL
 
+{-
 lookupExn :: Ord k => k -> Map k a -> a
 lookupExn k m = case Map.lookup k m of
   Just x -> x
   Nothing -> error "lookupExn: Lookup failed"
 
 
-{-
 findSourceIndex g ev0 v =
   fromJust . List.findIndex (== ev0) . neighborListToExplicitVerts . outgoing $ lookupExn v g
 -}
@@ -438,3 +478,13 @@ neighborListToExplicitVerts = \case
 
 takeTo p = foldr (\x r -> if p x then [x] else x : r) []
   
+fromNeighborList :: NeighborList (EdgeID, f) (EdgeID, o) -> [(Foggy (OrBoundary Vertex), EdgeID)]
+fromNeighborList nl =
+  case nl of
+    WithFogged pre w ->
+      map (\(bv, (e,_)) -> (Clear bv, e)) pre
+      ++ Word.toList (bimap (\(e,_) -> (CoveredInFog, e)) (\(e,_) -> (CoveredInFog, e)) w)
+
+    NoFogged w -> 
+      let f (bv, (e,_)) = (Clear bv, e) in
+      Word.toList (bimap f f w)

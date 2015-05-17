@@ -9,6 +9,9 @@ import Data.Bifunctor
 import Search.Types.Word
 
 -- (fs, t, gs) = fmap_{fs} (t at gs)
+-- It would be more accurate for a move to have a neighbor list
+-- on the right hand side (with fogged edges) but the fogging is
+-- taken care of by Canonicalize, so it is unnecessary
 type Move f o = InContext f o (Trans f o) (Trans f o)
 
 -- Really wants to be a dependent type

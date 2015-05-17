@@ -5,8 +5,8 @@ module Search.Graph where
 
 import Prelude hiding (sequence)
 import Data.Maybe
-import qualified Data.Set as S
-import qualified Data.Map as M
+import qualified Data.Set as Set
+import qualified Data.Map as Map
 import Data.Map (Map)
 import Data.List
 import Control.Applicative
@@ -29,8 +29,11 @@ import qualified Data.HashMap.Strict as HashMap
 import Search.Util
 import Search.Types
 import Search.Graph.Types
-import qualified Search.Word as Word
-import Search.Word (Word(Word), InContext(..), View(..))
+import qualified Search.Types.Word as Word
+import Search.Types.Word (Word(Word), InContext(..), View(..))
+
+import Search.Graph.Canonicalize
+import Search.Graph.Types.NeighborList (NeighborList(..))
 
 -- TODO: Perhaps add the ability to filter the results by those which
 -- satisfy some test cases.
@@ -39,7 +42,180 @@ import Search.Word (Word(Word), InContext(..), View(..))
 -- Vert is left ungeneralized for clarity
 -- mapWordVertices :: (forall l. (Vert, l) -> x) -> Word (Vert, f) (Vert, o) -> Word x x
 
-connectedComponents :: NaturalGraph f o -> [[UnambiguousVert]]
+connectedComponents :: NaturalGraph f o -> [Set.Set UnambiguousVert]
+connectedComponents ng = go [] vs
+  where
+  vs = 
+    Set.fromList $
+      mapMaybe (disambiguate In) (fromNeighborList (top ng))
+      ++ map (disambiguate Out) (fromNeighborList (bottom ng))
+
+  go acc remaining =
+    case Set.minView remaining of
+      Just (uv, remaining') ->
+        let comp = componentOf uv ng in
+        go (comp : acc) (remaining' `Set.difference` comp) 
+
+      Nothing -> acc
+
+
+-- TODO: This should really just take the dummy edge as an arg.
+componentOf :: UnambiguousVert -> NaturalGraph f o -> Set.Set UnambiguousVert
+componentOf v ng = go Set.empty [v]
+  where
+  g = digraph ng
+
+  edgeInfo = edges ng
+
+  go :: Set.Set UnambiguousVert -> [UnambiguousVert] -> Set.Set UnambiguousVert
+  go seen uvs =
+    case uvs of
+      [] -> seen
+      uv : uvs' ->
+        if uv `Set.member` seen
+        then go seen uvs'
+        else
+          let
+            next =
+              case uv of
+                UReal v ->
+                  let VertexData {incoming, outgoing} = lookupExn v g
+                  in
+                  mapMaybe (disambiguate In) (fromNeighborList incoming)
+                  ++ mapMaybe (disambiguate Out) (fromNeighborList outgoing)
+
+                UDummy io e ->
+                  let EdgeData {source,sink} = lookupExn e edgeInfo
+                  in
+                  case io of
+                    In -> mapMaybe (disambiguate Out) [(sink, e)]
+                    Out -> mapMaybe (disambiguate In) [(source, e)]
+          in
+          go (Set.insert uv seen) (next ++ uvs')
+
+disambiguate :: InOrOut -> (Foggy (OrBoundary Vertex), EdgeID) -> Maybe UnambiguousVert
+disambiguate io (fbv, e) =
+  case fbv of
+    Clear Boundary ->
+      Just (UDummy io e)
+
+    Clear (Inner v) ->
+      Just (UReal v)
+
+    CoveredInFog ->
+      Nothing
+
+-- TODO: Unify cases
+moveToGraph :: Move f o -> NaturalGraph f o
+moveToGraph move = case move of
+  Middle pre t post ->
+    NaturalGraph
+    -- If we're in this case, end (from t) and end (to t) cannot be Just
+    -- since post should then be empty (when it can't really)
+    { top =
+        NoFogged
+          ( Word (zipWith (\f i -> (Boundary, (i, f))) pre [0..]) Nothing
+            <> bimap (Inner 0,) (Inner 0,) edgedFrom
+            <> (bimap (Boundary,) (Boundary,) $ enum_word (n_l + n_mid_in + n_mid_out) post))
+
+    , bottom =
+        NoFogged
+          ( Word (zipWith (\f i -> (Boundary, (i, f))) pre [0..]) Nothing
+          <> bimap (Inner 0,) (Inner 0,) edgedTo
+          <> (bimap (Boundary,) (Boundary,) $ enum_word (n_l + n_mid_in + n_mid_out) post))
+    
+    , digraph =
+      Map.singleton 0 $
+        VertexData
+        { label = name t
+        , incoming = NoFogged (bimap (Boundary,) (Boundary,) edgedFrom)
+        , outgoing = NoFogged (bimap (Boundary,) (Boundary,) edgedTo)
+        }
+
+    , edges =
+        Map.fromAscList $
+             map (\i -> (i, EdgeData {source=Boundary,sink=Boundary})) [0..(n_l - 1)]
+          ++ map (\i -> (i, EdgeData {source=Boundary,sink=Inner (Clear 0)})) [n_l..(n_l + n_mid_in - 1)]
+          ++ map (\i -> (i, EdgeData {source=Inner (Clear 0),sink=Boundary})) [(n_l + n_mid_in)..(n_l + n_mid_in + n_mid_out - 1)]
+          ++ map (\i -> (i, EdgeData {source=Boundary,sink=Boundary})) [(n_l + n_mid_in + n_mid_out)..(n_l + n_mid_in + n_mid_out + n_r - 1)]
+    
+    , constantEdges =
+        Set.fromList $
+          catMaybes
+          [ (n_l + n_mid_in - 1) <$ Word.end (from t)
+          , (n_l + n_mid_in + n_mid_out - 1) <$ Word.end (to t)
+          ]
+    }
+    where
+    n_l = length pre
+    n_mid_in = Word.length (from t)
+    n_mid_out = Word.length (to t)
+    n_r = Word.length post
+
+    edgedFrom = 
+      let Word fs mo = from t in
+      Word (zipWith (\f i -> (i, f)) fs [n_l..])
+        (fmap (\o -> (n_l + n_mid_in - 1,o)) mo)
+
+    edgedTo =
+      let Word fs mo = to t in
+      Word (zipWith (\f i -> (i, f)) fs [(n_l + n_mid_in)..])
+        (fmap (\o -> (n_l + n_mid_in + n_mid_out - 1,o)) mo)
+
+    enum_word !i (Word fs mo) =
+      case fs of
+        []      -> Word fs (fmap (i,) mo)
+        f : fs' -> let Word ifs imo = enum_word (i + 1) fs' in Word ((i,f):ifs) imo
+
+  End pre t ->
+    NaturalGraph
+    { top =
+        NoFogged
+          ( Word (zipWith (\f i -> (Boundary, (i, f))) pre [0..]) Nothing
+          <> bimap (Inner 0,) (Inner 0,) edgedFrom)
+    , bottom  =
+        NoFogged
+          ( Word (zipWith (\f i -> (Boundary, (i, f))) pre [0..]) Nothing
+          <> bimap (Inner 0,) (Inner 0,) edgedTo)
+
+    , digraph =
+        Map.singleton 0 $
+        VertexData
+        { label    = name t
+        , incoming = NoFogged (bimap (Boundary,) (Boundary,) edgedFrom)
+        , outgoing = NoFogged (bimap (Boundary,) (Boundary,) edgedTo)
+        }
+
+    , edges =
+        Map.fromAscList
+        $  map (\i -> (i, EdgeData {source=Clear Boundary,sink=Clear Boundary})) [0..(n_l - 1)]
+        ++ map (\i -> (i, EdgeData {source=Clear Boundary,sink=Clear (Inner 0)}))  [n_l..(n_l + n_mid_in - 1)]
+        ++ map (\i -> (i, EdgeData {source=Clear (Inner 0),sink=Clear Boundary})) [(n_l + n_mid_in)..(n_l + n_mid_in + n_mid_out - 1)]
+
+    , constantEdges =
+        Set.fromList $
+          catMaybes
+          [ (n_l + n_mid_in - 1) <$ Word.end (from t)
+          , (n_l + n_mid_in + n_mid_out - 1) <$ Word.end (to t)
+          ]
+    }
+    where
+    edgedFrom = 
+      let Word fs mo = from t in
+      Word (zipWith (\f i -> (i, f)) fs [n_l..])
+        (fmap (\o -> (n_l + n_mid_in - 1,o)) mo)
+
+    edgedTo =
+      let Word fs mo = to t in
+      Word (zipWith (\f i -> (i, f)) fs [(n_l + n_mid_in)..])
+        (fmap (\o -> (n_l + n_mid_in + n_mid_out - 1,o)) mo)
+
+    n_l       = length pre
+    n_mid_in  = Word.length (from t)
+    n_mid_out = Word.length (to t)
+
+
+{-
 connectedComponents ng = go [] vs
   where
   go acc remaining = case S.maxView remaining of
@@ -54,7 +230,7 @@ connectedComponents ng = go [] vs
 
   vs = S.fromList $ map UReal (M.keys g)
     ++ map (UDummy In) [0..(M.size inSuccs - 1)]
-    ++ map (UDummy Out) [0..(M.size outPreds - 1)]
+    ++ map (UDummy Out) [0..(M.size outPreds - 1)] 
 
 moveToGraph :: Move f o -> NaturalGraph f o
 moveToGraph move = case move of
@@ -134,17 +310,16 @@ moveToGraph move = case move of
     nt_o = Word.length (to t)
 
     label i x = (Dummy (i + nl), x)
+-}
 
 idGraph :: [f] -> NaturalGraph f o
 idGraph fs =
   NaturalGraph
-  { incomingLabels = Word fs Nothing
-  , incomingSuccs = M.fromList $ map (\i -> (i, Clear $ Dummy i)) [0..n]
-  , outgoingPreds = M.fromList $ map (\i -> (i, Clear $ Dummy i)) [0..n]
-  , digraph = M.empty
+  { top     = NoFogged (map (Boundary,) (zip [0..] fs))
+  , bottom  = NoFogged (map (Boundary,) (zip [0..] fs))
+  , digraph = Map.empty
+  , edges   = Map.fromList (zipWith (\i _ -> (i,EdgeData Boundary Boundary)) [0..] fs)
   }
-  where
-  n = length fs - 1
 
 branchOut
   :: (Eq f, Hashable f, Eq o, Hashable o)
@@ -188,13 +363,14 @@ branchOut ts = concatMap possibilities . Word.views
 -- Es importante que no cambia (incomingDummys ng1) o
 -- (outgoingDummys ng2)
 
+{-
 shiftBy n g =
-  M.map (\vd -> vd { incoming = shiftEs (incoming vd), outgoing = shiftEs (outgoing vd) })
-  $ M.mapKeysMonotonic (+ n) g
+  Map.map (\vd -> vd { incoming = shiftEs (incoming vd), outgoing = shiftEs (outgoing vd) })
+  $ Map.mapKeysMonotonic (+ n) g
   where
   shift   = first $ \v -> case v of {Real r -> Real (r + n); _ -> v}
   shiftEs = bimap shift shift
-
+-}
 
 {- begin debug
 -- ng1 -> ng2
