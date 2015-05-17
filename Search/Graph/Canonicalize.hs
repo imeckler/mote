@@ -71,24 +71,24 @@ data Edge
 
 -- Edge is the type of vertices of this graph
 type RightnessGraph
-  = Map Edge [Edge] -- sucessors. I.e., the set of things to the right of this edge
+  = Map EdgeID [EdgeID] -- sucessors. I.e., the set of things to the right of this edge
 
 data WedgeKind = Vee | Caret -- actually not needed
 
 data Wedge =
   Wedge
-  { leftPath  :: [Edge]
-  , rightPath :: [Edge]
+  { leftPath  :: [EdgeID]
+  , rightPath :: [EdgeID]
   }
 
 obliterateFrom :: NaturalGraph f o -> EdgeID -> NaturalGraph f o
 obliterateFrom ng0 e0 =
   Set.foldl' (\ng e ->
-    let EdgeData {source, sink} = lookupExn e
+    let EdgeData {source, sink} = lookupExn e edgeInfo
     in
     fogSource e source (fogSink e sink ng))
     ng0
-    (edgesRightOf e0)
+    (edgesRightOf ng0 e0)
 
   where
   edgeInfo = edges ng0
@@ -131,7 +131,7 @@ fogAt = \e ns ->
     NoFogged (Word fs mo) ->
       case splitAt (\(_, (e',_)) -> e == e') fs of
         Just (pre, fogged) ->
-          WithFogged pre (Word (map snd fogged) mo)
+          WithFogged pre (Word (map snd fogged) (fmap snd mo))
 
         Nothing ->
           case mo of
@@ -149,75 +149,7 @@ fogAt = \e ns ->
     x : xs' -> if p x then Just ([], xs) else fmap (\(pre,ys) -> (x:pre,ys)) (splitAt p xs)
 
 
-{-
-  Set.foldl' (\ng e ->
-    case e of
-      Standard (StandardEdge {source, sink, sourceIndex}) ->
-        case (source, sink) of
-          (Source, ev') ->
-            let incomingSuccs' = Map.insert sourceIndex CoveredInFog (incomingSuccs ng)
-                ng'' = _
-            in
-            _
-          (Sink, ev') -> _
-          (Regular v, ev') -> _
-          (Fog, ev') -> _ -- already obliterated
-
-      FromFog ev i -> ng -- already obliterated
-      ToFog ev i -> ng -- already obliterated
-    )
-    ng0 (edgesRightOf ng0 e)
-  where
-  fogSource :: ExplicitVert -> Int -> NaturalGraph f o -> NaturalGraph f o
-  fogSource source sourceIndex ng = case source of
-    Regular v ->
-      ng { digraph = Map.adjust updateVertexData v (digraph ng) }
-
-    Source ->
-      ng { incomingSuccs = Map.insert sourceIndex CoveredInFog (incomingSuccs ng) }
-      -- should actually fog out everything to the right of sourceIndex, but those things should be in the set as well
-    Fog ->
-      ng
-
-    Sink -> error "fogSource: Got source = Sink"
-    where
-    updateVertexData :: VertexData f o -> VertexData f o
-    updateVertexData vd = vd { outgoing = outgoing' }
-      where
-      outgoing' =
-        case outgoing vd of
-          WithFogged pre (Word fs mo) ->
-            let (unfogged, fogged) = List.splitAt sourceIndex pre
-            in
-            WithFogged unfogged (Word (map snd fogged ++ fs) mo)
-
-          NoFogged w ->
-            _
-
-  fogSink :: ExplicitVert -> ExplicitVert -> NaturalGraph f o -> NaturalGraph f o
-  fogSink source sink ng =
-    case sink of
-      Regular v ->
-        _
-
-      Sink ->
-        let i =
-              case source of
-                Regular v -> _
-                Source -> _
-                Sink -> _
-                Fog -> _
-        in
-        ng { outgoingPreds = Map.insert i CoveredInFog (outgoingPreds ng) }
-
-      Fog ->
-        ng
-
-      Source -> error "fogSink: Got sink = Source"
--}
-
-
-reachability :: RightnessGraph -> Map Edge (Set Edge)
+reachability :: RightnessGraph -> Map EdgeID (Set EdgeID)
 reachability = goTop Map.empty
   where
   goTop acc !rg = 
@@ -250,8 +182,6 @@ reachability = goTop Map.empty
           (Map.insert e descs acc1, descs)
 
 edgesRightOf :: NaturalGraph f o -> EdgeID -> Set EdgeID
-edgesRightOf = _
-{-
 edgesRightOf ng e
   | e `Set.member` topTendrils =
   -- If e is a top tendril and e' is a bottom tendril such that e is not
@@ -279,7 +209,7 @@ edgesRightOf ng e
   -- and the top tendrils if e is a bottom tendril
   (topTendrils, botTendrils) = tendrils ng
 
-strictDescendants :: RightnessGraph -> Edge -> Set Edge
+strictDescendants :: RightnessGraph -> EdgeID -> Set EdgeID
 strictDescendants rg e0 = Set.delete e0 (dfs Set.empty [e0])
   where
   dfs !seen next =
@@ -292,7 +222,7 @@ strictDescendants rg e0 = Set.delete e0 (dfs Set.empty [e0])
         then dfs seen next'
         else dfs (Set.insert e seen) (lookupExn e rg ++ next')
 
-isRightOf :: RightnessGraph -> Edge -> Edge -> Bool
+isRightOf :: RightnessGraph -> EdgeID -> EdgeID -> Bool
 isRightOf rg e1 e2 = e1 /= e2 && dfs Set.empty [e1]
   where
   dfs !seen next =
@@ -304,7 +234,7 @@ isRightOf rg e1 e2 = e1 /= e2 && dfs Set.empty [e1]
         else if e `Set.member` seen
         then dfs seen next'
         else dfs (Set.insert e seen) (lookupExn e rg ++ next')
--}
+
 
 
 diamondRightnessgraph :: NaturalGraph f o -> RightnessGraph
@@ -324,6 +254,50 @@ diamondRightnessgraph ng =
 -- simpler.
 -- Returns
 -- (edges belonging to a from-top tendril, edges belonging to a from-bottom tendril)
+
+tendrils :: NaturalGraph f o -> (Set EdgeID, Set EdgeID)
+tendrils ng = (topTendrils, botTendrils)
+  where
+  topTendrils :: Set EdgeID
+  topTendrils = flip execState Set.empty $ go outgoing (top ng)
+
+  botTendrils :: Set EdgeID
+  botTendrils = flip execState Set.empty $ go incoming (bottom ng)
+
+  go getNext succs =
+    fmap and $
+      forM (fromNeighborList succs) $ \(fbv, e) ->
+        case fbv of
+          Clear (Inner v) ->
+            go getNext (getNext (lookupExn v g)) >>= \case
+              True -> do
+                modify (\s -> Set.insert e s)
+                return True
+
+              False ->
+                return False
+
+          Clear Boundary ->
+            return False
+
+          CoveredInFog -> do
+            modify (\s -> Set.insert e s)
+            return True
+
+
+  fromNeighborList :: NeighborList (EdgeID, f) (EdgeID, o) -> [(Foggy (OrBoundary Vertex), EdgeID)]
+  fromNeighborList nl =
+    case nl of
+      WithFogged pre w ->
+        map (\(bv, (e,_)) -> (Clear bv, e)) pre
+        ++ Word.toList (bimap (\(e,_) -> (CoveredInFog, e)) (\(e,_) -> (CoveredInFog, e)) w)
+
+      NoFogged w -> 
+        let f (bv, (e,_)) = (Clear bv, e) in
+        Word.toList (bimap f f w)
+
+  g = digraph ng
+
 {-
 tendrils :: NaturalGraph f o -> (Set Edge, Set Edge)
 tendrils ng = (topTendrils, botTendrils)

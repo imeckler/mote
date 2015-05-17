@@ -12,12 +12,8 @@ import Data.Hashable
 import qualified Data.Map as Map
 import Data.Map (Map)
 import qualified Data.Set as Set
-import Data.Set (Set)
 import Control.Monad.State
-import Data.Maybe
 import qualified Search.Types.Word as Word
-import Search.Types.Word (Word)
-import qualified Search.Graph.Types.NeighborList
 import Search.Graph.Types.NeighborList (NeighborList(..))
 import Search.Graph.Types.Vertex
 import qualified Data.List as List
@@ -32,6 +28,7 @@ data VertexData f o = VertexData
   , outgoing :: NeighborList f o
   }
   deriving (Show, Eq)
+
 {-
 -- Invariant: The incoming dummys are labeled 0 to incomingCount - 1 and
 -- the outgoing dummys are labeled 0 to outgoingCount - 1
@@ -77,7 +74,7 @@ hashWithSaltGraph s_orig ng =
   in
   s'
   where
-  go :: State (Int, Set (OrBoundary Vertex), [(OrBoundary Vertex, Either f o)]) ()
+--  go :: State (Int, Set (OrBoundary Vertex), [(OrBoundary Vertex, Either f o)]) ()
   go = do
     (s, pushed, next) <- get -- :: State (Int, Set (OrBoundary Vertex), [OrBoundary Vertex])(Int, Set (OrBoundary Vertex), [(OrBoundary Vertex, f)])
     case next of
