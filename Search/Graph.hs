@@ -354,24 +354,6 @@ sequence ng1 ng2_0 =
       (top ng1, bottom ng2, Map.union (digraph ng1) (digraph ng2), Map.union (edges ng1) (edges ng2))
       partners
 
-{- ((botPred,e1), (topSucc,e2)) ->
-      case (botPred, topSucc) of
-        (Inner v, Inner v') ->
-          _
-
-        (Inner i, Boundary) ->
-          _
-
-        (Boundary, Boundary) ->
-          (topChanges, botChanges, Map.delete e2 edgeInfo)
-
-        (Boundary, Inner i) ->
-          ( _
-          , _
-          , Map.adjust (\ed -> ed { sink = _ }) e1 (Map.delete e2 edgeInfo)
-          )
-      ) -}
-
   toRow nl = 
     case nl of
       NoFogged w ->
@@ -405,103 +387,7 @@ sequence ng1 ng2_0 =
   partners = zip (toRow (bottom ng1)) (toRow (top ng2))
       
 
-{-
-  partners =
-    case (bottom ng1, top ng2) of
-      (WithFogged bots _, WithFogged tops _) ->
-        zip (map discardLabel bots) (map discardLabel tops)
-
-      (NoFogged botw, NoFogged topw) ->
-        zip
-          (Word.toList (bimap discardLabel discardLabel botw))
-          (Word.toList (bimap discardLabel discardLabel topw))
-
-      _ -> error "Search.Graph.sequence: top and bottom didn't match"
--}
 {- begin debug
--- ng1 -> ng2
-sequence :: NaturalGraph f o -> NaturalGraph f o -> NaturalGraph f o
-sequence ng1 ng2 =
-  NaturalGraph
-  { incomingLabels = incomingLabels ng1
-  , incomingSuccs  = incomingSuccs'
-
-  , outgoingPreds  = outgoingPreds'
-
-  , digraph        = digraph'
-  }
-  where
-  g1  = digraph ng1
-  g2  = digraph ng2
-  g2' = shiftBy n1 g2
-  n1  = M.size g1
-
-  outPreds1 = outgoingPreds ng1
-  inSuccs2  = incomingSuccs ng2
-
-  (replacements, outgoingPreds', incomingSuccs') =
-    foldl upd
-      ( M.empty
-      , M.map (\case {Real v -> Real (n1+v); x -> x}) (outgoingPreds ng2)
-      , incomingSuccs ng1)
-      [0..(M.size outPreds1)]
-
-  digraph' =
-    M.foldWithKey (\r (io, rep) g ->
-      let replace = first $ \x -> case M.lookup x rep of
-            Nothing -> x
-            Just x' -> x'
-      in
-      case io of
-        In  -> M.adjust (\vd -> vd { incoming = map replace (incoming vd) }) r g
-        Out -> M.adjust (\vd -> vd { outgoing = map replace (outgoing vd) }) r g)
-      (M.union g1 g2')
-      replacements 
-
-  -- There should really be a few pictures describing what this code does.
-
---  replacements :: Map RealVertex (InOrOut, Map Vert Vert)
-    
-  upd (replacements, 
-
-  -- TODO: Basically do the smae thing as before, then go "up and to the
-  -- right from the rightmost outgoing dummy of the bottom graph and then
-  -- mist out everything to the right
-  upd (replacements, outPreds, inSuccs) i =
-    case (M.lookup i outPreds1, M.lookup i inSuccs2) of
-      (Just x, Just y) -> case (x, y) of
-        (Real u, Real v)    ->
-          let v' = v + n1 in
-          ( M.insertWith merge u (Out, M.singleton (Dummy i) (Real v'))
-            $ M.insertWith merge v' (In, M.singleton (Dummy i) (Real u))
-            $ replacements
-          , outPreds
-          , inSuccs
-          )
-
-        (Real u, Dummy d)   ->
-          ( M.insertWith merge u (Out, M.singleton (Dummy i) (Dummy d)) replacements
-          , M.insert d (Real u) outPreds
-          , inSuccs
-          )
-
-        (Dummy d, Real v)   ->
-          let v' = v + n1 in
-          ( M.insertWith merge v' (In, M.singleton (Dummy i) (Dummy d)) replacements
-          , outPreds
-          , M.insert d (Real v') inSuccs
-          )
-
-        (Dummy d, Dummy d') ->
-          ( replacements
-          , M.insert d' (Dummy d) outPreds
-          , M.insert d (Dummy d') inSuccs
-          )
-
-      _ -> (replacements, outPreds, inSuccs) -- TODO: This should throw an error actually
-      where
-      merge (io, replacements) (_io', replacements') = (io, M.union replacements replacements')
-
 -- TODO: Convert real Haskell programs into lists of moves
 -- TODO: Analyze program graphs
 
