@@ -313,21 +313,19 @@ sequence ng1 ng2_0 =
         (CoveredInFog, CoveredInFog) ->
           (newTop, newBot, g, Map.delete e1 (Map.delete e2 edgeInfo))
 
-        (CoveredInFog, Clear Boundary) ->
-          -- e1 already has the correct edge data: CoveredInFog -> Clear Boundary
+        (_, Clear Boundary) ->
           ( newTop
           , setAt e2 e1 botPred newBot
           , g
           , Map.delete e2 edgeInfo
           )
 
-        (Clear (Inner v), Clear Boundary) ->
-          ( newTop
-          , setAt e2 e1 botPred newBot
-          -- v already happens to point at the right thing
+        -- e2 already has the correct edge data: Clear Boundary -> topSucc
+        (Clear Boundary, _) ->
+          ( setAt e1 e2 topSucc newTop
+          , newBot
           , g
-          -- e1 already has the correct edge data: Clear (Inner v) -> Clear Boundary
-          , Set.delete e2 edgeInfo
+          , Map.delete e1 edgeInfo
           )
 
         (CoveredInFog, Clear (Inner v)) ->
@@ -344,21 +342,6 @@ sequence ng1 ng2_0 =
           , Map.insert e1 (EdgeData {source=botPred, sink=topSucc}) (Map.delete e2 edgeInfo)
           )
 
-        (Clear Boundary, CoveredInFog) ->
-          -- e2 already has the correct edge data: Clear Boundary -> CoveredInFog
-          ( setAt e1 e2 topSucc newTop
-          , newBot
-          , g
-          , Map.delete e1 edgeInfo
-          )
-
-        (Clear Boundary, Clear (Inner v)) ->
-          -- e2 already has the correct edge data: Clear Boundary -> Clear (Inner v)
-          ( setAt e1 e2 topSucc newTop
-          , newBot
-          , g
-          , Map.delete e1 edgeInfo
-          )
 
         (Clear (Inner v), Clear (Inner v')) ->
           ( newTop
@@ -366,14 +349,6 @@ sequence ng1 ng2_0 =
           , Map.adjust (\vd -> vd { outgoing = setAt e1 e1 topSucc (outgoing vd) }) v $
               Map.adjust (\vd -> vd { incoming = setAt e2 e1 botPred (incoming vd) }) v' g
           , Map.insert e1 (EdgeData {source=botPred,sink=topSucc}) (Map.delete e2 edgeInfo)
-          )
-
-        (Clear Boundary, Clear Boundary) ->
-          ( newTop
-          , setAt e2 e1 botPred newBot
-          , g
-          -- e1 happens to already have the correct edge data
-          , Set.delete e2 edgeInfo
           )
       )
       (top ng1, bottom ng2, Map.union (digraph ng1) (digraph ng2), Map.union (edges ng1) (edges ng2))
