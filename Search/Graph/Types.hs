@@ -30,21 +30,13 @@ data VertexData f o = VertexData
   }
   deriving (Show, Eq)
 
-{-
--- Invariant: The incoming dummys are labeled 0 to incomingCount - 1 and
--- the outgoing dummys are labeled 0 to outgoingCount - 1
-data NaturalGraph f o = NaturalGraph
-  { incomingLabels :: Word f o
-  , incomingSuccs  :: Map DummyVertex (Foggy Vert)
---  , incomingCount  :: Int
+instance Bifunctor VertexData where
+ first f vd = vd { incoming = first f (incoming vd), outgoing = second f (outgoing vd) }
 
-  , outgoingPreds  :: Map DummyVertex (Foggy Vert)
---  , outgoingCount  :: Int
+ second f vd = vd { incoming = second f (incoming vd), outgoing = second f (outgoing vd) }
 
-  , digraph        :: Map Vertex (VertexData f o)
-  }
-  deriving (Show)
--}
+ bimap f g vd = vd { incoming = bimap f g (incoming vd), outgoing = bimap f g (outgoing vd) }
+
 type EdgeID = Int
 
 data EdgeData = EdgeData 

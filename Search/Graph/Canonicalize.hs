@@ -123,14 +123,14 @@ fogAt :: EdgeID -> NeighborList (EdgeID, f) (EdgeID, o) -> NeighborList (EdgeID,
 fogAt = \e ns ->
   case ns of
     WithFogged fs w ->
-      case splitAt (\(_, (e',_)) -> e == e') fs of
+      case splitWhen (\(_, (e',_)) -> e == e') fs of
         Just (pre, fogged) ->
           WithFogged pre (Word (map snd fogged) Nothing <> w)
 
         Nothing -> ns
 
     NoFogged (Word fs mo) ->
-      case splitAt (\(_, (e',_)) -> e == e') fs of
+      case splitWhen (\(_, (e',_)) -> e == e') fs of
         Just (pre, fogged) ->
           WithFogged pre (Word (map snd fogged) (fmap snd mo))
 
@@ -143,12 +143,6 @@ fogAt = \e ns ->
               if e /= e'
               then error "Search.Graph.Canonicalize.fogAt: inconsistent state. e /= e'"
               else WithFogged [] (Word (map snd fs) (Just (e', o)))
-
-  where
-  splitAt p xs = case xs of
-    [] -> Nothing
-    x : xs' -> if p x then Just ([], xs) else fmap (\(pre,ys) -> (x:pre,ys)) (splitAt p xs)
-
 
 reachability :: RightnessGraph -> Map EdgeID (Set EdgeID)
 reachability = goTop Map.empty
@@ -478,6 +472,11 @@ neighborListToExplicitVerts = \case
 
 takeTo p = foldr (\x r -> if p x then [x] else x : r) []
   
+splitWhen p xs = case xs of
+  [] -> Nothing
+  x : xs' -> if p x then Just ([], xs) else fmap (\(pre,ys) -> (x:pre,ys)) (splitWhen p xs)
+
+
 fromNeighborList :: NeighborList (EdgeID, f) (EdgeID, o) -> [(Foggy (OrBoundary Vertex), EdgeID)]
 fromNeighborList nl =
   case nl of

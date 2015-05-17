@@ -218,10 +218,10 @@ moveToGraph move = case move of
 idGraph :: [f] -> NaturalGraph f o
 idGraph fs =
   NaturalGraph
-  { top     = NoFogged (map (Boundary,) (zip [0..] fs))
-  , bottom  = NoFogged (map (Boundary,) (zip [0..] fs))
-  , digraph = Map.empty
-  , edges   = Map.fromList (zipWith (\i _ -> (i,EdgeData Boundary Boundary)) [0..] fs)
+  { top         = NoFogged (map (Boundary,) (zip [0..] fs))
+  , bottom      = NoFogged (map (Boundary,) (zip [0..] fs))
+  , digraph     = Map.empty
+  , edges       = Map.fromList (zipWith (\i _ -> (i,EdgeData Boundary Boundary)) [0..] fs)
   }
 
 branchOut
@@ -275,6 +275,174 @@ shiftBy n g =
   shiftEs = bimap shift shift
 -}
 
+shiftBy :: NaturalGraph f o -> Int -> Int -> NaturalGraph f o
+shiftBy ng s_v s_e =
+  ng
+  { top = bimap (first (+ s_e)) (first (+ s_e)) (top ng)
+  , bottom = bimap (first (+ s_e)) (first (+ s_e)) (bottom ng)
+  , digraph =
+      Map.mapKeysMonotonic (+ s_v) $
+        Map.map (bimap (first (+ s_e)) (first (+ s_e)))
+          (digraph ng)
+  , edges =
+      Map.mapKeysMonotonic (+ s_e) $
+        Map.map (\(EdgeData {source, sink}) ->
+          EdgeData {source=fmap (fmap (+ s_v)) source,sink=fmap (fmap (+ s_v)) sink})
+          (edges ng)
+  }
+  where
+
+sequence :: NaturalGraph f o -> NaturalGraph f o -> NaturalGraph f o
+sequence ng1 ng2_0 =
+  NaturalGraph
+  { top = top'
+  , bottom = bottom'
+  , digraph = digraph'
+  , edges = edges'
+  }
+  where
+  g1 = digraph ng1
+  ng2 = shiftBy ng2_0 (Map.size g1) (Set.size (edges ng1))
+
+  discardLabel (v,(e,_)) = (v,e)
+
+  (top', bottom', digraph', edges') =
+    -- Should change this into a few lemmas so there aren't so many cases
+    List.foldl' (\(newTop,newBot,g,edgeInfo) ((botPred, e1), (topSucc,e2)) ->
+      case (botPred, topSucc) of
+        (CoveredInFog, CoveredInFog) ->
+          (newTop, newBot, g, Map.delete e1 (Map.delete e2 edgeInfo))
+
+        (CoveredInFog, Clear Boundary) ->
+          -- e1 already has the correct edge data: CoveredInFog -> Clear Boundary
+          ( newTop
+          , setAt e2 e1 botPred newBot
+          , g
+          , Map.delete e2 edgeInfo
+          )
+
+        (Clear (Inner v), Clear Boundary) ->
+          ( newTop
+          , setAt e2 e1 botPred newBot
+          -- v already happens to point at the right thing
+          , g
+          -- e1 already has the correct edge data: Clear (Inner v) -> Clear Boundary
+          , Set.delete e2 edgeInfo
+          )
+
+        (CoveredInFog, Clear (Inner v)) ->
+          ( newTop
+          , newBot
+          , Map.adjust (\vd -> vd { incoming = setAt e2 e1 CoveredInFog (incoming vd) }) v g
+          , Map.insert e1 (EdgeData {source=botPred,sink=topSucc}) (Map.delete e2 edgeInfo)
+          )
+
+        (Clear (Inner v), CoveredInFog) ->
+          ( newTop
+          , newBot
+          , Map.adjust (\vd -> vd { outgoing = setAt e1 e1 topSucc (outgoing vd) }) v g
+          , Map.insert e1 (EdgeData {source=botPred, sink=topSucc}) (Map.delete e2 edgeInfo)
+          )
+
+        (Clear Boundary, CoveredInFog) ->
+          -- e2 already has the correct edge data: Clear Boundary -> CoveredInFog
+          ( setAt e1 e2 topSucc newTop
+          , newBot
+          , g
+          , Map.delete e1 edgeInfo
+          )
+
+        (Clear Boundary, Clear (Inner v)) ->
+          -- e2 already has the correct edge data: Clear Boundary -> Clear (Inner v)
+          ( setAt e1 e2 topSucc newTop
+          , newBot
+          , g
+          , Map.delete e1 edgeInfo
+          )
+
+        (Clear (Inner v), Clear (Inner v')) ->
+          ( newTop
+          , newBot
+          , Map.adjust (\vd -> vd { outgoing = setAt e1 e1 topSucc (outgoing vd) }) v $
+              Map.adjust (\vd -> vd { incoming = setAt e2 e1 botPred (incoming vd) }) v' g
+          , Map.insert e1 (EdgeData {source=botPred,sink=topSucc}) (Map.delete e2 edgeInfo)
+          )
+
+        (Clear Boundary, Clear Boundary) ->
+          ( newTop
+          , setAt e2 e1 botPred newBot
+          , g
+          -- e1 happens to already have the correct edge data
+          , Set.delete e2 edgeInfo
+          )
+      )
+      (top ng1, bottom ng2, Map.union (digraph ng1) (digraph ng2), Map.union (edges ng1) (edges ng2))
+      partners
+
+{- ((botPred,e1), (topSucc,e2)) ->
+      case (botPred, topSucc) of
+        (Inner v, Inner v') ->
+          _
+
+        (Inner i, Boundary) ->
+          _
+
+        (Boundary, Boundary) ->
+          (topChanges, botChanges, Map.delete e2 edgeInfo)
+
+        (Boundary, Inner i) ->
+          ( _
+          , _
+          , Map.adjust (\ed -> ed { sink = _ }) e1 (Map.delete e2 edgeInfo)
+          )
+      ) -}
+
+  toRow nl = 
+    case nl of
+      NoFogged w ->
+        map (first Clear) $ Word.toList (bimap discardLabel discardLabel w)
+      WithFogged pre w ->
+        map (first Clear . discardLabel) pre
+        ++ map (CoveredInFog,) (Word.toList (bimap fst fst w))
+
+  setAt :: EdgeID -> EdgeID -> Foggy (OrBoundary Vertex) -> NeighborList (EdgeID, f) (EdgeID, o) -> NeighborList (EdgeID, f) (EdgeID, o)
+  setAt e e_new fbv nl =
+    case fbv of
+      -- TODO: Inefficient. Fix to not traverse whole list if not necessary
+      Clear ob ->
+        case nl of
+          WithFogged unfogged w ->
+            WithFogged (map replace unfogged) w
+
+          NoFogged w ->
+            NoFogged (bimap replace replace w)
+        where
+        replace d@(_,(e',f)) = if e' == e then (ob, (e,f)) else d
+
+      CoveredInFog ->
+        case fogAt e nl of
+          WithFogged unfogged w -> WithFogged unfogged (bimap replace replace w)
+            where
+            replace d@(e',x) = if e' == e then (e_new, x) else d
+
+          NoFogged w -> NoFogged w
+
+  partners = zip (toRow (bottom ng1)) (toRow (top ng2))
+      
+
+{-
+  partners =
+    case (bottom ng1, top ng2) of
+      (WithFogged bots _, WithFogged tops _) ->
+        zip (map discardLabel bots) (map discardLabel tops)
+
+      (NoFogged botw, NoFogged topw) ->
+        zip
+          (Word.toList (bimap discardLabel discardLabel botw))
+          (Word.toList (bimap discardLabel discardLabel topw))
+
+      _ -> error "Search.Graph.sequence: top and bottom didn't match"
+-}
 {- begin debug
 -- ng1 -> ng2
 sequence :: NaturalGraph f o -> NaturalGraph f o -> NaturalGraph f o

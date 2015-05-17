@@ -22,7 +22,7 @@ data InOrOut = In | Out
   deriving (Show, Eq, Ord)
 
 data OrBoundary a = Boundary | Inner a
-  deriving (Show, Eq, Ord)
+  deriving (Show, Eq, Ord, Functor)
 
 -- We occasionally require this representation. Notably in
 -- connectedComponents (and we could have used it in
