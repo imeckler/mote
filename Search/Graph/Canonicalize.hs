@@ -16,6 +16,7 @@ import Control.Monad.State
 import Search.Graph.Types.NeighborList (NeighborList(..))
 import qualified Search.Types.Word as Word
 import Search.Types.Word (Word(..))
+import Search.Util (lastMay, headMay)
 
 {-
 data ExplicitVert
@@ -285,157 +286,71 @@ tendrils ng = (topTendrils, botTendrils)
             return True
 
 
-  fromNeighborList :: NeighborList (EdgeID, f) (EdgeID, o) -> [(Foggy (OrBoundary Vertex), EdgeID)]
-  fromNeighborList nl =
-    case nl of
-      WithFogged pre w ->
-        map (\(bv, (e,_)) -> (Clear bv, e)) pre
-        ++ Word.toList (bimap (\(e,_) -> (CoveredInFog, e)) (\(e,_) -> (CoveredInFog, e)) w)
-
-      NoFogged w -> 
-        let f (bv, (e,_)) = (Clear bv, e) in
-        Word.toList (bimap f f w)
 
   g = digraph ng
 
-{-
-tendrils :: NaturalGraph f o -> (Set Edge, Set Edge)
-tendrils ng = (topTendrils, botTendrils)
+wedges ng start nexts =
+  concatMap wedgesFrom ((Boundary, start) : map (bimap Inner nexts) (Map.toList g))
   where
-  topTendrils = flip execState Set.empty $ do
-    succs <- fmap catMaybes . forM (Map.toList (incomingSuccs ng)) $ \(i,fve) ->
-      case fve of
-        Clear ve -> return (Just (i,ve))
-        CoveredInFog -> do
-          modify _ -- (\s -> Set.insert (ToFog Source i) s)
-          return Nothing
+  -- TODO: I don't think I actually have to push back up for hanging
+  -- local tendrils. It might be possible so consider that if this code
+  -- doesn't work.
 
-    topGoOnSuccs
-      (\dum v -> FromTop . TopToRegular dum $ findIndex g incoming (Dummy dum) v)
-      succs
+  makePath getNext = go
     where
+    go = \case
+      Clear (Inner v) -> 
+        case (getNext . fromNeighborList . nexts $ lookupExn v g) of
+          Just (v', e) ->
+            (v', e) : go v'
 
-  topGoOnSuccs mkEdge enumedSuccs =
-    fmap and $
-      forM enumedSuccs $ \(i, suc) -> case suc of
-        Dummy _ ->
-          return False
+          Nothing ->
+            []
 
-        Real v -> topTendrilous v >>= \case
-          True -> do
-            modify (\s ->
-              Set.insert 
-                (mkEdge i v)
-              {-
-                (Standard
-                  (StandardEdge {source=ev0, sink=Regular v, sourceIndex = i})) -}
-                s)
-            return True
+      _ -> []
 
-          False -> return False
-
-  topTendrilous :: Vertex -> State (Set Edge) Bool
-  topTendrilous v0 = do
-    succs <- getSuccs
-    topGoOnSuccs
-      (\i v -> FromRegular $ RegularToRegular v i)
-      (zip [0..] succs)
-    where
-    getSuccs :: State (Set Edge) [Vert]
-    getSuccs =
-      case outgoing (lookupExn v0 g) of
-        NoFogged w -> return . Word.toList $ bimap fst fst w
-        WithFogged pre w -> do
-          let n = length pre
-              nw = Word.length w
-
-          modify (\s0 ->
-            List.foldl' (\s i ->
-              Set.insert (FromRegular $ RegularToFog v0 i) s)
-              s0
-              [n..(n + nw - 1)])
-
-          return (map fst pre)
-
-  botTendrils = flip execState Set.empty $ do
-    preds <- fmap catMaybes . forM (Map.toList (outgoingPreds ng)) $ \(dum, fve) ->
-      case fve of
-        Clear v -> return (Just (dum, v))
-        CoveredInFog -> do
-          modify (\s -> Set.insert (FromFog $ FogToSink dum) s) -- Set.insert (FromFog Sink dum) s)
-          return Nothing
-
-    botGoOnPreds
-      (\dum v -> FromRegular $ RegularToSink dum (findIndex g outgoing (Dummy dum) v)
-      preds
-
-  botGoOnPreds mkEdge enumedPreds =
-    fmap and $
-      forM enumedPreds $ \(i,v) -> case v of
-        Dummy _ ->
-          return False
-
-        Real v -> botTendrilous v >>= \case
-          True -> do
-            modify (\s ->
-              Set.insert
-                (mkEdge i v)
-                {- (Standard
-                  (StandardEdge {source=Regular v,sink=ev0,sourceIndex=findSourceIndex g ev0 v})) -}
-              s)
-            return True
-
-          False ->
-            return False
-
-
-  botTendrilous :: Vertex -> State (Set Edge) Bool
-  botTendrilous v0 = do
-    preds <- getPreds
-    botGoOnPreds
-      (\i v -> FromRegular $ RegularToRegular v _) -- shiz
---      (Regular v0) 
-      (zip [0..] preds)
-    where
-    getPreds :: State (Set Edge) [Vert]
-    getPreds = 
-      case incoming (lookupExn v0 g) of
-        NoFogged w ->
-          return . Word.toList $ bimap fst fst w
- 
-        WithFogged pre w -> do
-          let n = length pre
-              nw = Word.length w
-
-          modify (\s0 ->
-            List.foldl' (\s i ->
-              Set.insert (FromFog $ FogToRegular v0 i) s)
-              s0
-              [n..(n + nw - 1)])
-
-          return (map fst pre)
+  goingRight = makePath lastMay
+  goingLeft = makePath headMay
 
   g = digraph ng
--}
-vees :: NaturalGraph f o -> [Wedge]
-vees = _
-  where {-
-  -- \/
-  startFrom :: ExplicitVert -> ExplicitVert -> ExplicitVert -> Wedge
-  startFrom nadir l r = _ $ go l r (Map.empty, Map.empty)
+
+  wedgesFrom :: (OrBoundary Vertex, NeighborList (EdgeID, f) (EdgeID, o)) -> [Wedge]
+  wedgesFrom (bv, nl) = zipWith wedgeFrom neighbs (tail neighbs)
     where
-    -- stop when you hit a vertex that has an edge in of you that goes the
-    -- wrong way.
-    go
-      :: Int
-      -> Maybe ExplicitVert -> Maybe ExplicitVert
-      -> State (Map ExplicitVert Int, Map ExplicitVert Int) () -- gives the order of the vertices in each path
-    go i ml mr = case (ml, mr) of
-      (Just l, Just r) -> _
--}
+    neighbs = fromNeighborList nl
+    wedgeFrom (fbv_l, e_l) (fbv_r, e_r) =
+      Wedge {leftPath = map snd leftPath, rightPath = map snd rightPath}
+      where
+      leftPath0  = (fbv_l, e_l) : goingRight fbv_l
+      rightPath0 = (fbv_r, e_r) : goingLeft fbv_r
+
+      -- Find the first vertex that appears in both paths and cut the path
+      -- off there. The first vertex that appears in both paths is the
+      -- first vertex that appears in leftPath0 which also appears in
+      -- rightPath0. Theta(n^2). Optimization opportunity.
+      v_intersect = List.find (`List.elem` rightPath0) leftPath0
+
+      (leftPath, rightPath) =
+        case v_intersect of
+          Just ve -> (takeTo ((== ve) . fst) leftPath0, takeTo ((== ve) . fst) rightPath0)
+          Nothing -> (leftPath0, rightPath0)
+
+vees :: NaturalGraph f o -> [Wedge]
+vees ng = wedges ng (bottom ng) incoming
 
 carets :: NaturalGraph f o -> [Wedge]
-carets = _
+carets ng = wedges ng (top ng) outgoing
+
+fromNeighborList :: NeighborList (EdgeID, f) (EdgeID, o) -> [(Foggy (OrBoundary Vertex), EdgeID)]
+fromNeighborList nl =
+  case nl of
+    WithFogged pre w ->
+      map (\(bv, (e,_)) -> (Clear bv, e)) pre
+      ++ Word.toList (bimap (\(e,_) -> (CoveredInFog, e)) (\(e,_) -> (CoveredInFog, e)) w)
+
+    NoFogged w -> 
+      let f (bv, (e,_)) = (Clear bv, e) in
+      Word.toList (bimap f f w)
 
 -- clean up
 
@@ -521,3 +436,5 @@ neighborListToExplicitVerts = \case
   NoFogged w -> Word.toList $ bimap fst fst w
   WithFogged pre _w -> map fst pre
 
+takeTo p = foldr (\x r -> if p x then [x] else x : r) []
+  

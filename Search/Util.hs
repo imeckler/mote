@@ -9,6 +9,10 @@ lastMay []     = Nothing
 lastMay [x]    = Just x
 lastMay (_:xs) = lastMay xs
 
+headMay :: [a] -> Maybe a
+headMay [] = Nothing
+headMay (x:_) = x
+
 lookupExn :: (Ord k, Show k) => k -> Map k v -> v
 lookupExn k = fromMaybe (error ("M.lookup failed for key: " ++ show k)) . Map.lookup k
 
