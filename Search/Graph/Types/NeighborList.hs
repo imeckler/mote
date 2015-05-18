@@ -26,6 +26,12 @@ instance Bifunctor NeighborList where
     NoFogged w -> NoFogged (bimap (second g1) (second g2) w)
     WithFogged pre w -> WithFogged (map (second g1) pre) (bimap g1 g2 w)
 
+mapVertex :: (OrBoundary Vertex -> OrBoundary Vertex) -> NeighborList f o -> NeighborList f o
+mapVertex f nl =
+  case nl of
+    WithFogged pre w -> WithFogged (map (first f) pre) w
+    NoFogged w -> NoFogged (bimap (first f) (first f) w)
+
 {-
 fold :: (f -> s -> s) -> (o -> s -> s) -> s -> NeighborList f o -> s
 fold f g z = \case

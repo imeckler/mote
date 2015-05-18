@@ -18,3 +18,13 @@ lookupExn k = fromMaybe (error ("M.lookup failed for key: " ++ show k)) . Map.lo
 
 findMap :: (a -> Maybe b) -> [a] -> Maybe b
 findMap f = foldr (\x r -> case f x of { Just y -> Just y; _ -> r }) Nothing
+
+splittings :: [f] -> [([f],[f])]
+splittings = go [] where
+  go pre l@(f : fs) = (reverse pre, l) : go (f:pre) fs
+  go pre [] = [(reverse pre, [])]
+
+fineViews = concatMap (\(pre, post) -> fmap (\(x,y) -> (pre,x,y)) (splittings post)) . splittings
+
+(|>) :: a -> (a -> b) -> b
+(|>) x f = f x

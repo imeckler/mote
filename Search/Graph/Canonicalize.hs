@@ -170,6 +170,34 @@ reachability = goTop Map.empty
           in
           (Map.insert e descs acc1, descs)
 
+edgesRightOfAll :: NaturalGraph f o -> Map EdgeID (Set EdgeID)
+edgesRightOfAll ng =
+  Map.mapWithKey (\(e, _ed) -> makeRights e)
+    (edges ng)
+  where
+  diamondRightness = reachability (diamondRightnessgraph ng)
+  (topTendrils, botTendrils) = tendrils ng
+
+  makeRights e
+    | e `Set.member` topTendrils =
+    -- If e is a top tendril and e' is a bottom tendril such that e is not
+    -- diamond-right of e', then e' is right of e
+      Set.union eDiamondRights
+        (Set.filter
+          (\e' -> not . Set.member e $ lookupExn e' diamondRightness)
+          botTendrils)
+
+    -- Similarly if e is a bottom tendril.
+    | e `Set.member` botTendrils =
+      Set.union eDiamondRights
+        (Set.filter
+          (\e' -> not . Set.member e $ lookupExn e' diamondRightness)
+          topTendrils)
+
+    | otherwise = eDiamondRights
+    where
+    eDiamondRights = lookupExn e diamondRightness
+
 edgesRightOf :: NaturalGraph f o -> EdgeID -> Set EdgeID
 edgesRightOf ng e
   | e `Set.member` topTendrils =

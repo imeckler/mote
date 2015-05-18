@@ -8,6 +8,8 @@ import GHC.Generics
 import Control.Applicative
 import qualified Data.List as List
 
+import Search.Util
+
 data Word f o = Word [f] (Maybe o)
   deriving (Eq, Ord, Show, Generic)
 
@@ -97,9 +99,3 @@ views w@(Word fs mo) =
     (splittings fs)
     -}
 
-splittings :: [f] -> [([f],[f])]
-splittings = go [] where
-  go pre l@(f : fs) = (reverse pre, l) : go (f:pre) fs
-  go pre [] = [(reverse pre, [])]
-
-fineViews = concatMap (\(pre, post) -> fmap (\(x,y) -> (pre,x,y)) (splittings post)) . splittings

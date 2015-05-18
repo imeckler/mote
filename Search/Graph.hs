@@ -559,6 +559,8 @@ toTerm = toTerm' . compressPaths
 -- there are no incoming vertices or outgoing vertices.
 data TopOrBottom = Top | Bottom deriving (Eq, Show)
 
+data Edge = LeftEdge | RightEdge | Incoming EdgeID
+
 -- TODO: Would be nice to have a "scratch pad" where I can write bits of
 -- expressions to see their types
 toTerm' :: NaturalGraph f o -> AnnotatedTerm
@@ -567,34 +569,54 @@ toTerm' ng0 =
     Nothing ->
       AnnotatedTerm Id 0
 
-    -- TODO: Things are significantly different when v has nothing
-    -- incoming. Then we have to compute which are the two incoming
-    -- things to the left and right of v in some other way.
-    Just ((v, vd), g') ->
-      _
-      where
-      vpreds = fromNeighborList (incoming vd)
-      vpred0 = snd <$> headMay vpreds
-      vpred1 = snd <$> lastMay vpreds
+    _ ->
+      case topGoodVertexOfType1 of
+        Just (v,vd) -> finishUp v vd top' fmaplevel
+          where
+          ins = mapMaybe (fmap snd . killFoggy) $ fromNeighborList (incoming vd)
+          in_0 = head ins
+          in_n = last ins
+          (top', fmaplevel) =
+            case top ng of
+              WithFogged unfogged w ->
+                _
 
-      top' =
-        case top ng of
-          WithFogged pre w ->
-            _
+              NoFogged (Word fs m) ->
+                _
 
-          NoFogged w ->
-            -- TODO: efficency
-            findMap (\case
-              NoO pre foc post ->
-                if fmap (fst . snd) (headMay foc) == vpred0
-                then _
-                else _
-
-              YesOMid pre foc postfs posto -> _
-              YesOEnd fs (focfs, foco) -> _)
-              (Word.views w)
-
+        Nothing ->
+          case topGoodVertexOfType2 of
+            Nothing -> AnnotatedTerm Id 0
+            Just (me, v) -> _
   where
+
+  finishUp v vd top' fmaplevel =
+    AnnotatedTerm _ _ <> toTerm' ng'
+    where
+    ng' =
+      ng
+      { top = top'
+      , bottom =
+          NeighborList.mapVertex rename (bottom ng)
+
+      , digraph =
+          Map.map (\vd ->
+            vd { incoming = NeighborList.mapVertex rename (incoming vd) })
+            (digraph ng)
+
+      , edges =
+          Map.map (\(EdgeData source sink) ->
+            EdgeData (fmap rename source) (fmap rename sink))
+            (List.foldl' (flip Map.delete) (edges ng) deletedEdges)
+
+      , constantEdges =
+          List.foldl' (flip Set.delete) (constantEdges ng) deletedEdges
+      }
+
+    rename bv = if bv == Inner v then Boundary else bv
+
+    deletedEdges = map snd $ fromNeighborList (incoming vd)
+
   (numStraights, ng) = countAndDropFMapStraights ng0
 
   g = digraph ng
@@ -616,13 +638,143 @@ toTerm' ng0 =
       where
       isBoundary = \case {(Boundary,_) -> True; _ -> False}
 
+  killFoggy (fbv,e) =
+    case fbv of
+      CoveredInFog -> Nothing
+      Clear bv     -> Just (bv, e)
+
+  topGoodVertexOfType1 :: Maybe (Vertex, VertexData f o)
+  topGoodVertexOfType1 =
+    findMap (\(v, vd) ->
+      case mapMaybe killFoggy (fromNeighborList (incoming vd)) of
+        [] ->
+          Nothing
+
+        (Boundary,e) : vs ->
+          if all (\case {(Boundary,_) -> True; _ -> False}) vs
+          then Just (v, vd)
+          else Nothing
+
+        _ -> Nothing)
+      (Map.toList g)
+
+  topGoodVertexOfType2 :: Maybe (Maybe EdgeID, Vertex, VertexData f o)
+  topGoodVertexOfType2 =
+    findMap (\(v, vd) ->
+      case mapMaybe killFoggy (fromNeighborList (incoming vd)) of
+        [] ->
+          let
+            unblocked =
+              List.filter (\(e_l, e_r) ->
+                (o_1 `Set.member` lookupExn e_l rightnesses)
+                && (e_r `Set.member` rightOfO_n))
+                sameOriginPairs
+              |> List.all (\(e_l, e_r) ->
+                (e_l `Set.member` rightOfO_n)
+                || o_1 `Set.member` lookupExn e_r rightnesses)
+          in
+          if unblocked
+          then
+            Just
+            ( findMap (\(_,e) ->
+                if o_1 `Set.member` lookupExn e rightnesses
+                then Just e
+                else Nothing)
+                (reverse $ fromNeighborList (top ng))
+            , v
+            , vd
+            )
+          else Nothing
+          where
+          -- assuming stray vertices have been deleted, it's safe to call
+          -- head and last
+          outlist = fromNeighborList (outgoing vd)
+          (_, o_1) = head outlist
+          (_, o_n) = last outlist
+          rightOfO_n = Map.lookup o_n rightnesses
+
+        _ ->
+          Nothing
+      )
+      (Map.toList g)
+
+  (topTendrils, botTendrils) = tendrils ng
+  diamondRightness = reachability (diamondRightnessgraph ng)
+  rightnesses = edgesRightOfAll ng
+
+  sameOriginPairs =
+    List.concatMap (\(v, vd) ->
+      List.concatMap (\case
+        [] -> []
+        (e1 : es) -> map (e1,) es)
+      (List.tails (map snd $ fromNeighborList (outgoing vd))))
+    (Map.toList g)
+
+{-
+Want either
+1. something that has only contiguous Boundary parents (resp children) and at least one of them.
+  - easy to find and excise. Just map over all views of
+    the incoming (resp outgoing) NeighborList
+
+2. something with no parents (resp children) that has no obstacles on top (resp bottom) of it
+    - can find such a thing by travelling first one down from a port, then
+      right and up. Essentially attempting to make a vee.
+    - By doing this, we will know the left boundary.
+
+
+Suppose v has no incoming. Then u is an obstacle for v if there exist children of u
+c1 (from edge e1) c2 (from edge e2) such that
+  - e1 is left of the leftmost out edge of v
+  - e2 is right of the rightmost out edge of v
+  - c1 and v have a common descendant
+  - c2 and v have a common descendant
+
+We want to find v such that
+  - v has no incoming
+  - every edge that an outgoing edge of v is to the right of is either
+    tendrilous or a port edge
+We then want to find the rightmost port edge to the left of v
+
+We want to find v such that
+  - v has no incoming
+  - for any two edges e_l, e_r such that e_l is to the left of edges of
+    n
+-}
+
+{-
+  findGoodVertexFrom dir ng =
+    if List.null start
+    then Nothing
+    else 
+      foldr (\(fbv, e) keepGoing ->
+        case fbv of
+          Clear (Inner v) -> go e v <|> keepGoing
+          _ -> keepGoing)
+        Nothing
+        start
+    where
+    start = fromNeighborList $ _
+
+    next = case dir of { Top -> incoming; Bottom -> outgoing }
+
+    go e v =
+      let vd = lookupExn v g in
+      case next vd of
+        [] -> Just (e, v, vd) -- If there are no incoming edges, this vertex is good and e is the left boundary.
+        xs ->
+          case scanAcross e xs of
+            n
+
+
   findGoodVertexFrom v0 =
     case nonTrivialParent v0 of
       Left v1 ->
         findGoodVertexFrom v1
 
       Right es ->
-        findGoodVertexFrom =<< nonContiguity es
+        case nonContiguity es of
+          Right () -> v0
+          Left v1  -> findGoodVertexFrom v1
 
   nonTrivialParent :: Vertex -> Either Vertex [EdgeID] 
   nonTrivialParent v =
@@ -634,27 +786,31 @@ toTerm' ng0 =
     (Right [])
     (fromNeighborList (incoming (lookupExn v g)))
 
-  nonContiguity :: [EdgeID] -> Maybe Vertex
+  nonContiguity :: [EdgeID] -> Either Vertex ()
   nonContiguity es =
     case es of
       [] ->
-        Nothing
-      e : _ ->
-        findMap (\(e, (fbv,e')) ->
-          if e /= e'
-          then
-            case fbv of
-              Clear (Inner v) -> Just v
-              Clear Boundary  -> Nothing
-              CoveredInFog    -> Nothing
-          else Nothing)
-
-          matchedUp
+        Right ()
+      e0 : _ ->
+        let offender =
+              findMap (\(e, (bv,e')) ->
+                if e /= e'
+                then
+                  case bv of
+                    Inner v  -> Just v
+                    Boundary -> Nothing
+                else Nothing)
+                matchedUp
+        in
+        case offender of
+          Just x  -> Left x
+          Nothing -> Right ()
         where
         matchedUp =
           zip es
-            (dropWhile ((/= e) . snd) (fromNeighborList (top ng)))
-
+            (dropWhile ((/= e0) . snd) $ mapMaybe killFoggy (fromNeighborList (top ng)))
+          where
+-}
 {- begin debug
 toTerm' :: NaturalGraph f o -> AnnotatedTerm
 toTerm' ng0 = case findGoodVertex ng of
