@@ -59,17 +59,6 @@ data Edge
   | FromFog FogTarget
   deriving (Eq, Ord, Show)
 
-{-
-data Edge
-  = Standard StandardEdge
-  | FromFog ExplicitVert Int -- (target, index in the ordering of the incoming edges of the target) (perhaps should be the index in the incoming voided edges instead)
-  | ToFog ExplicitVert Int -- (source, index in the ordering of the outgoing edges of the target)
-
-  | FromSource DummyVertex (Foggy Vert)
-  | ToSink DummyVertex (Foggy Vert)
-  deriving (Eq, Ord, Show)
--}
-
 -- Edge is the type of vertices of this graph
 type RightnessGraph
   = Map EdgeID [EdgeID] -- sucessors. I.e., the set of things to the right of this edge
@@ -94,28 +83,28 @@ obliterateFrom ng0 e0 =
   where
   edgeInfo = edges ng0
 
-  fogSource :: EdgeID -> OrBoundary (Foggy Vertex) -> NaturalGraph f o -> NaturalGraph f o
+  fogSource :: EdgeID -> Foggy (OrBoundary Vertex) -> NaturalGraph f o -> NaturalGraph f o
   fogSource e source ng =
     case source of
-      Boundary ->
+      Clear Boundary ->
         ng { top = fogAt e (top ng) }
 
-      Inner (Clear v) ->
+      Clear (Inner v) ->
         ng { digraph = Map.adjust (\vd -> vd { outgoing = fogAt e (outgoing vd) }) v (digraph ng) }
 
-      Inner CoveredInFog ->
+      CoveredInFog ->
         ng
 
-  fogSink :: EdgeID -> OrBoundary (Foggy Vertex) -> NaturalGraph f o -> NaturalGraph f o
+  fogSink :: EdgeID -> Foggy (OrBoundary Vertex) -> NaturalGraph f o -> NaturalGraph f o
   fogSink e sink ng =
     case sink of
-      Boundary ->
+      Clear Boundary ->
         ng { bottom = fogAt e (bottom ng) }
 
-      Inner (Clear v) ->
+      Clear (Inner v) ->
         ng { digraph = Map.adjust (\vd -> vd { incoming = fogAt e (incoming vd) }) v (digraph ng) }
 
-      Inner CoveredInFog ->
+      CoveredInFog ->
         ng
 
 
@@ -322,12 +311,15 @@ wedges ng start nexts =
       -- off there. The first vertex that appears in both paths is the
       -- first vertex that appears in leftPath0 which also appears in
       -- rightPath0. Theta(n^2). Optimization opportunity.
-      v_intersect = List.find (`List.elem` rightPath0) leftPath0
+      v_intersect = List.find (\(ve,_) -> List.any ((== ve) . fst) rightPath0) leftPath0
 
       (leftPath, rightPath) =
         case v_intersect of
-          Just ve -> (takeTo ((== ve) . fst) leftPath0, takeTo ((== ve) . fst) rightPath0)
-          Nothing -> (leftPath0, rightPath0)
+          Just (ve,_) ->
+            (takeTo ((== ve) . fst) leftPath0, takeTo ((== ve) . fst) rightPath0) -- (takeTo ((== ve) . fst) leftPath0, takeTo ((== ve) . fst) rightPath0)
+
+          Nothing ->
+            (leftPath0, rightPath0)
 
 vees :: NaturalGraph f o -> [Wedge]
 vees ng = wedges ng (bottom ng) incoming
@@ -411,19 +403,22 @@ deleteStrayVertices ng = ng { digraph = go g possibleStrays } where
 deleteStrayVertices :: NaturalGraph f o -> NaturalGraph f o
 deleteStrayVertices ng =
   ng
-  { edges = Map.filter notStrayEdge (edges ng)
+  { edges = edges'
   , digraph = Set.foldl' (flip Map.delete) g nonStray  -- TODO: Use difference function
-  , constantEdges = Set.filter notStrayEdge (constantEdges ng)
+  , constantEdges =
+      Set.filter (`Map.member` edges') (constantEdges ng)
   }
   where
+  edges' = Map.filter notStrayEdge (edges ng)
+
   nonStray = go Set.empty (map fst (fromNeighborList (top ng) ++ fromNeighborList (bottom ng)))
 
   notStrayEdge (EdgeData {source,sink}) =
     case (source, sink) of
-      (Inner CoveredInFog, Inner CoveredInFog) -> False
-      (Inner (Clear v), Inner (Clear v'))      -> (v `Set.member` nonStray) && (v' `Set.member` nonStray)
-      (Boundary, _)                            -> True
-      (_, Boundary)                            -> True
+      (CoveredInFog, CoveredInFog) -> False
+      (Clear (Inner v), Clear (Inner v'))      -> (v `Set.member` nonStray) && (v' `Set.member` nonStray)
+      (Clear Boundary, _)                            -> True
+      (_, Clear Boundary)                            -> True
 
   go :: Set Vertex -> [Foggy (OrBoundary Vertex)] -> Set Vertex
   go seen next =
@@ -451,24 +446,6 @@ deleteStrayVertices ng =
 
 -- UTIL
 
-{-
-lookupExn :: Ord k => k -> Map k a -> a
-lookupExn k m = case Map.lookup k m of
-  Just x -> x
-  Nothing -> error "lookupExn: Lookup failed"
-
-
-findSourceIndex g ev0 v =
-  fromJust . List.findIndex (== ev0) . neighborListToExplicitVerts . outgoing $ lookupExn v g
--}
-
-findIndex g inout ve0 v =
-  fromJust . List.findIndex (== ve0) . neighborListToExplicitVerts . inout $ lookupExn v g
-
-neighborListToExplicitVerts :: NeighborList f o -> [Vert]
-neighborListToExplicitVerts = \case
-  NoFogged w -> Word.toList $ bimap fst fst w
-  WithFogged pre _w -> map fst pre
 
 takeTo p = foldr (\x r -> if p x then [x] else x : r) []
   

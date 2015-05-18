@@ -31,7 +31,7 @@ data VertexData f o = VertexData
   deriving (Show, Eq)
 
 instance Bifunctor VertexData where
- first f vd = vd { incoming = first f (incoming vd), outgoing = second f (outgoing vd) }
+ first f vd = vd { incoming = first f (incoming vd), outgoing = first f (outgoing vd) }
 
  second f vd = vd { incoming = second f (incoming vd), outgoing = second f (outgoing vd) }
 
@@ -50,6 +50,9 @@ data NaturalGraph f o = NaturalGraph
   , digraph       :: Map Vertex (VertexData (EdgeID, f) (EdgeID, o))
   , edges         :: Map EdgeID EdgeData
   , constantEdges :: Set EdgeID -- For easy canonicalization
+
+  , freshVertex :: Vertex
+  , freshEdgeID :: EdgeID
   }
 
 -- It is convenient for edges to have ids. 

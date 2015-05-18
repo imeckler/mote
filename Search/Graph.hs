@@ -8,7 +8,6 @@ import Data.Maybe
 import qualified Data.Set as Set
 import qualified Data.Map as Map
 import Data.Map (Map)
-import Data.List
 import Control.Applicative
 import Control.Monad.State hiding (sequence)
 import Control.Monad.Error hiding (sequence)
@@ -48,7 +47,7 @@ connectedComponents ng = go [] vs
   vs = 
     Set.fromList $
       mapMaybe (disambiguate In) (fromNeighborList (top ng))
-      ++ map (disambiguate Out) (fromNeighborList (bottom ng))
+      ++ mapMaybe (disambiguate Out) (fromNeighborList (bottom ng))
 
   go acc remaining =
     case Set.minView remaining of
@@ -116,13 +115,13 @@ moveToGraph move = case move of
         NoFogged
           ( Word (zipWith (\f i -> (Boundary, (i, f))) pre [0..]) Nothing
             <> bimap (Inner 0,) (Inner 0,) edgedFrom
-            <> (bimap (Boundary,) (Boundary,) $ enum_word (n_l + n_mid_in + n_mid_out) post))
-
+            <> bimap (Boundary,) (Boundary,) (enum_word (n_l + n_mid_in + n_mid_out) post))
+            
     , bottom =
         NoFogged
           ( Word (zipWith (\f i -> (Boundary, (i, f))) pre [0..]) Nothing
           <> bimap (Inner 0,) (Inner 0,) edgedTo
-          <> (bimap (Boundary,) (Boundary,) $ enum_word (n_l + n_mid_in + n_mid_out) post))
+          <> bimap (Boundary,) (Boundary,) (enum_word (n_l + n_mid_in + n_mid_out) post))
     
     , digraph =
       Map.singleton 0 $
@@ -134,10 +133,10 @@ moveToGraph move = case move of
 
     , edges =
         Map.fromAscList $
-             map (\i -> (i, EdgeData {source=Boundary,sink=Boundary})) [0..(n_l - 1)]
-          ++ map (\i -> (i, EdgeData {source=Boundary,sink=Inner (Clear 0)})) [n_l..(n_l + n_mid_in - 1)]
-          ++ map (\i -> (i, EdgeData {source=Inner (Clear 0),sink=Boundary})) [(n_l + n_mid_in)..(n_l + n_mid_in + n_mid_out - 1)]
-          ++ map (\i -> (i, EdgeData {source=Boundary,sink=Boundary})) [(n_l + n_mid_in + n_mid_out)..(n_l + n_mid_in + n_mid_out + n_r - 1)]
+             map (\i -> (i, EdgeData {source=Clear Boundary,sink=Clear Boundary})) [0..(n_l - 1)]
+          ++ map (\i -> (i, EdgeData {source=Clear Boundary,sink=Clear (Inner 0)})) [n_l..(n_l + n_mid_in - 1)]
+          ++ map (\i -> (i, EdgeData {source=Clear (Inner 0),sink=Clear Boundary})) [(n_l + n_mid_in)..(n_l + n_mid_in + n_mid_out - 1)]
+          ++ map (\i -> (i, EdgeData {source=Clear Boundary,sink=Clear Boundary})) [(n_l + n_mid_in + n_mid_out)..(n_l + n_mid_in + n_mid_out + n_r - 1)]
     
     , constantEdges =
         Set.fromList $
@@ -145,6 +144,10 @@ moveToGraph move = case move of
           [ (n_l + n_mid_in - 1) <$ Word.end (from t)
           , (n_l + n_mid_in + n_mid_out - 1) <$ Word.end (to t)
           ]
+
+    , freshVertex = 1
+
+    , freshEdgeID = n_l + n_mid_in + n_mid_out + n_r
     }
     where
     n_l = length pre
@@ -162,10 +165,11 @@ moveToGraph move = case move of
       Word (zipWith (\f i -> (i, f)) fs [(n_l + n_mid_in)..])
         (fmap (\o -> (n_l + n_mid_in + n_mid_out - 1,o)) mo)
 
+    enum_word :: Int -> Word f o -> Word (Int, f) (Int, o)
     enum_word !i (Word fs mo) =
       case fs of
-        []      -> Word fs (fmap (i,) mo)
-        f : fs' -> let Word ifs imo = enum_word (i + 1) fs' in Word ((i,f):ifs) imo
+        []      -> Word [] (fmap (i,) mo)
+        f : fs' -> let Word ifs imo = enum_word (i + 1) (Word fs' mo) in Word ((i,f):ifs) imo
 
   End pre t ->
     NaturalGraph
@@ -198,6 +202,10 @@ moveToGraph move = case move of
           [ (n_l + n_mid_in - 1) <$ Word.end (from t)
           , (n_l + n_mid_in + n_mid_out - 1) <$ Word.end (to t)
           ]
+
+    , freshEdgeID = n_l + n_mid_in + n_mid_out
+
+    , freshVertex = 1
     }
     where
     edgedFrom = 
@@ -215,14 +223,33 @@ moveToGraph move = case move of
     n_mid_out = Word.length (to t)
 
 
-idGraph :: [f] -> NaturalGraph f o
-idGraph fs =
+idGraph :: Word f o -> NaturalGraph f o
+idGraph w =
   NaturalGraph
-  { top         = NoFogged (map (Boundary,) (zip [0..] fs))
-  , bottom      = NoFogged (map (Boundary,) (zip [0..] fs))
-  , digraph     = Map.empty
-  , edges       = Map.fromList (zipWith (\i _ -> (i,EdgeData Boundary Boundary)) [0..] fs)
+  { top =
+      NoFogged
+        (Word (zipWith (\i f -> (Boundary, (i,f))) [0..] fs)
+          (fmap (\o -> (Boundary, (k-1,o))) mo))
+
+  , bottom =
+      NoFogged
+        (Word (zipWith (\i f -> (Boundary, (i,f))) [0..] fs)
+          (fmap (\o -> (Boundary, (k-1,o))) mo))
+
+  , digraph = Map.empty
+
+  , edges = Map.fromList (map (\i -> (i,EdgeData (Clear Boundary) (Clear Boundary))) [0..(k-1)])
+
+  , constantEdges =
+      maybe Set.empty (\_ -> Set.singleton (k - 1)) mo
+  
+  , freshEdgeID = k
+
+  , freshVertex = 0
   }
+  where
+  k = Word.length w
+  Word fs mo = w
 
 branchOut
   :: (Eq f, Hashable f, Eq o, Hashable o)
@@ -263,18 +290,6 @@ branchOut ts = concatMap possibilities . Word.views
           (Word pre Nothing <> to t, End pre t)
         )
 
--- Es importante que no cambia (incomingDummys ng1) o
--- (outgoingDummys ng2)
-
-{-
-shiftBy n g =
-  Map.map (\vd -> vd { incoming = shiftEs (incoming vd), outgoing = shiftEs (outgoing vd) })
-  $ Map.mapKeysMonotonic (+ n) g
-  where
-  shift   = first $ \v -> case v of {Real r -> Real (r + n); _ -> v}
-  shiftEs = bimap shift shift
--}
-
 shiftBy :: NaturalGraph f o -> Int -> Int -> NaturalGraph f o
 shiftBy ng s_v s_e =
   ng
@@ -290,19 +305,23 @@ shiftBy ng s_v s_e =
           EdgeData {source=fmap (fmap (+ s_v)) source,sink=fmap (fmap (+ s_v)) sink})
           (edges ng)
   }
-  where
 
 sequence :: NaturalGraph f o -> NaturalGraph f o -> NaturalGraph f o
 sequence ng1 ng2_0 =
   NaturalGraph
-  { top = top'
-  , bottom = bottom'
-  , digraph = digraph'
-  , edges = edges'
+  { top           = top'
+  , bottom        = bottom'
+  , digraph       = digraph'
+  , edges         = edges'
+  , constantEdges =
+      -- TODO: Use difference function
+      Set.filter (`Map.member` edges')
+        (Set.union (constantEdges ng1) (constantEdges ng2))
+  , freshVertex = freshVertex ng1 + freshVertex ng2
+  , freshEdgeID = freshEdgeID ng1 + freshEdgeID ng2
   }
   where
-  g1 = digraph ng1
-  ng2 = shiftBy ng2_0 (Map.size g1) (Set.size (edges ng1))
+  ng2 = shiftBy ng2_0 (freshVertex ng1) (freshEdgeID ng1)
 
   discardLabel (v,(e,_)) = (v,e)
 
@@ -387,7 +406,6 @@ sequence ng1 ng2_0 =
   partners = zip (toRow (bottom ng1)) (toRow (top ng2))
       
 
-{- begin debug
 -- TODO: Convert real Haskell programs into lists of moves
 -- TODO: Analyze program graphs
 
@@ -399,7 +417,7 @@ graphsOfSizeAtMost
   -> Word f o
   -> [NaturalGraph f o]
 graphsOfSizeAtMost tsList n start end = map deleteStrayVertices . HashSet.toList $ runST $ do
-  arr <- newSTArray (0, n) M.empty
+  arr <- newSTArray (0, n) Map.empty
   go arr n start
   where 
   newSTArray :: (Int, Int) -> Map k v -> ST s (STArray s Int (Map k v))
@@ -414,16 +432,17 @@ graphsOfSizeAtMost tsList n start end = map deleteStrayVertices . HashSet.toList
     | n == 0    = return HashSet.empty
     | otherwise = do
       memo <- readArray arr n
-      case M.lookup b memo of
+      case Map.lookup b memo of
         Nothing -> do
           progs <- fmap HashSet.unions . forM (branchOut ts b) $ \(b', move) ->
             fmap (HashSet.map (sequence (moveToGraph move))) (go arr (n - 1) b')
           let progs' = if b == end then HashSet.insert (idGraph end) progs else progs
-          writeArray arr n (M.insert b progs' memo)
+          writeArray arr n (Map.insert b progs' memo)
           return progs'
 
         Just ps -> return ps
 
+{- begin debug
 -- Search with heuristics
 graphsOfSizeAtMostH
   :: (Hashable f, Ord f, Hashable o, Ord o)
