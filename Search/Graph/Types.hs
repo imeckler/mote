@@ -43,6 +43,7 @@ data EdgeData = EdgeData
   { source :: Foggy (OrBoundary Vertex)
   , sink   :: Foggy (OrBoundary Vertex)
   }
+  deriving (Show, Eq, Ord)
 
 data NaturalGraph f o = NaturalGraph
   { top           :: NeighborList (EdgeID, f) (EdgeID, o)
@@ -54,6 +55,7 @@ data NaturalGraph f o = NaturalGraph
   , freshVertex :: Vertex
   , freshEdgeID :: EdgeID
   }
+  deriving (Show)
 
 -- It is convenient for edges to have ids. 
 

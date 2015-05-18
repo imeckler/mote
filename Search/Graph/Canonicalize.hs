@@ -172,7 +172,7 @@ reachability = goTop Map.empty
 
 edgesRightOfAll :: NaturalGraph f o -> Map EdgeID (Set EdgeID)
 edgesRightOfAll ng =
-  Map.mapWithKey (\(e, _ed) -> makeRights e)
+  Map.mapWithKey (\e _ed -> makeRights e)
     (edges ng)
   where
   diamondRightness = reachability (diamondRightnessgraph ng)
@@ -437,7 +437,8 @@ deleteStrayVertices :: NaturalGraph f o -> NaturalGraph f o
 deleteStrayVertices ng =
   ng
   { edges = edges'
-  , digraph = Set.foldl' (flip Map.delete) g nonStray  -- TODO: Use difference function
+  , digraph = Map.filterWithKey (\v _vd -> v `Set.member` nonStray) g
+  -- TODO: Use intersection function
   , constantEdges =
       Set.filter (`Map.member` edges') (constantEdges ng)
   }

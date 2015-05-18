@@ -294,11 +294,16 @@ branchOut ts = concatMap possibilities . Word.views
 shiftBy :: NaturalGraph f o -> Int -> Int -> NaturalGraph f o
 shiftBy ng s_v s_e =
   ng
-  { top = bimap (first (+ s_e)) (first (+ s_e)) (top ng)
-  , bottom = bimap (first (+ s_e)) (first (+ s_e)) (bottom ng)
+  -- TODO: Optimize to do only one traversal of the NeighborLists. better
+  -- to make the vertices part of the functory data
+  { top = shiftNeighborList (top ng)
+  , bottom = shiftNeighborList (bottom ng)
   , digraph =
       Map.mapKeysMonotonic (+ s_v) $
-        Map.map (bimap (first (+ s_e)) (first (+ s_e)))
+        Map.map (\vd ->
+          vd { incoming = shiftNeighborList (incoming vd), outgoing = shiftNeighborList (outgoing vd) } 
+          )
+          -- (bimap (first (+ s_e)) (first (+ s_e)))
           (digraph ng)
   , edges =
       Map.mapKeysMonotonic (+ s_e) $
@@ -306,6 +311,9 @@ shiftBy ng s_v s_e =
           EdgeData {source=fmap (fmap (+ s_v)) source,sink=fmap (fmap (+ s_v)) sink})
           (edges ng)
   }
+  where
+  shiftNeighborList = 
+    NeighborList.mapVertex (fmap (+ s_v)) . bimap (first (+ s_e)) (first (+ s_e))
 
 sequence :: NaturalGraph f o -> NaturalGraph f o -> NaturalGraph f o
 sequence ng1 ng2_0 =
@@ -396,7 +404,7 @@ sequence ng1 ng2_0 =
           NoFogged w ->
             NoFogged (bimap replace replace w)
         where
-        replace d@(_,(e',f)) = if e' == e then (ob, (e,f)) else d
+        replace d@(_,(e',f)) = if e' == e then (ob, (e_new,f)) else d
 
       CoveredInFog ->
         case fogAt e nl of
@@ -548,7 +556,7 @@ renderTerm = \case
   Compound s -> s
 
 renderAnnotatedTerm = renderTerm . unannotatedTerm
-
+{-
 toTerm :: NaturalGraph f o -> AnnotatedTerm
 toTerm = toTerm' . compressPaths
 
@@ -560,6 +568,7 @@ toTerm = toTerm' . compressPaths
 data TopOrBottom = Top | Bottom deriving (Eq, Show)
 
 data Edge = LeftEdge | RightEdge | Incoming EdgeID
+
 
 -- TODO: Would be nice to have a "scratch pad" where I can write bits of
 -- expressions to see their types
@@ -587,7 +596,7 @@ toTerm' ng0 =
         Nothing ->
           case topGoodVertexOfType2 of
             Nothing -> AnnotatedTerm Id 0
-            Just (me, v) -> _
+            Just (me, v, vd) -> _
   where
 
   finishUp v vd top' fmaplevel =
@@ -709,7 +718,7 @@ toTerm' ng0 =
         (e1 : es) -> map (e1,) es)
       (List.tails (map snd $ fromNeighborList (outgoing vd))))
     (Map.toList g)
-
+-}
 {-
 Want either
 1. something that has only contiguous Boundary parents (resp children) and at least one of them.
@@ -1220,15 +1229,16 @@ checkGraph ng = do
 -- lookupExn :: Ord k => k -> M.Map k v -> v
 
 compressPaths :: NaturalGraph f o -> NaturalGraph f o
-compressPaths ng = go (digraph ng) startingVertices
+compressPaths ng = go ng startingVertices
   where
   startingVertices =
-    filter (\vd ->
+    filter (\(_v, vd) ->
       let inc = fromNeighborList (incoming vd) in
       not (length inc == 1 && all (\case {(Clear (Inner _),_) -> True; _ -> False}) inc))
-    (Map.elems (digraph ng))
+      (Map.toList (digraph ng))
+    |> map fst
 
-  go :: Map Vertex (VertexData f o) -> [Vertex] -> Map Vertex (VertexData f o)
+--  go :: Map Vertex (VertexData f o) -> [Vertex] -> Map Vertex (VertexData f o)
   go ng next =
     case next of
       [] -> ng
@@ -1248,18 +1258,25 @@ compressPaths ng = go (digraph ng) startingVertices
   compressPath path ng =
     let (v0, vd0) : _ = path
         (v1, vd1)     = last path
-        lab           = mconcat (concat (label . snd) path)
+        lab           = mconcat (map (label . snd) path)
         (g', top')    =
           List.foldl' (\(g0,top0) (fbv,e) ->
             case fbv of
               Clear Boundary -> (g0, replace v0 v1 top0)
               Clear (Inner v) -> (Map.adjust (\vd -> vd {outgoing=replace v0 v1 (outgoing vd)}) v g0, top0)
               CoveredInFog -> (g0,top0))
-            (digraph ng, top ng)
+
+            ( Map.insert v0 (VertexData {label=lab,outgoing=outgoing vd0,incoming=incoming vd1})
+                (digraph ng)
+            , top ng
+            )
             (fromNeighborList (incoming vd1))
     in
-    Map.insert v0
-      (VertexData {label=lab,outgoing=outgoing vd0,incoming=incoming vd1})
+    ng
+    { top = top'
+    , digraph = g'
+    }
+      
     
   replace v0 v1 nl =
     case nl of
