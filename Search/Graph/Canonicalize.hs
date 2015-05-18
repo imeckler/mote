@@ -8,7 +8,6 @@ import Data.Set (Set)
 import Search.Graph.Types
 import qualified Data.List as List
 import Data.Bifunctor
-import Data.Maybe
 import Data.Monoid
 
 import Control.Monad.State
@@ -71,6 +70,12 @@ data Wedge =
   , rightPath :: [EdgeID]
   }
 
+canonicalize :: NaturalGraph f o -> NaturalGraph f o
+canonicalize = deleteStrayVertices . obliterate
+
+obliterate :: NaturalGraph f o -> NaturalGraph f o
+obliterate ng = Set.foldl' obliterateFrom ng (constantEdges ng)
+
 obliterateFrom :: NaturalGraph f o -> EdgeID -> NaturalGraph f o
 obliterateFrom ng0 e0 =
   Set.foldl' (\ng e ->
@@ -128,7 +133,7 @@ fogAt = \e ns ->
             Nothing ->
               error "Search.Graph.Canonicalize.fogAt: inconsistent state. Got Nothing"
 
-            Just (bv, (e',o)) ->
+            Just (_bv, (e',o)) ->
               if e /= e'
               then error "Search.Graph.Canonicalize.fogAt: inconsistent state. e /= e'"
               else WithFogged [] (Word (map snd fs) (Just (e', o)))
@@ -298,7 +303,7 @@ wedges ng start nexts =
   g = digraph ng
 
   wedgesFrom :: (OrBoundary Vertex, NeighborList (EdgeID, f) (EdgeID, o)) -> [Wedge]
-  wedgesFrom (bv, nl) = zipWith wedgeFrom neighbs (tail neighbs)
+  wedgesFrom (_bv, nl) = zipWith wedgeFrom neighbs (tail neighbs)
     where
     neighbs = fromNeighborList nl
     wedgeFrom (fbv_l, e_l) (fbv_r, e_r) =
@@ -415,10 +420,12 @@ deleteStrayVertices ng =
 
   notStrayEdge (EdgeData {source,sink}) =
     case (source, sink) of
-      (CoveredInFog, CoveredInFog) -> False
-      (Clear (Inner v), Clear (Inner v'))      -> (v `Set.member` nonStray) && (v' `Set.member` nonStray)
-      (Clear Boundary, _)                            -> True
-      (_, Clear Boundary)                            -> True
+      (CoveredInFog, CoveredInFog)        -> False
+      (Clear (Inner v), Clear (Inner v')) -> (v `Set.member` nonStray) && (v' `Set.member` nonStray)
+      (Clear (Inner v), CoveredInFog)     -> v `Set.member` nonStray
+      (CoveredInFog, Clear (Inner v))     -> v `Set.member` nonStray
+      (Clear Boundary, _)                 -> True
+      (_, Clear Boundary)                 -> True
 
   go :: Set Vertex -> [Foggy (OrBoundary Vertex)] -> Set Vertex
   go seen next =
@@ -451,7 +458,7 @@ takeTo p = foldr (\x r -> if p x then [x] else x : r) []
   
 splitWhen p xs = case xs of
   [] -> Nothing
-  x : xs' -> if p x then Just ([], xs) else fmap (\(pre,ys) -> (x:pre,ys)) (splitWhen p xs)
+  x : _xs' -> if p x then Just ([], xs) else fmap (\(pre,ys) -> (x:pre,ys)) (splitWhen p xs)
 
 
 fromNeighborList :: NeighborList (EdgeID, f) (EdgeID, o) -> [(Foggy (OrBoundary Vertex), EdgeID)]

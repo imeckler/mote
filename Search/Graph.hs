@@ -33,6 +33,7 @@ import Search.Types.Word (Word(Word), InContext(..), View(..))
 
 import Search.Graph.Canonicalize
 import Search.Graph.Types.NeighborList (NeighborList(..))
+import qualified Search.Graph.Types.NeighborList as NeighborList
 
 -- TODO: Perhaps add the ability to filter the results by those which
 -- satisfy some test cases.
@@ -381,6 +382,8 @@ sequence ng1 ng2_0 =
         map (first Clear . discardLabel) pre
         ++ map (CoveredInFog,) (Word.toList (bimap fst fst w))
 
+  partners = zip (toRow (bottom ng1)) (toRow (top ng2))
+
   setAt :: EdgeID -> EdgeID -> Foggy (OrBoundary Vertex) -> NeighborList (EdgeID, f) (EdgeID, o) -> NeighborList (EdgeID, f) (EdgeID, o)
   setAt e e_new fbv nl =
     case fbv of
@@ -403,7 +406,6 @@ sequence ng1 ng2_0 =
 
           NoFogged w -> NoFogged w
 
-  partners = zip (toRow (bottom ng1)) (toRow (top ng2))
       
 
 -- TODO: Convert real Haskell programs into lists of moves
@@ -435,24 +437,23 @@ graphsOfSizeAtMost tsList n start end = map deleteStrayVertices . HashSet.toList
       case Map.lookup b memo of
         Nothing -> do
           progs <- fmap HashSet.unions . forM (branchOut ts b) $ \(b', move) ->
-            fmap (HashSet.map (sequence (moveToGraph move))) (go arr (n - 1) b')
+            fmap (HashSet.map (obliterate . sequence (moveToGraph move))) (go arr (n - 1) b')
           let progs' = if b == end then HashSet.insert (idGraph end) progs else progs
           writeArray arr n (Map.insert b progs' memo)
           return progs'
 
         Just ps -> return ps
 
-{- begin debug
 -- Search with heuristics
 graphsOfSizeAtMostH
   :: (Hashable f, Ord f, Hashable o, Ord o)
   => [Trans f o] -> Int -> Word f o -> Word f o
   -> [NaturalGraph f o]
 graphsOfSizeAtMostH tsList n start end = map deleteStrayVertices . HashSet.toList $ runST $ do
-  arr <- newSTArray (0, n) M.empty
-  fmap HashSet.unions . forM (branchOut ts start) $ \(b', move@(_, t,_)) ->
+  arr <- newSTArray (0, n) Map.empty
+  fmap HashSet.unions . forM (branchOut ts start) $ \(b', move) ->
     let g = moveToGraph move in
-    fmap (HashSet.map (sequence g)) (go arr (n - 1) b' t)
+    fmap (HashSet.map (sequence g)) (go arr (n - 1) b' (moveTrans move))
   where 
   newSTArray :: (Int, Int) -> Map k v -> ST s (STArray s Int (Map k v))
   newSTArray = newArray
@@ -464,27 +465,33 @@ graphsOfSizeAtMostH tsList n start end = map deleteStrayVertices . HashSet.toLis
   -- AB, I shouldn't keep going since happens next should have been done up
   -- the call stack (or is about to be done).
   -- For each S, n store programs of length n which map out of S (to T), keyed by T
-  go _   0 b _              = return $ if b == end then HashSet.singleton (idGraph end) else HashSet.empty
+  go _   0 b _ = return $ if b == end then HashSet.singleton (idGraph end) else HashSet.empty
   go arr n b t = do
     memo <- readArray arr n
-    case M.lookup b memo of
+    case Map.lookup b memo of
       Nothing ->
-        if length b > 5
+        if Word.length b > 5
         then return HashSet.empty
         else do
           readArray arr n
-          progs <- fmap HashSet.unions . forM (branchOut ts b) $ \(b', move@(_, t', _)) ->
-            if from t == [] && from t' == []
+          progs <- fmap HashSet.unions . forM (branchOut ts b) $ \(b', move) ->
+            let t' = moveTrans move in
+            if Word.length (from t) == 0 && Word.length (from t) == 0 -- from t == [] && from t' == []
             then return HashSet.empty
             else
               let g = moveToGraph move in
               fmap (HashSet.map (sequence g)) (go arr (n - 1) b' t')
 
           let progs' = if b == end then HashSet.insert (idGraph end) progs else progs
-          writeArray arr n (M.insert b progs' memo)
+          writeArray arr n (Map.insert b progs' memo)
           return progs'
 
       Just ps -> return ps
+
+moveTrans :: Move f o -> Trans f o
+moveTrans = \case
+  End _ t -> t
+  Middle _ t _ -> t
 
 {-
 TODO: Rewrite this function to work with the new changes
@@ -552,7 +559,11 @@ toTerm = toTerm' . compressPaths
 -- there are no incoming vertices or outgoing vertices.
 data TopOrBottom = Top | Bottom deriving (Eq, Show)
 
-data GoodVertexType = FloatingRightOf Int | AttachedTo DummyVertex
+toTerm' :: NaturalGraph f o -> AnnotatedTerm
+toTerm' ng0 = _ where
+  findGoodVertex = _
+
+{- begin debug
 toTerm' :: NaturalGraph f o -> AnnotatedTerm
 toTerm' ng0 = case findGoodVertex ng of
   Nothing -> AnnotatedTerm Id 0
@@ -817,47 +828,6 @@ countAndDropFMapStraights ng =
   , ng { incomingSuccs = incoming', outgoingPreds = outgoing', digraph = g' }
   )
 
--- TODO: This breaks the assumption that internal vertices are labelled 0..n, but I don't
--- think I ever use that assumption
-compressPaths :: NaturalGraph f o -> NaturalGraph f o
-compressPaths ng = let g' = evalState (go $ digraph ng) (S.empty, []) in ng { digraph = g' }
-  where
-  outPreds = outgoingPreds ng
-  go g = do
-    (_, next) <- get
-    case next of
-      []       -> return g
-      (Dummy d : _) -> do
-        let Just v = M.lookup d outPreds
-        case v of
-          Dummy _ -> return g
-          Real r  -> slurpBackFrom r g
-
-      (Real r : _) -> slurpBackFrom r g
-
-  slurpBackFrom = \v g -> do
-    (seen, next) <- get
-    let Just vd            = M.lookup v g
-        (vdInit, labs, g') = slurp vd g
-        vsNext             = filter (`S.member` seen) (map fst (incoming vdInit))
-        lab'               = label vd <> mconcat labs
-        g''                = M.insert v (vd { incoming = incoming vdInit, label = lab' }) g'
-
-    put (foldl' (flip S.insert) seen vsNext, vsNext ++ next)
-    go g''
-    where
-    slurp vd g =
-      case incoming vd of
-        [(Real v',_)] ->
-          let (vd', g')              = lookupDelete v' g
-              (vdInit, labs, gFinal) = slurp vd' g'
-          in
-          (vdInit, label vd' : labs, gFinal)
-        _ -> (vd, [], g)
-
-  lookupDelete k m =
-    let (Just x, m') = M.updateLookupWithKey (\_ _ -> Nothing) k m in (x, m')
-
 
 -- all we need to do is use something more canonical for Vertex IDs and
 -- isomorphism becomes equality. perhaps some coordinates involving the
@@ -1000,3 +970,87 @@ checkGraph ng = do
 -}
 -- UTIL
 -- lookupExn :: Ord k => k -> M.Map k v -> v
+
+compressPaths :: NaturalGraph f o -> NaturalGraph f o
+compressPaths ng = go (digraph ng) startingVertices
+  where
+  startingVertices =
+    filter (\vd ->
+      let inc = fromNeighborList (incoming vd) in
+      not (length inc == 1 && all (\case {(Clear (Inner _),_) -> True; _ -> False}) inc))
+    (Map.elems (digraph ng))
+
+  go :: Map Vertex (VertexData f o) -> [Vertex] -> Map Vertex (VertexData f o)
+  go ng next =
+    case next of
+      [] -> ng
+      v : next' ->
+        let vs = slurpBackFrom v (digraph ng) in
+        go (compressPath vs ng) next
+
+  slurpBackFrom v g =
+    let vd@(VertexData { incoming, label }) = lookupExn v g in
+    case fromNeighborList incoming of
+      [(Clear (Inner v'), _)] ->
+        (v, vd) : slurpBackFrom v' g
+
+      _ ->
+        [(v, vd)]
+
+  compressPath path ng =
+    let (v0, vd0) : _ = path
+        (v1, vd1)     = last path
+        lab           = mconcat (concat (label . snd) path)
+        (g', top')    =
+          List.foldl' (\(g0,top0) (fbv,e) ->
+            case fbv of
+              Clear Boundary -> (g0, replace v0 v1 top0)
+              Clear (Inner v) -> (Map.adjust (\vd -> vd {outgoing=replace v0 v1 (outgoing vd)}) v g0, top0)
+              CoveredInFog -> (g0,top0))
+            (digraph ng, top ng)
+            (fromNeighborList (incoming vd1))
+    in
+    Map.insert v0
+      (VertexData {label=lab,outgoing=outgoing vd0,incoming=incoming vd1})
+    
+  replace v0 v1 nl =
+    case nl of
+      WithFogged pre w -> WithFogged (fmap f pre) w
+      NoFogged w -> NoFogged (bimap f f w)
+    where f = first (fmap (\v -> if v == v0 then v1 else v))
+{-
+  go g = do
+    (_, next) <- get
+    case next of
+      []       -> return g
+      (Dummy d : _) -> do
+        let Just v = M.lookup d outPreds
+        case v of
+          Dummy _ -> return g
+          Real r  -> slurpBackFrom r g
+
+      (Real r : _) -> slurpBackFrom r g
+
+  slurpBackFrom = \v g -> do
+    (seen, next) <- get
+    let Just vd            = M.lookup v g
+        (vdInit, labs, g') = slurp vd g
+        vsNext             = filter (`S.member` seen) (map fst (incoming vdInit))
+        lab'               = label vd <> mconcat labs
+        g''                = M.insert v (vd { incoming = incoming vdInit, label = lab' }) g'
+
+    put (foldl' (flip S.insert) seen vsNext, vsNext ++ next)
+    go g''
+    where
+    slurp vd g =
+      case incoming vd of
+        [(Real v',_)] ->
+          let (vd', g')              = lookupDelete v' g
+              (vdInit, labs, gFinal) = slurp vd' g'
+          in
+          (vdInit, label vd' : labs, gFinal)
+        _ -> (vd, [], g)
+
+  lookupDelete k m =
+    let (Just x, m') = M.updateLookupWithKey (\_ _ -> Nothing) k m in (x, m')
+        -}
