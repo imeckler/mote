@@ -9,15 +9,12 @@ import qualified Data.Set as Set
 import qualified Data.Map as Map
 import Data.Map (Map)
 import Control.Applicative
-import Control.Monad.State hiding (sequence)
-import Control.Monad.Error hiding (sequence)
-import Control.Monad.Identity hiding (sequence)
+import Control.Monad (forM, mfilter)
 import Data.Array.MArray
 import Data.Array.ST (STArray)
 import Control.Monad.ST (ST, runST)
 import qualified Data.List as List
 import Data.Bifunctor
-import Data.Either (isRight)
 
 import Data.Monoid
 
@@ -723,7 +720,7 @@ toTerm' ng0 =
         [] ->
           Nothing
 
-        (Boundary,e) : vs ->
+        (Boundary,_e) : vs ->
           if all (\case {(Boundary,_) -> True; _ -> False}) vs
           then Just (v, vd)
           else Nothing
@@ -771,12 +768,10 @@ toTerm' ng0 =
       )
       (Map.toList g)
 
-  (topTendrils, botTendrils) = tendrils ng
-  diamondRightness = reachability (diamondRightnessgraph ng)
   rightnesses = edgesRightOfAll ng
 
   sameOriginPairs =
-    List.concatMap (\(v, vd) ->
+    List.concatMap (\(_v, vd) ->
       List.concatMap (\case
         [] -> []
         (e1 : es) -> map (e1,) es)
@@ -963,7 +958,7 @@ compressPaths ng = go ng startingVertices
         go (compressPath vs ng) next'
 
   slurpBackFrom v g =
-    let vd@(VertexData { incoming, label }) = lookupExn v g in
+    let vd@(VertexData { incoming }) = lookupExn v g in
     case fromNeighborList incoming of
       [(Clear (Inner v'), _)] ->
         (v, vd) : slurpBackFrom v' g
@@ -976,7 +971,7 @@ compressPaths ng = go ng startingVertices
         (v1, vd1)     = last path
         lab           = mconcat (map (label . snd) path)
         (g', top')    =
-          List.foldl' (\(g0,top0) (fbv,e) ->
+          List.foldl' (\(g0,top0) (fbv, _e) ->
             case fbv of
               Clear Boundary -> (g0, replace v0 v1 top0)
               Clear (Inner v) -> (Map.adjust (\vd -> vd {outgoing=replace v0 v1 (outgoing vd)}) v g0, top0)
