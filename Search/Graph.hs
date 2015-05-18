@@ -1232,7 +1232,7 @@ checkGraph ng = do
 -- UTIL
 -- lookupExn :: Ord k => k -> M.Map k v -> v
 
-compressPaths :: NaturalGraph f o -> NaturalGraph f o
+-- compressPaths :: NaturalGraph f o -> NaturalGraph f o
 compressPaths ng = go ng startingVertices
   where
   startingVertices =
@@ -1248,7 +1248,7 @@ compressPaths ng = go ng startingVertices
       [] -> ng
       v : next' ->
         let vs = slurpBackFrom v (digraph ng) in
-        go (compressPath vs ng) next
+        go (compressPath vs ng) next'
 
   slurpBackFrom v g =
     let vd@(VertexData { incoming, label }) = lookupExn v g in
