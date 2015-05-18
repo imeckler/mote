@@ -560,8 +560,8 @@ renderTerm = \case
   Compound s -> s
 
 renderAnnotatedTerm = renderTerm . unannotatedTerm
-{-
-toTerm :: NaturalGraph f o -> AnnotatedTerm
+
+-- toTerm :: NaturalGraph f o -> AnnotatedTerm
 toTerm = toTerm' . compressPaths
 
 -- Three cases:
@@ -576,7 +576,7 @@ data Edge = LeftEdge | RightEdge | Incoming EdgeID
 
 -- TODO: Would be nice to have a "scratch pad" where I can write bits of
 -- expressions to see their types
-toTerm' :: NaturalGraph f o -> AnnotatedTerm
+-- toTerm' :: NaturalGraph f o -> AnnotatedTerm
 toTerm' ng0 =
   case Map.minViewWithKey g of
     Nothing ->
@@ -589,22 +589,82 @@ toTerm' ng0 =
           ins = mapMaybe (fmap snd . killFoggy) $ fromNeighborList (incoming vd)
           in_0 = head ins
           in_n = last ins
-          (top', fmaplevel) =
-            case top ng of
-              WithFogged unfogged w ->
-                _
+          (top', fmaplevel) = (pre <> outgoing vd <> post, NeighborList.length pre)
+            where
+            (pre, post) =
+              case top ng of
+                WithFogged unfogged w ->
+                  let (prel, postl) = exciseList in_0 in_n unfogged
+                  in
+                  (NoFogged (Word prel Nothing), WithFogged postl w)
 
-              NoFogged (Word fs m) ->
-                _
+                NoFogged (Word fs m) ->
+                  let (prel, postl) = exciseList in_0 in_n fs in
+                  case m of
+                    Nothing ->
+                      (NoFogged (Word prel Nothing), NoFogged (Word postl Nothing))
+
+                    Just (_,(e,_)) ->
+                      if e == in_n
+                      then
+                        (NoFogged (Word prel Nothing), NoFogged (Word postl Nothing))
+                      else
+                        (NoFogged (Word prel Nothing), NoFogged (Word postl m) )--NoFogged postl m)
 
         Nothing ->
           case topGoodVertexOfType2 of
             Nothing -> AnnotatedTerm Id 0
-            Just (me, v, vd) -> _
-  where
+            -- me here is the rightmost inport edge left of v
+            Just (me, v, vd) ->
+              case me of
+                Nothing ->
+                  finishUp v vd top' fmaplevel
+                  where
+                  (top', fmaplevel) =
+                    (NeighborList.juxtapose (outgoing vd) (top ng), 0)
 
+                Just e_l ->
+                  finishUp v vd top' fmaplevel
+                  where
+                  (top', fmaplevel) = (pre <> outgoing vd <> post, NeighborList.length pre) 
+                    where
+                    (pre, post) =
+                      case top ng of
+                        WithFogged unfogged w ->
+                          -- TODO: Fix ugly code
+                          let (left, rightmost : postl) = List.break (\(_,(e,_)) -> e == e_l) unfogged
+                              prel = left ++ [rightmost]
+                          in
+                          (NoFogged (Word prel Nothing), WithFogged postl w)
+
+                        NoFogged (Word fs m) ->
+                          case m of
+                            Nothing ->
+                              let (left, rightmost : postl) = List.break (\(_,(e,_)) -> e == e_l) fs
+                                  prel = left ++ [rightmost]
+                              in
+                              (NoFogged (Word prel Nothing) , NoFogged (Word postl Nothing))
+
+                            Just (_, (e, _)) ->
+                              if e == e_l
+                              then (top ng, mempty)
+                              else
+                                let (left, rightmost : postl) = List.break (\(_,(e,_)) -> e == e_l) fs
+                                    prel = left ++ [rightmost]
+                                in
+                                (NoFogged (Word prel Nothing), NoFogged (Word postl m))
+
+      where
+      exciseList in_0 in_n xs =
+        let (prel, ys) = List.break (\(_,(e,_)) -> e == in_0) xs
+            postl      = tail (dropWhile (\(_,(e,_)) -> e /= in_n) ys)
+        in
+        (prel, postl)
+              
+
+  where
   finishUp v vd top' fmaplevel =
-    AnnotatedTerm _ _ <> toTerm' ng'
+    fmapped numStraights (toTerm' (canonicalize ng') <> fmapped fmaplevel (label vd) )
     where
     ng' =
       ng
@@ -615,7 +675,7 @@ toTerm' ng0 =
       , digraph =
           Map.map (\vd ->
             vd { incoming = NeighborList.mapVertex rename (incoming vd) })
-            (digraph ng)
+            (Map.delete v (digraph ng))
 
       , edges =
           Map.map (\(EdgeData source sink) ->
@@ -638,9 +698,9 @@ toTerm' ng0 =
     (numStraights, ng_ { top = dropStraights (top ng_), bottom = dropStraights (bottom ng_) })
     where
     numStraights =
-      takeWhile (\case {(Clear Boundary,_) -> True; _ -> False}) (fromNeighborList (top ng0))
+      length $ takeWhile (\case {(Clear Boundary,_) -> True; _ -> False}) (fromNeighborList (top ng0))
 
-    dropStraights :: NeighborList f o -> NeighborList f o
+    -- dropStraights :: NeighborList f o -> NeighborList f o
     dropStraights = \case
       NoFogged (Word fs mo) ->
         NoFogged (Word (dropWhile isBoundary fs) (mfilter isBoundary mo))
@@ -656,7 +716,7 @@ toTerm' ng0 =
       CoveredInFog -> Nothing
       Clear bv     -> Just (bv, e)
 
-  topGoodVertexOfType1 :: Maybe (Vertex, VertexData f o)
+  -- topGoodVertexOfType1 :: Maybe (Vertex, VertexData f o)
   topGoodVertexOfType1 =
     findMap (\(v, vd) ->
       case mapMaybe killFoggy (fromNeighborList (incoming vd)) of
@@ -671,7 +731,7 @@ toTerm' ng0 =
         _ -> Nothing)
       (Map.toList g)
 
-  topGoodVertexOfType2 :: Maybe (Maybe EdgeID, Vertex, VertexData f o)
+  -- topGoodVertexOfType2 :: Maybe (Maybe EdgeID, Vertex, VertexData f o)
   topGoodVertexOfType2 =
     findMap (\(v, vd) ->
       case mapMaybe killFoggy (fromNeighborList (incoming vd)) of
@@ -704,7 +764,7 @@ toTerm' ng0 =
           outlist = fromNeighborList (outgoing vd)
           (_, o_1) = head outlist
           (_, o_n) = last outlist
-          rightOfO_n = Map.lookup o_n rightnesses
+          rightOfO_n = lookupExn o_n rightnesses
 
         _ ->
           Nothing
@@ -722,7 +782,14 @@ toTerm' ng0 =
         (e1 : es) -> map (e1,) es)
       (List.tails (map snd $ fromNeighborList (outgoing vd))))
     (Map.toList g)
--}
+
+  fmapped n (AnnotatedTerm f x) = case n of
+    0 -> AnnotatedTerm f x
+    1 -> AnnotatedTerm (Compound ("fmap " ++ wrapped)) x
+    _ -> AnnotatedTerm (Compound (parens (List.intercalate " . " $ replicate n "fmap") ++ " " ++ wrapped)) x
+    where
+    wrapped = case f of { Simple x -> x; Compound x -> parens x; _ -> error "Search.Graph.fmapped: Impossible" }
+    parens x = "(" ++ x ++ ")"
 {-
 Want either
 1. something that has only contiguous Boundary parents (resp children) and at least one of them.

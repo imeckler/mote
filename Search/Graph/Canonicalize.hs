@@ -17,7 +17,6 @@ import qualified Search.Types.Word as Word
 import Search.Types.Word (Word(..))
 import Search.Util -- (lastMay, headMay)
 
-import Debug.Trace
 {-
 data ExplicitVert
   = Regular Vertex
@@ -71,32 +70,29 @@ data Wedge =
   , rightPath :: [EdgeID]
   }
 
--- canonicalize :: NaturalGraph f o -> NaturalGraph f o
+canonicalize :: NaturalGraph f o -> NaturalGraph f o
 canonicalize = deleteStrayVertices . obliterate
 
--- obliterate :: NaturalGraph f o -> NaturalGraph f o
-obliterate ng = Set.foldl' obliterateFrom (traceShowId ng) (traceShowMsgId "constant edges" $ constantEdges ng)
+obliterate :: NaturalGraph f o -> NaturalGraph f o
+obliterate ng = Set.foldl' obliterateFrom ng (constantEdges ng)
 
-traceShowMsg msg x y = trace (msg ++ ": " ++ show x) y
-traceShowMsgId msg x =  trace (msg ++ ": " ++ show x) x
-
--- obliterateFrom :: NaturalGraph f o -> EdgeID -> NaturalGraph f o
+obliterateFrom :: NaturalGraph f o -> EdgeID -> NaturalGraph f o
 obliterateFrom ng0 e0 =
   Set.foldl' (\ng e ->
     let EdgeData {source, sink} = lookupExn' "can82" e edgeInfo
     in
-    traceShowMsgId "88" $ fogSource e source (fogSink e sink ng))
+    fogSource e source (fogSink e sink ng))
     ng0
-    (traceShowMsgId "90" $ edgesRightOf ng0 e0)
+    (edgesRightOf ng0 e0)
 
   where
   edgeInfo = edges ng0
 
-  -- fogSource :: EdgeID -> Foggy (OrBoundary Vertex) -> NaturalGraph f o -> NaturalGraph f o
+  fogSource :: EdgeID -> Foggy (OrBoundary Vertex) -> NaturalGraph f o -> NaturalGraph f o
   fogSource e source ng =
-    case (traceShowMsgId "97" source) of
+    case source of
       Clear Boundary ->
-        ng { top = fogAt (traceShowMsgId "99" e) (top ng) }
+        ng { top = fogAt e (top ng) }
 
       Clear (Inner v) ->
         ng { digraph = Map.adjust (\vd -> vd { outgoing = fogAt e (outgoing vd) }) v (digraph ng) }
@@ -119,7 +115,7 @@ obliterateFrom ng0 e0 =
 
 -- fogAt :: EdgeID -> NeighborList (EdgeID, f) (EdgeID, o) -> NeighborList (EdgeID, f) (EdgeID, o)
 fogAt = \e ns ->
-  case trace "122" ns of
+  case ns of
     WithFogged fs w ->
       case splitWhen (\(_, (e',_)) -> e == e') fs of
         Just (pre, fogged) ->
@@ -128,7 +124,7 @@ fogAt = \e ns ->
         Nothing -> ns
 
     NoFogged (Word fs mo) ->
-      case traceShowMsgId "131split" $ splitWhen (\(_, (e',_)) -> e == e') fs of
+      case splitWhen (\(_, (e',_)) -> e == e') fs of
         Just (pre, fogged) ->
           WithFogged pre (Word (map snd fogged) (fmap snd mo))
 
@@ -138,9 +134,9 @@ fogAt = \e ns ->
               error "Search.Graph.Canonicalize.fogAt: inconsistent state. Got Nothing"
 
             Just (_bv, (e',o)) ->
-              if traceShow (e,e') $ e /= e'
+              if e /= e'
               then ns -- error "Search.Graph.Canonicalize.fogAt: inconsistent state. e /= e'"
-              else traceShowMsgId "143" $ WithFogged fs (Word [] (Just (e', o)))-- WithFogged [] (Word (map snd fs) (Just (e', o)))
+              else WithFogged fs (Word [] (Just (e', o)))-- WithFogged [] (Word (map snd fs) (Just (e', o)))
 
 reachability :: RightnessGraph -> Map EdgeID (Set EdgeID)
 reachability = goTop Map.empty
@@ -162,7 +158,7 @@ reachability = goTop Map.empty
           (acc0, descs)
 
         Nothing ->
-          let children = lookupExn' "can 161" (traceShowMsg "165" rg $ e) rg
+          let children = lookupExn' "can 161" e rg
               (acc1, childrens'Descendants) =
                 List.foldl (\(acc,cds) e' ->
                   let (acc',ds) = go acc e' 
@@ -223,7 +219,7 @@ edgesRightOf ng e
 
   where
   eDiamondRights   = lookupExn' "can 211" e diamondRightness
-  diamondRightness = traceShowMsgId "226" $ reachability diamondGraph
+  diamondRightness = reachability diamondGraph
   diamondGraph     = diamondRightnessgraph ng
   -- Rather wasteful to compute all the top and bottom tendrils
   -- when I really just need the bottom tendrils if e is a top tendril

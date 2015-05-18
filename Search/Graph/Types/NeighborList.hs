@@ -1,9 +1,10 @@
 {-# LANGUAGE LambdaCase #-}
 module Search.Graph.Types.NeighborList where
 
+import Data.Monoid
 import Data.Bifunctor
 import Search.Graph.Types.Vertex
-import Search.Types.Word (Word)
+import Search.Types.Word (Word(..))
 import qualified Search.Types.Word as Word
 
 -- If an edge is foggy then every edge to its right should be as well
@@ -11,6 +12,32 @@ data NeighborList f o
   = WithFogged [(OrBoundary Vertex, f)] (Word f o) -- technically this Word f o should be nonempty
   | NoFogged (Word (OrBoundary Vertex, f) (OrBoundary Vertex, o))
   deriving (Show, Eq, Ord)
+
+length :: NeighborList f o -> Int
+length = \case
+  NoFogged w -> Word.length w
+  WithFogged pre w -> Prelude.length pre + Word.length w
+
+juxtapose :: NeighborList f o -> NeighborList f o -> NeighborList f o
+juxtapose nl1 nl2 =
+  case (nl1, nl2) of
+    (NoFogged w, NoFogged w') ->
+      NoFogged (w <> w') -- dangerous..
+
+    (NoFogged w, WithFogged unfogged w') ->
+      case w of
+        Word fs (Just o) -> nl1 -- dangerous..
+        Word fs Nothing -> WithFogged (fs ++ unfogged) w'
+
+    (WithFogged unfogged w, NoFogged w') ->
+      WithFogged unfogged (w <> bimap snd snd w')
+
+    (WithFogged unfogged w, WithFogged unfogged' w') ->
+      WithFogged unfogged (w <> Word (map snd unfogged') Nothing <> w')
+
+instance Monoid (NeighborList f o) where
+  mempty = NoFogged mempty
+  mappend = juxtapose
 
 -- Mote was awesome for this instance
 instance Bifunctor NeighborList where
@@ -38,3 +65,4 @@ fold f g z = \case
   NoFogged w -> Word.fold (f . snd) (g . _) z w
   WithFogged v_and_xs w -> _
 -}
+
