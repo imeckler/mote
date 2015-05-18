@@ -559,9 +559,101 @@ toTerm = toTerm' . compressPaths
 -- there are no incoming vertices or outgoing vertices.
 data TopOrBottom = Top | Bottom deriving (Eq, Show)
 
+-- TODO: Would be nice to have a "scratch pad" where I can write bits of
+-- expressions to see their types
 toTerm' :: NaturalGraph f o -> AnnotatedTerm
-toTerm' ng0 = _ where
-  findGoodVertex = _
+toTerm' ng0 =
+  case Map.minViewWithKey g of
+    Nothing ->
+      AnnotatedTerm Id 0
+
+    -- TODO: Things are significantly different when v has nothing
+    -- incoming. Then we have to compute which are the two incoming
+    -- things to the left and right of v in some other way.
+    Just ((v, vd), g') ->
+      _
+      where
+      vpreds = fromNeighborList (incoming vd)
+      vpred0 = snd <$> headMay vpreds
+      vpred1 = snd <$> lastMay vpreds
+
+      top' =
+        case top ng of
+          WithFogged pre w ->
+            _
+
+          NoFogged w ->
+            -- TODO: efficency
+            findMap (\case
+              NoO pre foc post ->
+                if fmap (fst . snd) (headMay foc) == vpred0
+                then _
+                else _
+
+              YesOMid pre foc postfs posto -> _
+              YesOEnd fs (focfs, foco) -> _)
+              (Word.views w)
+
+  where
+  (numStraights, ng) = countAndDropFMapStraights ng0
+
+  g = digraph ng
+
+  countAndDropFMapStraights ng_ =
+    (numStraights, ng_ { top = dropStraights (top ng_), bottom = dropStraights (bottom ng_) })
+    where
+    numStraights =
+      takeWhile (\case {(Clear Boundary,_) -> True; _ -> False}) (fromNeighborList (top ng0))
+
+    dropStraights :: NeighborList f o -> NeighborList f o
+    dropStraights = \case
+      NoFogged (Word fs mo) ->
+        NoFogged (Word (dropWhile isBoundary fs) (mfilter isBoundary mo))
+
+      WithFogged pre w ->
+        WithFogged (dropWhile isBoundary pre) w
+
+      where
+      isBoundary = \case {(Boundary,_) -> True; _ -> False}
+
+  findGoodVertexFrom v0 =
+    case nonTrivialParent v0 of
+      Left v1 ->
+        findGoodVertexFrom v1
+
+      Right es ->
+        findGoodVertexFrom =<< nonContiguity es
+
+  nonTrivialParent :: Vertex -> Either Vertex [EdgeID] 
+  nonTrivialParent v =
+    foldr (\(fbv, e) r ->
+      case fbv of
+        Clear (Inner v) -> Left v
+        Clear Boundary -> fmap (e:) r
+        CoveredInFog -> r)
+    (Right [])
+    (fromNeighborList (incoming (lookupExn v g)))
+
+  nonContiguity :: [EdgeID] -> Maybe Vertex
+  nonContiguity es =
+    case es of
+      [] ->
+        Nothing
+      e : _ ->
+        findMap (\(e, (fbv,e')) ->
+          if e /= e'
+          then
+            case fbv of
+              Clear (Inner v) -> Just v
+              Clear Boundary  -> Nothing
+              CoveredInFog    -> Nothing
+          else Nothing)
+
+          matchedUp
+        where
+        matchedUp =
+          zip es
+            (dropWhile ((/= e) . snd) (fromNeighborList (top ng)))
 
 {- begin debug
 toTerm' :: NaturalGraph f o -> AnnotatedTerm
@@ -1018,39 +1110,3 @@ compressPaths ng = go (digraph ng) startingVertices
       WithFogged pre w -> WithFogged (fmap f pre) w
       NoFogged w -> NoFogged (bimap f f w)
     where f = first (fmap (\v -> if v == v0 then v1 else v))
-{-
-  go g = do
-    (_, next) <- get
-    case next of
-      []       -> return g
-      (Dummy d : _) -> do
-        let Just v = M.lookup d outPreds
-        case v of
-          Dummy _ -> return g
-          Real r  -> slurpBackFrom r g
-
-      (Real r : _) -> slurpBackFrom r g
-
-  slurpBackFrom = \v g -> do
-    (seen, next) <- get
-    let Just vd            = M.lookup v g
-        (vdInit, labs, g') = slurp vd g
-        vsNext             = filter (`S.member` seen) (map fst (incoming vdInit))
-        lab'               = label vd <> mconcat labs
-        g''                = M.insert v (vd { incoming = incoming vdInit, label = lab' }) g'
-
-    put (foldl' (flip S.insert) seen vsNext, vsNext ++ next)
-    go g''
-    where
-    slurp vd g =
-      case incoming vd of
-        [(Real v',_)] ->
-          let (vd', g')              = lookupDelete v' g
-              (vdInit, labs, gFinal) = slurp vd' g'
-          in
-          (vdInit, label vd' : labs, gFinal)
-        _ -> (vd, [], g)
-
-  lookupDelete k m =
-    let (Just x, m') = M.updateLookupWithKey (\_ _ -> Nothing) k m in (x, m')
-        -}
