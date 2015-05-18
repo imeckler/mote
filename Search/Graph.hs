@@ -310,12 +310,14 @@ shiftBy ng s_v s_e =
         Map.map (\(EdgeData {source, sink}) ->
           EdgeData {source=fmap (fmap (+ s_v)) source,sink=fmap (fmap (+ s_v)) sink})
           (edges ng)
+
+  , constantEdges = Set.mapMonotonic (+ s_e) (constantEdges ng)
   }
   where
   shiftNeighborList = 
     NeighborList.mapVertex (fmap (+ s_v)) . bimap (first (+ s_e)) (first (+ s_e))
 
-sequence :: NaturalGraph f o -> NaturalGraph f o -> NaturalGraph f o
+-- sequence :: NaturalGraph f o -> NaturalGraph f o -> NaturalGraph f o
 sequence ng1 ng2_0 =
   NaturalGraph
   { top           = top'
@@ -392,7 +394,7 @@ sequence ng1 ng2_0 =
 
   partners = zip (toRow (bottom ng1)) (toRow (top ng2))
 
-  setAt :: EdgeID -> EdgeID -> Foggy (OrBoundary Vertex) -> NeighborList (EdgeID, f) (EdgeID, o) -> NeighborList (EdgeID, f) (EdgeID, o)
+  -- setAt :: EdgeID -> EdgeID -> Foggy (OrBoundary Vertex) -> NeighborList (EdgeID, f) (EdgeID, o) -> NeighborList (EdgeID, f) (EdgeID, o)
   setAt e e_new fbv nl =
     case fbv of
       -- TODO: Inefficient. Fix to not traverse whole list if not necessary
@@ -420,7 +422,8 @@ sequence ng1 ng2_0 =
 -- TODO: Analyze program graphs
 
 graphsOfSizeAtMost
-  :: (Hashable f, Ord f, Hashable o, Ord o)
+  :: (Hashable f, Ord f, Hashable o, Ord o
+  ,Show o, Show f) -- TODO: Debug 
   => [Trans f o]
   -> Int
   -> Word f o
@@ -454,7 +457,8 @@ graphsOfSizeAtMost tsList n start end = map deleteStrayVertices . HashSet.toList
 
 -- Search with heuristics
 graphsOfSizeAtMostH
-  :: (Hashable f, Ord f, Hashable o, Ord o)
+  :: (Hashable f, Ord f, Hashable o, Ord o
+  , Show f, Show o) -- TODO debug
   => [Trans f o] -> Int -> Word f o -> Word f o
   -> [NaturalGraph f o]
 graphsOfSizeAtMostH tsList n start end = map deleteStrayVertices . HashSet.toList $ runST $ do

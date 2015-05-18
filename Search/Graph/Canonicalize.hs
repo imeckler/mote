@@ -1,4 +1,4 @@
-{-# LANGUAGE LambdaCase, NamedFieldPuns, BangPatterns #-}
+{-# LANGUAGE LambdaCase, NamedFieldPuns, BangPatterns, NoMonomorphismRestriction #-} -- TODO : mono
 module Search.Graph.Canonicalize where
 
 import qualified Data.Map as Map
@@ -17,6 +17,7 @@ import qualified Search.Types.Word as Word
 import Search.Types.Word (Word(..))
 import Search.Util -- (lastMay, headMay)
 
+import Debug.Trace
 {-
 data ExplicitVert
   = Regular Vertex
@@ -70,29 +71,32 @@ data Wedge =
   , rightPath :: [EdgeID]
   }
 
-canonicalize :: NaturalGraph f o -> NaturalGraph f o
+-- canonicalize :: NaturalGraph f o -> NaturalGraph f o
 canonicalize = deleteStrayVertices . obliterate
 
-obliterate :: NaturalGraph f o -> NaturalGraph f o
-obliterate ng = Set.foldl' obliterateFrom ng (constantEdges ng)
+-- obliterate :: NaturalGraph f o -> NaturalGraph f o
+obliterate ng = Set.foldl' obliterateFrom (traceShowId ng) (traceShowMsgId "constant edges" $ constantEdges ng)
 
-obliterateFrom :: NaturalGraph f o -> EdgeID -> NaturalGraph f o
+traceShowMsg msg x y = trace (msg ++ ": " ++ show x) y
+traceShowMsgId msg x =  trace (msg ++ ": " ++ show x) x
+
+-- obliterateFrom :: NaturalGraph f o -> EdgeID -> NaturalGraph f o
 obliterateFrom ng0 e0 =
   Set.foldl' (\ng e ->
-    let EdgeData {source, sink} = lookupExn e edgeInfo
+    let EdgeData {source, sink} = lookupExn' "can82" e edgeInfo
     in
-    fogSource e source (fogSink e sink ng))
+    traceShowMsgId "88" $ fogSource e source (fogSink e sink ng))
     ng0
-    (edgesRightOf ng0 e0)
+    (traceShowMsgId "90" $ edgesRightOf ng0 e0)
 
   where
   edgeInfo = edges ng0
 
-  fogSource :: EdgeID -> Foggy (OrBoundary Vertex) -> NaturalGraph f o -> NaturalGraph f o
+  -- fogSource :: EdgeID -> Foggy (OrBoundary Vertex) -> NaturalGraph f o -> NaturalGraph f o
   fogSource e source ng =
-    case source of
+    case (traceShowMsgId "97" source) of
       Clear Boundary ->
-        ng { top = fogAt e (top ng) }
+        ng { top = fogAt (traceShowMsgId "99" e) (top ng) }
 
       Clear (Inner v) ->
         ng { digraph = Map.adjust (\vd -> vd { outgoing = fogAt e (outgoing vd) }) v (digraph ng) }
@@ -100,7 +104,7 @@ obliterateFrom ng0 e0 =
       CoveredInFog ->
         ng
 
-  fogSink :: EdgeID -> Foggy (OrBoundary Vertex) -> NaturalGraph f o -> NaturalGraph f o
+  -- fogSink :: EdgeID -> Foggy (OrBoundary Vertex) -> NaturalGraph f o -> NaturalGraph f o
   fogSink e sink ng =
     case sink of
       Clear Boundary ->
@@ -113,9 +117,9 @@ obliterateFrom ng0 e0 =
         ng
 
 
-fogAt :: EdgeID -> NeighborList (EdgeID, f) (EdgeID, o) -> NeighborList (EdgeID, f) (EdgeID, o)
+-- fogAt :: EdgeID -> NeighborList (EdgeID, f) (EdgeID, o) -> NeighborList (EdgeID, f) (EdgeID, o)
 fogAt = \e ns ->
-  case ns of
+  case trace "122" ns of
     WithFogged fs w ->
       case splitWhen (\(_, (e',_)) -> e == e') fs of
         Just (pre, fogged) ->
@@ -124,7 +128,7 @@ fogAt = \e ns ->
         Nothing -> ns
 
     NoFogged (Word fs mo) ->
-      case splitWhen (\(_, (e',_)) -> e == e') fs of
+      case traceShowMsgId "131split" $ splitWhen (\(_, (e',_)) -> e == e') fs of
         Just (pre, fogged) ->
           WithFogged pre (Word (map snd fogged) (fmap snd mo))
 
@@ -134,9 +138,9 @@ fogAt = \e ns ->
               error "Search.Graph.Canonicalize.fogAt: inconsistent state. Got Nothing"
 
             Just (_bv, (e',o)) ->
-              if e /= e'
-              then error "Search.Graph.Canonicalize.fogAt: inconsistent state. e /= e'"
-              else WithFogged [] (Word (map snd fs) (Just (e', o)))
+              if traceShow (e,e') $ e /= e'
+              then ns -- error "Search.Graph.Canonicalize.fogAt: inconsistent state. e /= e'"
+              else traceShowMsgId "143" $ WithFogged fs (Word [] (Just (e', o)))-- WithFogged [] (Word (map snd fs) (Just (e', o)))
 
 reachability :: RightnessGraph -> Map EdgeID (Set EdgeID)
 reachability = goTop Map.empty
@@ -158,7 +162,7 @@ reachability = goTop Map.empty
           (acc0, descs)
 
         Nothing ->
-          let children = lookupExn e rg
+          let children = lookupExn' "can 161" (traceShowMsg "165" rg $ e) rg
               (acc1, childrens'Descendants) =
                 List.foldl (\(acc,cds) e' ->
                   let (acc',ds) = go acc e' 
@@ -184,19 +188,19 @@ edgesRightOfAll ng =
     -- diamond-right of e', then e' is right of e
       Set.union eDiamondRights
         (Set.filter
-          (\e' -> not . Set.member e $ lookupExn e' diamondRightness)
+          (\e' -> not . Set.member e $ lookupExn' "can 187" e' diamondRightness)
           botTendrils)
 
     -- Similarly if e is a bottom tendril.
     | e `Set.member` botTendrils =
       Set.union eDiamondRights
         (Set.filter
-          (\e' -> not . Set.member e $ lookupExn e' diamondRightness)
+          (\e' -> not . Set.member e $ lookupExn' "can 194" e' diamondRightness)
           topTendrils)
 
     | otherwise = eDiamondRights
     where
-    eDiamondRights = lookupExn e diamondRightness
+    eDiamondRights = lookupExn' "can 199" e diamondRightness
 
 edgesRightOf :: NaturalGraph f o -> EdgeID -> Set EdgeID
 edgesRightOf ng e
@@ -205,21 +209,21 @@ edgesRightOf ng e
   -- diamond-right of e', then e' is right of e
     Set.union eDiamondRights
       (Set.filter
-        (\e' -> not . Set.member e $ lookupExn e' diamondRightness)
+        (\e' -> not . Set.member e $ lookupExn' "can 208" e' diamondRightness)
         botTendrils)
 
   -- Similarly if e is a bottom tendril.
   | e `Set.member` botTendrils =
     Set.union eDiamondRights
       (Set.filter
-        (\e' -> not . Set.member e $ lookupExn e' diamondRightness)
+        (\e' -> not . Set.member e $ lookupExn' "can 215" e' diamondRightness)
         topTendrils)
 
   | otherwise = eDiamondRights
 
   where
-  eDiamondRights = lookupExn e diamondRightness
-  diamondRightness = reachability diamondGraph
+  eDiamondRights   = lookupExn' "can 211" e diamondRightness
+  diamondRightness = traceShowMsgId "226" $ reachability diamondGraph
   diamondGraph     = diamondRightnessgraph ng
   -- Rather wasteful to compute all the top and bottom tendrils
   -- when I really just need the bottom tendrils if e is a top tendril
@@ -237,7 +241,7 @@ strictDescendants rg e0 = Set.delete e0 (dfs Set.empty [e0])
       e : next' ->
         if e `Set.member` seen
         then dfs seen next'
-        else dfs (Set.insert e seen) (lookupExn e rg ++ next')
+        else dfs (Set.insert e seen) (lookupExn' "can 240" e rg ++ next')
 
 isRightOf :: RightnessGraph -> EdgeID -> EdgeID -> Bool
 isRightOf rg e1 e2 = e1 /= e2 && dfs Set.empty [e1]
@@ -250,19 +254,23 @@ isRightOf rg e1 e2 = e1 /= e2 && dfs Set.empty [e1]
         then True
         else if e `Set.member` seen
         then dfs seen next'
-        else dfs (Set.insert e seen) (lookupExn e rg ++ next')
+        else dfs (Set.insert e seen) (lookupExn' "can 253" e rg ++ next')
 
 
 
 diamondRightnessgraph :: NaturalGraph f o -> RightnessGraph
 diamondRightnessgraph ng =
-  List.foldl' (\rg0 w ->
-    List.foldl' (\rg1 e_l ->
-      Map.insertWith (++) e_l (rightPath w) rg1)
-      rg0
-      (leftPath w))
-    Map.empty
-    wedges
+  let g0 = 
+        List.foldl' (\rg0 w ->
+          List.foldl' (\rg1 e_l ->
+            Map.insertWith (++) e_l (rightPath w) rg1)
+            rg0
+            (leftPath w))
+          Map.empty
+          wedges
+  in
+  -- TODO: Check if this is faster than folding over all the edges
+  Map.unionWith (\l r -> l) g0 (Map.map (\_ -> []) (edges ng))
   where
   wedges = carets ng ++ vees ng
 
@@ -286,7 +294,7 @@ tendrils ng = (topTendrils, botTendrils)
       forM (fromNeighborList succs) $ \(fbv, e) ->
         case fbv of
           Clear (Inner v) ->
-            go getNext (getNext (lookupExn v g)) >>= \case
+            go getNext (getNext (lookupExn' "can 289" v g)) >>= \case
               True -> do
                 modify (\s -> Set.insert e s)
                 return True
@@ -316,7 +324,7 @@ wedges ng start nexts =
     where
     go = \case
       Clear (Inner v) -> 
-        case (getNext . fromNeighborList . nexts $ lookupExn v g) of
+        case (getNext . fromNeighborList . nexts $ lookupExn' "can 319" v g) of
           Just (v', e) ->
             (v', e) : go v'
 
@@ -466,7 +474,7 @@ deleteStrayVertices ng =
         if v `Set.member` seen
         then go seen next'
         else
-          let VertexData {incoming, outgoing} = lookupExn v g in
+          let VertexData {incoming, outgoing} = lookupExn' "can 469" v g in
           go
             (Set.insert v seen)
             (map fst (fromNeighborList incoming ++ fromNeighborList outgoing) ++ next')
@@ -487,7 +495,10 @@ takeTo p = foldr (\x r -> if p x then [x] else x : r) []
   
 splitWhen p xs = case xs of
   [] -> Nothing
-  x : _xs' -> if p x then Just ([], xs) else fmap (\(pre,ys) -> (x:pre,ys)) (splitWhen p xs)
+  x : xs' ->
+    if p x
+    then Just ([], xs)
+    else fmap (\(pre,ys) -> (x:pre,ys)) (splitWhen p xs')
 
 
 fromNeighborList :: NeighborList (EdgeID, f) (EdgeID, o) -> [(Foggy (OrBoundary Vertex), EdgeID)]
