@@ -40,6 +40,7 @@ import           Mote.Types
 import           Mote.Util
 import qualified Mote.Search
 import qualified Search.Graph
+import qualified Search.Graph.Types
 
 getEnclosingHole :: Ref MoteState -> (Int, Int) -> M (Maybe AugmentedHoleInfo)
 getEnclosingHole stRef pos =
@@ -222,7 +223,7 @@ respond' stRef = \case
     gs <- Mote.Search.search src trg 5
     return (SetInfoWindow (showResults gs)) 
     where
-    showResults :: [Search.Graph.NaturalGraph f] -> String
+    showResults :: [Search.Graph.Types.NaturalGraph f o] -> String
     showResults =
       unlines
       . map (\(_,(t,_)) -> Search.Graph.renderAnnotatedTerm t)

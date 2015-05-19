@@ -1,16 +1,6 @@
 {-# LANGUAGE LambdaCase, NamedFieldPuns, RecordWildCards, TupleSections #-}
 
-module Mote.Search
-  ( -- transesInScope
-    WrappedType(..)
-  , SyntacticFunc
-  -- DEBUG
-  , search
-  , score
-  , traversables
-  , monads
-  , applicatives
-  ) where
+module Mote.Search where
 
 import           Mote.GhcUtil        (discardConstraints, splitPredTys)
 import           Mote.ReadType
@@ -47,8 +37,7 @@ import Search.Graph.Types
 import qualified Search.Types.Word as Word
 import Search.Types.Word (Word(..))
 
--- The full search strategy for F X -> G Y is as follows.
--- Find f : X -> H Y (or possibly f : X -> H Y', g : Y' -> Y)
+import Debug.Trace
 
 {-
 search stRef = do
@@ -107,11 +96,11 @@ data Func
   deriving (Eq)
 -}
 
-toStringTrans :: Trans SyntacticFunc TyCon -> M String
+toStringTrans :: Trans SyntacticFunc TyCon -> M (Trans String String)
 toStringTrans (Trans {from, to, name}) = do
   from' <- lift (bitraverse showPprM showPprM from)
-  to'   <- lift (bitraverse showPprM showPprM from)
-  return (show $ Trans {from=from', to=to', name})
+  to'   <- lift (bitraverse showPprM showPprM to)
+  return (Trans {from=from', to=to', name})
 
 data CoarseType
   = SomeVar
@@ -139,6 +128,7 @@ transes funcs b = mapMaybe toTrans (transInterpretations b)
     else if from == to
     then Nothing
     else if numArguments > 3 then Nothing
+    else if null (Word.beginning to) && null (Word.beginning from) then Nothing
     else Just (Trans {from, to, name=AnnotatedTerm name' (numArguments - 1)})
     where
     ident = occNameString $ occName name
@@ -188,10 +178,11 @@ instance Hashable WrappedTyCon where
 instance Show WrappedTyCon where
   show (WrappedTyCon _ s) = show s
 
-search :: Word String String -> Word String String -> Int ->  M [NaturalGraph (Int, Int) (Int, Int)]
+-- search :: Word String String -> Word String String -> Int ->  M [NaturalGraph (Int, Int) (Int, Int)]
 search src trg n = do
-  let renderSyntacticFunc :: SyntacticFunc -> (Int, Int)
-      renderSyntacticFunc (tc, args) = (getKey (getUnique tc), hash args)
+  fs <- lift getSessionDynFlags
+  let renderSyntacticFunc :: SyntacticFunc -> (String, String)
+      renderSyntacticFunc (tc, args) = (showSDoc fs (ppr tc), showSDoc fs (ppr args)) -- (getKey (getUnique tc), hash args)
 
       readAndRenderSyntacticFunc =
         join
@@ -216,7 +207,7 @@ search src trg n = do
   -- fmap (fmap renderFunc) (readFuncs trg) -- fmap catMaybes $ mapM (fmap (fmap renderSyntacticFunc . extractUnapplied . dropForAlls) . readType) trg
   transes <- fmap (fmap (bimap renderSyntacticFunc (renderSyntacticFunc . (,[])))) $ transesInScope -- fmap (fmap (fmap renderFunc)) $ transesInScope
 
-  return $ graphsOfSizeAtMost transes n from to
+  return $ graphsOfSizeAtMost' transes n from to
 
 {-
 readFuncs :: [String] -> M [Func]
@@ -401,7 +392,7 @@ transInterpretations (n, t0) =
             , to                      = fsTarg
             }
 
-        | TyVarTy _ <- inner =
+        | TyVarTy v <- inner, not (v `elementOfUniqSet` forbiddenVars) =
           Just $
             TransInterpretation
             { numArguments            = numArguments

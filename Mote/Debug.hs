@@ -28,13 +28,13 @@ initialState logFile = mkSplitUniqSupply 'x' >>| \uniq -> MoteState
 runWithTestRef :: (Ref MoteState -> Ghc b) -> IO b
 runWithTestRef x = do
   home <- getHomeDirectory
-  withFile (home </> "prog/mote/testlog") WriteMode $ \logFile -> do
+  withFile (home </> "testlog") WriteMode $ \logFile -> do
     r <- newRef =<< initialState logFile
     run $ do { ghcInit r; x r }
 
 runWithTestRef' x = do
   home <- getHomeDirectory
-  withFile (home </> "prog/mote/testlog") WriteMode $ \logFile -> do
+  withFile (home </> "testlog") WriteMode $ \logFile -> do
     r <- newRef =<< initialState logFile
     run $ do { Mote.Init.init r; x r }
 

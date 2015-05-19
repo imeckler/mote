@@ -6,6 +6,7 @@ import           Control.Monad
 import           Data.Aeson          hiding (Error)
 import qualified Data.Text           as T
 import qualified Data.Vector         as V
+import Search.Types.Word (Word(..))
 
 type Pos  = (Int, Int)
 type Span = (Pos, Pos)
@@ -72,23 +73,55 @@ data FromClient
   | CaseFurther Var ClientState
   | CaseOn String ClientState
   | SendStop
-  | Search [String] [String]
+  | Search (Word String String) (Word String String)
   deriving (Show)
 
 instance FromJSON FromClient where
   parseJSON = \case
-    Array a                                     -> case V.toList a of
-      [String "Load", String path]              -> return (Load (T.unpack path))
-      [String "CaseFurther", String var, state] -> CaseFurther (T.unpack var) <$> parseJSON state
-      [String "CaseOn", String expr, state]     -> CaseOn (T.unpack expr) <$> parseJSON state
-      [String "EnterHole", state]               -> EnterHole <$> parseJSON state
-      [String "NextHole", state]                -> NextHole <$> parseJSON state
-      [String "PrevHole", state]                -> PrevHole <$> parseJSON state
-      [String "GetHoleInfo", state, hiOpts]     -> GetHoleInfo <$> parseJSON state <*> parseJSON hiOpts
-      [String "Refine", String expr, state]     -> Refine (T.unpack expr) <$> parseJSON state
-      [String "GetType", String e]              -> return . GetType $ T.unpack e
-      [String "SendStop"]                       -> return SendStop
-      [String "Search", src, trg]               -> Search <$> parseJSON src <*> parseJSON trg
-      _                                         -> mzero
-    _                                           -> mzero
+    Array a -> case V.toList a of
+      [String "Load", String path] ->
+        return (Load (T.unpack path))
+
+      [String "CaseFurther", String var, state] ->
+        CaseFurther (T.unpack var) <$> parseJSON state
+
+      [String "CaseOn", String expr, state] ->
+        CaseOn (T.unpack expr) <$> parseJSON state
+
+      [String "EnterHole", state] ->
+        EnterHole <$> parseJSON state
+
+      [String "NextHole", state] ->
+        NextHole <$> parseJSON state
+
+      [String "PrevHole", state] ->
+        PrevHole <$> parseJSON state
+
+      [String "GetHoleInfo", state, hiOpts] ->
+        GetHoleInfo <$> parseJSON state <*> parseJSON hiOpts
+
+      [String "Refine", String expr, state] ->
+        Refine (T.unpack expr) <$> parseJSON state
+
+      [String "GetType", String e] ->
+        return . GetType $ T.unpack e
+
+      [String "SendStop"] ->
+        return SendStop
+
+      [String "Search", src, trg] ->
+        Search <$> parseWord src <*> parseWord trg
+
+      _ ->
+        mzero
+
+    _ ->
+      mzero
+
+parseWord = \case
+  Object obj ->
+    Word <$> (obj .: "functors") <*> (obj .:? "constant")
+
+  _ ->
+    mzero
 

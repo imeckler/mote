@@ -418,6 +418,38 @@ sequence ng1 ng2_0 =
 -- TODO: Convert real Haskell programs into lists of moves
 -- TODO: Analyze program graphs
 
+graphsOfSizeAtMost' 
+  :: (Hashable f, Ord f, Hashable o, Ord o
+  ,Show o, Show f) -- TODO: Debug 
+  => [Trans f o]
+  -> Int
+  -> Word f o
+  -> Word f o
+  -> [] (NaturalGraph f o)
+graphsOfSizeAtMost' tsList n start end =
+  HashSet.toList
+  $ HashSet.fromList (map moveListToGraph (go start n))
+  where
+  ts = HashMap.fromListWith (++) (map (\t -> (from t, [t])) tsList)
+
+  moveListToGraph = \(m:ms) -> go (moveToGraph m) ms
+    where
+    go !acc ms =
+      case ms of
+        [] -> acc
+        m:ms -> go (acc `sequence` moveToGraph m) ms
+
+  go b k =
+    if b == end
+    then [ [] ]
+    else if k == 0 
+    then []
+    else
+      concatMap (\(b', m) ->
+        map (m:) (go b' (k - 1)))
+      (branchOut ts b)
+
+
 graphsOfSizeAtMost
   :: (Hashable f, Ord f, Hashable o, Ord o
   ,Show o, Show f) -- TODO: Debug 
@@ -444,6 +476,7 @@ graphsOfSizeAtMost tsList n start end = map deleteStrayVertices . HashSet.toList
       memo <- readArray arr n
       case Map.lookup b memo of
         Nothing -> do
+          -- let (singSteps, nicerSteps) = List.partition (\(_,m) -> singTrans (moveTrans m)) (branchOut ts b)
           progs <- fmap HashSet.unions . forM (branchOut ts b) $ \(b', move) ->
             fmap (HashSet.map (obliterate . sequence (moveToGraph move))) (go arr (n - 1) b')
           let progs' = if b == end then HashSet.insert (idGraph end) progs else progs
@@ -451,6 +484,8 @@ graphsOfSizeAtMost tsList n start end = map deleteStrayVertices . HashSet.toList
           return progs'
 
         Just ps -> return ps
+
+--  singTrans t = from t == mempty
 
 -- Search with heuristics
 graphsOfSizeAtMostH

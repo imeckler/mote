@@ -15,6 +15,36 @@ build-type:          Simple
 -- extra-source-files:  
 cabal-version:       >=1.10
 
+executable searchtest
+  main-is: Search/Test.hs
+  build-depends:       base >= 4.7 && < 4.8,
+                       containers >= 0.5,
+                       bifunctors >= 4.2.1,
+                       unordered-containers >= 0.2,
+                       hashable >= 1.2,
+                       vector >= 0.10.12.2,
+                       text >= 1.2.0.4,
+                       aeson >= 0.8.0.2,
+                       ghc-paths >= 0.1.0.9,
+                       filepath >= 1.3.0.2,
+                       bytestring >= 0.10.4,
+                       mtl >= 2.1,
+                       split,
+                       transformers >= 0.3,
+                       ghc,
+                       ghc-mod >= 5.2,
+                       Cabal >= 1.18,
+                       directory >= 1.2,
+                       time >= 1.4,
+                       process >= 1.2,
+                       strict  >= 0.3.2,
+                       fingertree >= 0.1,
+                       array >= 0.5
+
+
+  default-language:    Haskell2010
+  ghc-options: -O2 -W
+
 executable mote
   main-is: Mote.hs
   build-depends:       base >= 4.7 && < 4.8,
