@@ -13,52 +13,14 @@ import Data.Monoid
 import Control.Monad.State
 
 import Search.Graph.Types.NeighborList (NeighborList(..))
+import qualified Search.Graph.Types.NeighborList as NeighborList
 import qualified Search.Types.Word as Word
 import Search.Types.Word (Word(..))
 import Search.Util -- (lastMay, headMay)
 
-{-
-data ExplicitVert
-  = Regular Vertex
-  | Source
-  | Sink
-  | Fog
-  deriving (Eq, Ord, Show)
+import Debug.Trace
 
-data StandardEdge =
-  StandardEdge
-  { source :: Vertex
-  , sink :: Vertex
-  , sourceIndex :: Int -- the index of this edge in the ordering on the outgoing edges from the source
-  }
-  deriving (Eq, Ord, Show)
- -}
-data FogTarget
-  = FogToFog
-  | FogToRegular Vertex Int
-  | FogToSink DummyVertex
-  deriving (Eq, Ord, Show)
-
-data RegularTarget
-  = RegularToFog Vertex Int
-  | RegularToRegular Vertex Int -- source, source index
-  | RegularToSink Int DummyVertex
-  deriving (Eq, Ord, Show)
-
-data TopTarget
-  = TopToFog DummyVertex
-  | TopToRegular DummyVertex Int
-  | TopToSink DummyVertex DummyVertex
-  deriving (Eq, Ord, Show)
-
--- If only I had quotient types...
-data Edge
-  = FromTop TopTarget
-  | FromRegular RegularTarget
-  | FromFog FogTarget
-  deriving (Eq, Ord, Show)
-
--- Edge is the type of vertices of this graph
+-- EdgeID is the type of vertices of this graph
 type RightnessGraph
   = Map EdgeID [EdgeID] -- sucessors. I.e., the set of things to the right of this edge
 
@@ -70,51 +32,95 @@ data Wedge =
   , rightPath :: [EdgeID]
   }
 
-canonicalize :: NaturalGraph f o -> NaturalGraph f o
-canonicalize = deleteStrayVertices . obliterate
+-- canonicalize :: NaturalGraph f o -> NaturalGraph f o
+canonicalize = deleteStrayVertices . obliterate . traceShowId
 
-obliterate :: NaturalGraph f o -> NaturalGraph f o
-obliterate ng = Set.foldl' obliterateFrom ng (constantEdges ng)
+-- obliterate :: NaturalGraph f o -> NaturalGraph f o
+obliterate ng0 = Set.foldl' obliterateFrom ng0 (constantEdges ng0)
 
-obliterateFrom :: NaturalGraph f o -> EdgeID -> NaturalGraph f o
+-- obliterateFrom :: NaturalGraph f o -> EdgeID -> NaturalGraph f o
 obliterateFrom ng0 e0 =
   Set.foldl' (\ng e ->
-    let EdgeData {source, sink} = lookupExn' "can82" e edgeInfo
+    let EdgeData {source, sink}
+          = lookupExn' "can82" e edgeInfo
     in
-    fogSource e source (fogSink e sink ng))
+    fogSource e source (fogSink e sink ng)
+             )
     ng0
     (edgesRightOf ng0 e0)
 
   where
   edgeInfo = edges ng0
 
-  fogSource :: EdgeID -> Foggy (OrBoundary Vertex) -> NaturalGraph f o -> NaturalGraph f o
-  fogSource e source ng =
+  -- fogSource :: EdgeID -> Foggy (OrBoundary Vertex) -> NaturalGraph f o -> NaturalGraph f o
+  fogSource e source ng0 =
+    let ng = ng0 { edges = Map.insert e (EdgeData {source=source,sink=CoveredInFog}) (edges ng0) }
+    in
     case source of
       Clear Boundary ->
-        ng { top = fogAt e (top ng) }
+        ng { top = fogAt e e (top ng) }
 
       Clear (Inner v) ->
-        ng { digraph = Map.adjust (\vd -> vd { outgoing = fogAt e (outgoing vd) }) v (digraph ng) }
+        ng { digraph = Map.adjust (\vd -> vd { outgoing = fogAt e e (outgoing vd) }) v (digraph ng) }
 
       CoveredInFog ->
         ng
 
   -- fogSink :: EdgeID -> Foggy (OrBoundary Vertex) -> NaturalGraph f o -> NaturalGraph f o
-  fogSink e sink ng =
+  fogSink e sink ng0 =
     case sink of
-      Clear Boundary ->
-        ng { bottom = fogAt e (bottom ng) }
+      Clear bv ->
+        let e_new = freshEdgeID ng0
+            ng =
+              ng0
+              { freshEdgeID = e_new + 1
+              , edges = Map.insert e_new (EdgeData {source=CoveredInFog,sink=sink}) (edges ng0)
+              , constantEdges =
+                  if e `Set.member` constantEdges ng0
+                  then Set.insert e_new (constantEdges ng0)
+                  else constantEdges ng0
+              }
+        in
+        case bv of
+          Boundary ->
+            ng { bottom = fogAt e e_new (bottom ng) }
 
-      Clear (Inner v) ->
-        ng { digraph = Map.adjust (\vd -> vd { incoming = fogAt e (incoming vd) }) v (digraph ng) }
+          Inner v ->
+            ng { digraph = Map.adjust (\vd -> vd { incoming = fogAt e e_new (incoming vd) }) v (digraph ng) }
 
       CoveredInFog ->
-        ng
+        ng0
 
 
 -- fogAt :: EdgeID -> NeighborList (EdgeID, f) (EdgeID, o) -> NeighborList (EdgeID, f) (EdgeID, o)
-fogAt = \e ns ->
+-- TODO: This is a special case of Search.Graph.setAt. Unify them
+fogAt e e_new nl =
+  case nl of
+    WithFogged unfogged w ->
+      let (pre, post) = List.break (\(_bv,(e',_)) -> e' == e) unfogged in
+      WithFogged pre (bimap replace replace (Word (map snd post) Nothing <> w ))
+
+    NoFogged (Word fs mo) ->
+      case List.break (\(_bv, (e',_)) -> e' == e) fs of
+        (pre, []) ->
+          case mo of
+            Nothing ->
+              nl
+              -- error "Search.Graph.Canonicalize.fogAt: Inconsistent state: Got Nothing"
+
+            Just (_bv, (e', o)) ->
+              if e /= e'
+                 -- IDK if doing replace is even necessary
+              then bimap replace replace nl   -- error "Search.Graph.Canonicalize.fogAt: Inconsistent state: e /= e'"
+              else WithFogged fs (Word [] (Just (e_new, o)))
+
+        (pre, post) ->
+          WithFogged pre (bimap (replace . snd) (replace . snd) (Word post mo))
+
+  where
+  replace :: (EdgeID, a) -> (EdgeID, a)
+  replace d@(e', x) = if e' == e then (e_new, x) else d
+  {-
   case ns of
     WithFogged fs w ->
       case splitWhen (\(_, (e',_)) -> e == e') fs of
@@ -137,38 +143,19 @@ fogAt = \e ns ->
               if e /= e'
               then ns -- error "Search.Graph.Canonicalize.fogAt: inconsistent state. e /= e'"
               else WithFogged fs (Word [] (Just (e', o)))-- WithFogged [] (Word (map snd fs) (Just (e', o)))
-
+-}
+-- TODO: Replace with better algorithm
 reachability :: RightnessGraph -> Map EdgeID (Set EdgeID)
-reachability = goTop Map.empty
+reachability rg0 =
+  Map.mapWithKey (\e sucs -> Set.delete e $ dfs (Set.singleton e) sucs) rg0
   where
-  goTop acc !rg = 
-    case Map.minViewWithKey rg of
-      Just ((e, _es), rg') ->
-        -- TODO inefficient for easiness
-        let (acc',_) = go acc e in
-        goTop acc' (Map.difference rg' acc')
-
-      Nothing ->
-        acc
-
-    where
-    go !acc0 e =
-      case Map.lookup e acc0 of
-        Just descs ->
-          (acc0, descs)
-
-        Nothing ->
-          let children = lookupExn' "can 161" e rg
-              (acc1, childrens'Descendants) =
-                List.foldl (\(acc,cds) e' ->
-                  let (acc',ds) = go acc e' 
-                  in (acc', ds : cds))
-                  (acc0, [])
-                  children
-
-              descs = List.foldl' (flip Set.insert) (Set.unions childrens'Descendants) children
-          in
-          (Map.insert e descs acc1, descs)
+  dfs seen next =
+    case next of
+      [] -> seen
+      e : next' ->
+        if e `Set.member` seen
+        then dfs seen next'
+        else dfs (Set.insert e seen) (lookupExn' "can 113" e rg0 ++ next')
 
 edgesRightOfAll :: NaturalGraph f o -> Map EdgeID (Set EdgeID)
 edgesRightOfAll ng =
@@ -287,7 +274,7 @@ tendrils ng = (topTendrils, botTendrils)
 
   go getNext succs =
     fmap and $
-      forM (fromNeighborList succs) $ \(fbv, e) ->
+      forM (NeighborList.toList succs) $ \(fbv, e) ->
         case fbv of
           Clear (Inner v) ->
             go getNext (getNext (lookupExn' "can 289" v g)) >>= \case
@@ -320,7 +307,7 @@ wedges ng start nexts =
     where
     go = \case
       Clear (Inner v) -> 
-        case (getNext . fromNeighborList . nexts $ lookupExn' "can 319" v g) of
+        case (getNext . NeighborList.toList . nexts $ lookupExn' "can 319" v g) of
           Just (v', e) ->
             (v', e) : go v'
 
@@ -337,7 +324,7 @@ wedges ng start nexts =
   wedgesFrom :: (OrBoundary Vertex, NeighborList (EdgeID, f) (EdgeID, o)) -> [Wedge]
   wedgesFrom (_bv, nl) = zipWith wedgeFrom neighbs (tail neighbs)
     where
-    neighbs = fromNeighborList nl
+    neighbs = NeighborList.toList nl
     wedgeFrom (fbv_l, e_l) (fbv_r, e_r) =
       Wedge {leftPath = map snd leftPath, rightPath = map snd rightPath}
       where
@@ -449,7 +436,7 @@ deleteStrayVertices ng =
   where
   edges' = Map.filter notStrayEdge (edges ng)
 
-  nonStray = go Set.empty (map fst (fromNeighborList (top ng) ++ fromNeighborList (bottom ng)))
+  nonStray = go Set.empty (map fst (NeighborList.toList (top ng) ++ NeighborList.toList (bottom ng)))
 
   notStrayEdge (EdgeData {source,sink}) =
     case (source, sink) of
@@ -473,7 +460,7 @@ deleteStrayVertices ng =
           let VertexData {incoming, outgoing} = lookupExn' "can 469" v g in
           go
             (Set.insert v seen)
-            (map fst (fromNeighborList incoming ++ fromNeighborList outgoing) ++ next')
+            (map fst (NeighborList.toList incoming ++ NeighborList.toList outgoing) ++ next')
 
       CoveredInFog : next' ->
         go seen next'
@@ -497,13 +484,3 @@ splitWhen p xs = case xs of
     else fmap (\(pre,ys) -> (x:pre,ys)) (splitWhen p xs')
 
 
-fromNeighborList :: NeighborList (EdgeID, f) (EdgeID, o) -> [(Foggy (OrBoundary Vertex), EdgeID)]
-fromNeighborList nl =
-  case nl of
-    WithFogged pre w ->
-      map (\(bv, (e,_)) -> (Clear bv, e)) pre
-      ++ Word.toList (bimap (\(e,_) -> (CoveredInFog, e)) (\(e,_) -> (CoveredInFog, e)) w)
-
-    NoFogged w -> 
-      let f (bv, (e,_)) = (Clear bv, e) in
-      Word.toList (bimap f f w)

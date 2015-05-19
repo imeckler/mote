@@ -16,9 +16,11 @@ import Data.Set (Set)
 import Control.Monad.State
 import qualified Search.Types.Word as Word
 import Search.Graph.Types.NeighborList (NeighborList(..))
+import qualified Search.Graph.Types.NeighborList as NeighborList
 import Search.Graph.Types.Vertex
 import qualified Data.List as List
 import Data.Bifunctor
+import Search.Util
 
 data VertexData f o = VertexData
   { label    :: TransName
@@ -67,6 +69,51 @@ instance (Hashable f, Hashable o) => Hashable (NaturalGraph f o) where
 
 hashWithSaltGraph :: (Hashable f, Hashable o) => Int -> NaturalGraph f o -> Int
 hashWithSaltGraph s_orig ng =
+  go s_orig Set.empty (fromNeighborList (top ng) ++ fromNeighborList (bottom ng)) 
+  where
+  g = digraph ng
+
+  go s seen next =
+    case next of
+      [] ->
+        s
+
+      (fbv, e_lab) : next' ->
+        case fbv of
+          Clear Boundary ->
+            go ((s `hashWithSalt` (0::Int)) `hashWithSalt` e_lab) seen next'
+
+          Clear (Inner v) ->
+            if v `Set.member` seen
+            then go s seen next' -- maybe do something to the hash here too
+            else
+              let VertexData {label, incoming, outgoing} = lookupExn v g
+              in
+              -- should hash the 
+              go
+                ((s `hashWithSalt` label) `hashWithSalt` e_lab)
+                (Set.insert v seen)
+                (fromNeighborList incoming ++ fromNeighborList outgoing ++ next')
+
+          CoveredInFog ->
+            go ((s `hashWithSalt` (1::Int)) `hashWithSalt` e_lab) seen next'
+
+  fromNeighborList nl =
+    case nl of
+      WithFogged unfogged (Word.Word fs mo) ->
+        map (\(bv, (_e, f)) -> (Clear bv, Left f))  unfogged
+        ++ map (\(_, f) -> (CoveredInFog, Left f)) fs
+        ++ maybe [] (\(_,o) -> [(CoveredInFog, Right o)]) mo
+
+      NoFogged (Word.Word fs mo) ->
+        map (\(bv,(_e,f)) -> (Clear bv, Left f)) fs
+        ++ maybe [] (\(bv,(_e,o)) -> [(Clear bv, Right o)]) mo
+
+  -- go :: Int -> Map Vertex -> 
+
+{-
+hashWithSaltGraph :: (Hashable f, Hashable o) => Int -> NaturalGraph f o -> Int
+hashWithSaltGraph s_orig ng =
   let
     vs = fromNeighborList (top ng)
     (s', _, _) = execState go (s_orig, Set.fromList (map fst vs), vs)
@@ -111,4 +158,4 @@ hashWithSaltGraph s_orig ng =
           bimap (\(bv,(_,f)) -> (bv, Left f)) (\(bv, (_,o)) -> (bv, Right o)) w
 
   g = digraph ng
-
+-}

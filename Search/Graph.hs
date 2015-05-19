@@ -1,6 +1,7 @@
 {-# LANGUAGE RecordWildCards, NamedFieldPuns, LambdaCase,
              ScopedTypeVariables, BangPatterns, ViewPatterns,
-             TupleSections, DeriveFunctor, RankNTypes #-}
+             TupleSections, DeriveFunctor, RankNTypes
+             , NoMonomorphismRestriction #-}
 module Search.Graph where
 
 import Prelude hiding (sequence)
@@ -32,6 +33,8 @@ import Search.Graph.Canonicalize
 import Search.Graph.Types.NeighborList (NeighborList(..))
 import qualified Search.Graph.Types.NeighborList as NeighborList
 
+import Debug.Trace
+
 -- TODO: Perhaps add the ability to filter the results by those which
 -- satisfy some test cases.
 
@@ -44,8 +47,8 @@ connectedComponents ng = go [] vs
   where
   vs = 
     Set.fromList $
-      mapMaybe (disambiguate In) (fromNeighborList (top ng))
-      ++ mapMaybe (disambiguate Out) (fromNeighborList (bottom ng))
+      mapMaybe (disambiguate In) (NeighborList.toList (top ng))
+      ++ mapMaybe (disambiguate Out) (NeighborList.toList (bottom ng))
 
   go acc remaining =
     case Set.minView remaining of
@@ -78,8 +81,8 @@ componentOf v ng = go Set.empty [v]
                 UReal v ->
                   let VertexData {incoming, outgoing} = lookupExn v g
                   in
-                  mapMaybe (disambiguate In) (fromNeighborList incoming)
-                  ++ mapMaybe (disambiguate Out) (fromNeighborList outgoing)
+                  mapMaybe (disambiguate In) (NeighborList.toList incoming)
+                  ++ mapMaybe (disambiguate Out) (NeighborList.toList outgoing)
 
                 UDummy io e ->
                   let EdgeData {source,sink} = lookupExn e edgeInfo
@@ -385,6 +388,7 @@ sequence ng1 ng2_0 =
     case nl of
       NoFogged w ->
         map (first Clear) $ Word.toList (bimap discardLabel discardLabel w)
+
       WithFogged pre w ->
         map (first Clear . discardLabel) pre
         ++ map (CoveredInFog,) (Word.toList (bimap fst fst w))
@@ -406,12 +410,39 @@ sequence ng1 ng2_0 =
         replace d@(_,(e',f)) = if e' == e then (ob, (e_new,f)) else d
 
       CoveredInFog ->
+        case nl of
+          WithFogged unfogged w ->
+            -- Doing the exact same thing in both cases. Consider unifying.
+            case List.break (\(_, (e',_)) -> e' == e) unfogged of
+              (pre, []) -> -- already fogged
+                bimap replace replace nl
+
+              (pre, post) ->
+                WithFogged pre (bimap replace replace (Word (map snd post) Nothing <> w))
+
+          NoFogged (Word fs mo) ->
+            -- These two cases are the same as well
+            case List.break (\(_, (e',_)) -> e' == e) fs of
+              (pre, []) ->
+                case mo of
+                  Nothing ->
+                    nl -- error "Search.Graph.setAt: Inconsistent state: Got Nothing"
+
+                  Just (_bv,(e',o)) ->
+                    if e /= e'
+                    then bimap replace replace nl -- error "Search.Graph.setAt: Inconsistent state: e /= e'"
+                    else WithFogged fs (Word [] (Just (e_new, o)))
+
+              (pre, post) ->
+                WithFogged pre (Word (fmap (replace . snd) post) (fmap (replace . snd) mo))
+
+          where
+          replace d@(e',x) = if e' == e then (e_new, x) else d
+        {-
         case fogAt e nl of
           WithFogged unfogged w -> WithFogged unfogged (bimap replace replace w)
-            where
-            replace d@(e',x) = if e' == e then (e_new, x) else d
 
-          NoFogged w -> NoFogged w
+          NoFogged w -> NoFogged w -}
 
       
 
@@ -428,27 +459,28 @@ graphsOfSizeAtMost'
   -> [] (NaturalGraph f o)
 graphsOfSizeAtMost' tsList n start end =
   HashSet.toList
-  $ HashSet.fromList (map moveListToGraph (go start n))
+  $ HashSet.fromList (map moveListToGraph (moveSequencesOfSizeAtMost tsList n start end))
+
+
+moveSequencesOfSizeAtMost tsList n start end = go start n
   where
   ts = HashMap.fromListWith (++) (map (\t -> (from t, [t])) tsList)
 
-  moveListToGraph = \(m:ms) -> go (moveToGraph m) ms
-    where
-    go !acc ms =
-      case ms of
-        [] -> acc
-        m:ms -> go (acc `sequence` moveToGraph m) ms
-
   go b k =
-    if b == end
-    then [ [] ]
-    else if k == 0 
-    then []
+    if k == 0
+    then
+        if b == end then [[]] else []
     else
       concatMap (\(b', m) ->
         map (m:) (go b' (k - 1)))
       (branchOut ts b)
 
+moveListToGraph = \(m:ms) -> go (moveToGraph m) ms
+  where
+  go !acc ms =
+    case ms of
+      [] -> acc
+      m:ms -> go (acc `sequence` moveToGraph m) ms
 
 graphsOfSizeAtMost
   :: (Hashable f, Ord f, Hashable o, Ord o
@@ -610,7 +642,7 @@ data Edge = LeftEdge | RightEdge | Incoming EdgeID
 -- expressions to see their types
 -- toTerm' :: NaturalGraph f o -> AnnotatedTerm
 toTerm' ng0 =
-  case Map.minViewWithKey g of
+  case trace ("YO: " ++ show ng0) (Map.minViewWithKey g) of
     Nothing ->
       AnnotatedTerm Id 0
 
@@ -618,7 +650,7 @@ toTerm' ng0 =
       case topGoodVertexOfType1 of
         Just (v,vd) -> finishUp v vd top' fmaplevel
           where
-          ins = mapMaybe (fmap snd . killFoggy) $ fromNeighborList (incoming vd)
+          ins = mapMaybe (fmap snd . killFoggy) $ NeighborList.toList (incoming vd)
           in_0 = head ins
           in_n = last ins
           (top', fmaplevel) = (pre <> outgoing vd <> post, NeighborList.length pre)
@@ -696,6 +728,7 @@ toTerm' ng0 =
 
   where
   finishUp v vd top' fmaplevel =
+    trace ("removing: " ++ show (v, vd)) $
     fmapped numStraights (toTerm' (canonicalize ng') <> fmapped fmaplevel (label vd) )
     where
     ng' =
@@ -720,7 +753,7 @@ toTerm' ng0 =
 
     rename bv = if bv == Inner v then Boundary else bv
 
-    deletedEdges = map snd $ fromNeighborList (incoming vd)
+    deletedEdges = map snd $ NeighborList.toList (incoming vd)
 
   (numStraights, ng) = countAndDropFMapStraights ng0
 
@@ -730,7 +763,7 @@ toTerm' ng0 =
     (numStraights, ng_ { top = dropStraights (top ng_), bottom = dropStraights (bottom ng_) })
     where
     numStraights =
-      length $ takeWhile (\case {(Clear Boundary,_) -> True; _ -> False}) (fromNeighborList (top ng0))
+      length $ takeWhile (\case {(Clear Boundary,_) -> True; _ -> False}) (NeighborList.toList (top ng0))
 
     -- dropStraights :: NeighborList f o -> NeighborList f o
     dropStraights = \case
@@ -751,7 +784,7 @@ toTerm' ng0 =
   -- topGoodVertexOfType1 :: Maybe (Vertex, VertexData f o)
   topGoodVertexOfType1 =
     findMap (\(v, vd) ->
-      case mapMaybe killFoggy (fromNeighborList (incoming vd)) of
+      case mapMaybe killFoggy (NeighborList.toList (incoming vd)) of
         [] ->
           Nothing
 
@@ -766,7 +799,7 @@ toTerm' ng0 =
   -- topGoodVertexOfType2 :: Maybe (Maybe EdgeID, Vertex, VertexData f o)
   topGoodVertexOfType2 =
     findMap (\(v, vd) ->
-      case mapMaybe killFoggy (fromNeighborList (incoming vd)) of
+      case mapMaybe killFoggy (NeighborList.toList (incoming vd)) of
         [] ->
           let
             unblocked =
@@ -785,7 +818,7 @@ toTerm' ng0 =
                 if o_1 `Set.member` lookupExn e rightnesses
                 then Just e
                 else Nothing)
-                (reverse $ fromNeighborList (top ng))
+                (reverse $ NeighborList.toList (top ng))
             , v
             , vd
             )
@@ -793,7 +826,7 @@ toTerm' ng0 =
           where
           -- assuming stray vertices have been deleted, it's safe to call
           -- head and last
-          outlist = fromNeighborList (outgoing vd)
+          outlist = NeighborList.toList (outgoing vd)
           (_, o_1) = head outlist
           (_, o_n) = last outlist
           rightOfO_n = lookupExn o_n rightnesses
@@ -810,7 +843,7 @@ toTerm' ng0 =
       List.concatMap (\case
         [] -> []
         (e1 : es) -> map (e1,) es)
-      (List.tails (map snd $ fromNeighborList (outgoing vd))))
+      (List.tails (map snd $ NeighborList.toList (outgoing vd))))
     (Map.toList g)
 
   fmapped n (AnnotatedTerm f x) = case n of
@@ -979,7 +1012,7 @@ compressPaths ng = go ng startingVertices
   where
   startingVertices =
     filter (\(_v, vd) ->
-      let inc = fromNeighborList (incoming vd) in
+      let inc = NeighborList.toList (incoming vd) in
       not (length inc == 1 && all (\case {(Clear (Inner _),_) -> True; _ -> False}) inc))
       (Map.toList (digraph ng))
     |> map fst
@@ -994,7 +1027,7 @@ compressPaths ng = go ng startingVertices
 
   slurpBackFrom v g =
     let vd@(VertexData { incoming }) = lookupExn v g in
-    case fromNeighborList incoming of
+    case NeighborList.toList incoming of
       [(Clear (Inner v'), _)] ->
         (v, vd) : slurpBackFrom v' g
 
@@ -1016,7 +1049,7 @@ compressPaths ng = go ng startingVertices
                 (digraph ng)
             , top ng
             )
-            (fromNeighborList (incoming vd1))
+            (NeighborList.toList (incoming vd1))
     in
     ng
     { top = top'

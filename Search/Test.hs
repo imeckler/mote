@@ -37,6 +37,7 @@ main = do
 
     gs <- search (Word ["[]"] (Just "Filepath")) (Word ["IO","[]"] (Just "Int")) 4
     liftIO $ print gs
+    liftIO $ print (length gs)
   where
   lex (t, g) = (numHoles t, M.size (digraph g), length $ connectedComponents g)
 
@@ -58,7 +59,7 @@ x = runWithTestRef $ \r -> runErrorT $ do
   -- fmap (fmap renderFunc) (readFuncs trg) -- fmap catMaybes $ mapM (fmap (fmap renderSyntacticFunc . extractUnapplied . dropForAlls) . readType) trg
   tsList <- fmap (fmap (bimap renderSyntacticFunc (renderSyntacticFunc . (,[])))) $ transesInScope -- fmap (fmap (fmap renderFunc)) $ transesInScope
   let ts = HashMap.fromListWith (++) (map (\t -> (from t, [t])) tsList)
-  return (src', trg', ts)
+  return (src', trg', tsList, ts)
   where
   (src, trg) = (Word ["[]"] (Just "Filepath"), Word ["IO", "[]"] (Just "Int"))
 

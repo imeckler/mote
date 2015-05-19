@@ -207,7 +207,7 @@ search src trg n = do
   -- fmap (fmap renderFunc) (readFuncs trg) -- fmap catMaybes $ mapM (fmap (fmap renderSyntacticFunc . extractUnapplied . dropForAlls) . readType) trg
   transes <- fmap (fmap (bimap renderSyntacticFunc (renderSyntacticFunc . (,[])))) $ transesInScope -- fmap (fmap (fmap renderFunc)) $ transesInScope
 
-  return $ graphsOfSizeAtMost' transes n from to
+  return $ graphsOfSizeAtMost transes n from to
 
 {-
 readFuncs :: [String] -> M [Func]

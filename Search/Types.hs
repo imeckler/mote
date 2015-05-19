@@ -83,7 +83,7 @@ data Trans f o =
   , to   :: Word f o
   , name :: TransName 
   }
-  deriving (Show)
+  deriving (Show, Eq, Ord)
 
 instance Bifunctor Trans where
   bimap f g t = t { from=bimap f g (from t), to=bimap f g (to t) }

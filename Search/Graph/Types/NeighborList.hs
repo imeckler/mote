@@ -66,3 +66,13 @@ fold f g z = \case
   WithFogged v_and_xs w -> _
 -}
 
+toList :: NeighborList (edgeID, f) (edgeID, o) -> [(Foggy (OrBoundary Vertex), edgeID)]
+toList nl =
+  case nl of
+    WithFogged pre w ->
+      map (\(bv, (e,_)) -> (Clear bv, e)) pre
+      ++ Word.toList (bimap (\(e,_) -> (CoveredInFog, e)) (\(e,_) -> (CoveredInFog, e)) w)
+
+    NoFogged w -> 
+      let f (bv, (e,_)) = (Clear bv, e) in
+      Word.toList (bimap f f w)
