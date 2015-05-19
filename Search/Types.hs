@@ -1,10 +1,10 @@
-{-# LANGUAGE LambdaCase, DeriveFunctor, DeriveGeneric #-}
+{-# LANGUAGE LambdaCase, DeriveFunctor, DeriveGeneric, NamedFieldPuns #-}
 module Search.Types where
 
 import Data.Monoid
 import Data.Hashable
 import Data.Aeson
-import GHC.Generics
+import GHC.Generics hiding (from, to)
 import Data.Bifunctor
 import Search.Types.Word
 
@@ -84,4 +84,11 @@ data Trans f o =
   , name :: TransName 
   }
   deriving (Show)
+
+instance Bifunctor Trans where
+  bimap f g t = t { from=bimap f g (from t), to=bimap f g (to t) }
+
+  first f t = t { from = first f (from t), to = first f (to t) }
+
+  second g t = t { from = second g (from t), to = second g (to t) }
 
