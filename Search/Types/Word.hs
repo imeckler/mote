@@ -7,6 +7,10 @@ import Data.Monoid
 import GHC.Generics
 import Control.Applicative
 import qualified Data.List as List
+import Data.Traversable (traverse)
+import Data.Bitraversable
+import Data.Bifoldable
+import Data.Foldable (foldMap)
 
 import Search.Util
 
@@ -26,6 +30,12 @@ instance Monoid (Word f o) where
   mappend (Word fs Nothing) (Word fs' mo) = Word (fs ++ fs') mo
 
 instance (Hashable f, Hashable o) => Hashable (Word f o)
+
+instance Bifoldable Word where
+  bifoldMap f g (Word fs mo) = foldMap f fs <> foldMap g mo
+
+instance Bitraversable Word where
+  bitraverse f g (Word fs mo) = Word <$> traverse f fs <*> traverse g mo
 
 length :: Word f o -> Int
 length (Word fs mo) = case mo of { Just _ -> 1 + Prelude.length fs; _ -> Prelude.length fs }

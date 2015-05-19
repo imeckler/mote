@@ -7,7 +7,6 @@ module Mote.Search
   -- DEBUG
   , search
   , score
-  , showTrans
   , traversables
   , monads
   , applicatives
@@ -29,6 +28,8 @@ import qualified Data.List           as List
 import           Data.Maybe
 import qualified Data.Set            as Set
 import qualified Data.Map            as Map
+import Data.Traversable (traverse)
+import Data.Bitraversable
 
 import           GHC
 import           InstEnv             (ClsInst (..))
@@ -41,6 +42,10 @@ import           Type                (dropForAlls, splitFunTys)
 import           TypeRep
 import           UniqSet             (elementOfUniqSet)
 import           Unique              (getKey, getUnique)
+
+import Search.Graph.Types
+import qualified Search.Types.Word as Word
+import Search.Types.Word (Word(..))
 
 -- The full search strategy for F X -> G Y is as follows.
 -- Find f : X -> H Y (or possibly f : X -> H Y', g : Y' -> Y)
@@ -91,19 +96,21 @@ data TransInterpretation = TransInterpretation
   { numArguments            :: Int
   , functorArgumentPosition :: Int
   , name                    :: Name
-  , from                    :: [Func]
-  , to                      :: [Func]
+  , from                    :: Word SyntacticFunc Type
+  , to                      :: Word SyntacticFunc Type
   }
 
+{-
 data Func
   = Syntactic SyntacticFunc
   | Constant TyCon -- This tycon is nullary
   deriving (Eq)
+-}
 
-showTrans :: Trans SyntacticFunc -> M String
-showTrans (Trans {from, to, name}) = do
-  from' <- lift $ mapM showPprM from
-  to' <- lift $ mapM showPprM to
+toStringTrans :: Trans SyntacticFunc Type -> M String
+toStringTrans (Trans {from, to, name}) = do
+  from' <- lift (bitraverse showPprM showPprM from)
+  to'   <- lift (bitraverse showPprM showPprM from)
   return (show $ Trans {from=from', to=to', name})
 
 data CoarseType
@@ -122,12 +129,12 @@ squint (tc, ts) = (tc, map squintTy ts) where
     _              -> Type (WrappedType t)
 
 -- Filtering occurs here
-transes :: Set.Set CoarseFunc -> (Name, Type) -> [Trans Func]
+transes :: Set.Set CoarseFunc -> (Name, Type) -> [Trans SyntacticFunc Type]
 transes funcs b = mapMaybe toTrans (transInterpretations b)
   where
-  toTrans :: TransInterpretation -> Maybe (Trans Func)
+  toTrans :: TransInterpretation -> Maybe (Trans SyntacticFunc Type)
   toTrans (TransInterpretation {..}) =
-    if any notAFunctor from || any notAFunctor to
+    if anyNotAFunctor from || anyNotAFunctor to
     then Nothing
     else if from == to
     then Nothing
@@ -144,9 +151,7 @@ transes funcs b = mapMaybe toTrans (transInterpretations b)
 
     underscores n = unwords $ replicate n "_"
 
-    notAFunctor = \case
-      Constant {}  -> False
-      Syntactic sf -> not (Set.member (squint sf) funcs)
+    anyNotAFunctor = Word.fold (\sf b -> not (Set.member (squint sf) funcs) || b) (\_ b -> b) False
 
 traversables :: GhcMonad m => m [SyntacticFunc]
 traversables = instancesOneParamFunctorClass PrelNames.traversableClassName
@@ -183,25 +188,29 @@ instance Hashable WrappedTyCon where
 instance Show WrappedTyCon where
   show (WrappedTyCon _ s) = show s
 
-search :: [String] -> [String] -> Int ->  M [NaturalGraph (Int, Int)]
+search :: Word (String) String -> Word (String) String -> Int ->  M [NaturalGraph (Int, Int) (Int, Int)]
 search src trg n = do
   let renderSyntacticFunc :: SyntacticFunc -> (Int, Int)
       renderSyntacticFunc (tc, args) = (getKey (getUnique tc), hash args)
 
+{-
       renderFunc :: Func -> (Int, Int)
       renderFunc f = case f of
         Syntactic sf -> renderSyntacticFunc sf
-        Constant tc  -> renderSyntacticFunc (tc, [])
+        Constant tc  -> renderSyntacticFunc (tc, []) -}
 
 --  let showSyntacticFunc = showSDoc fs . ppr
 --  let renderSyntacticFunc sf@(tc, args) = WrappedTyCon tc (showSyntacticFunc sf)
 
-  from    <- fmap (fmap renderFunc) (readFuncs src) -- fmap catMaybes $ mapM (fmap (fmap renderSyntacticFunc . extractUnapplied . dropForAlls) . readType) src
-  to      <- fmap (fmap renderFunc) (readFuncs trg) -- fmap catMaybes $ mapM (fmap (fmap renderSyntacticFunc . extractUnapplied . dropForAlls) . readType) trg
-  transes <- fmap (fmap (fmap renderFunc)) $ transesInScope
+-- TODO: Check that the kinds make sense
+  from    <- bitraverse _ (_ . readType) src -- fmap (fmap renderFunc) (readFuncs src)
+  -- fmap catMaybes $ mapM (fmap (fmap renderSyntacticFunc . extractUnapplied . dropForAlls) . readType) src
+  to      <- _ -- fmap (fmap renderFunc) (readFuncs trg) -- fmap catMaybes $ mapM (fmap (fmap renderSyntacticFunc . extractUnapplied . dropForAlls) . readType) trg
+  transes <- _ -- fmap (fmap (fmap renderFunc)) $ transesInScope
 
   return $ graphsOfSizeAtMost transes n from to
 
+{-
 readFuncs :: [String] -> M [Func]
 readFuncs ss = do
   (ss', sLast) <- maybeThrow (OtherError "Mote.Search.readFuncs: Empty list") (splitLast ss)
@@ -238,6 +247,7 @@ readFuncs ss = do
 
       _ ->
         throwError (OtherError "Mote.Search.readLastFunc: Type had the wrong form")
+-}
 
 {-
 readFunc :: String -> M Func
@@ -251,10 +261,10 @@ readFunc s = do
 -}
 
 type Score = (Int, Int, Int)
-score :: (AnnotatedTerm, NaturalGraph f) -> Score
+score :: (AnnotatedTerm, NaturalGraph f o) -> Score
 score (t, g) = (numHoles t, Map.size (digraph g), length $ connectedComponents g)
 
-transesInScope :: M [Trans Func]
+transesInScope :: M [Trans SyntacticFunc Type]
 transesInScope = do
   namedTys <- fmap catMaybes . mapM typeName =<< lift getNamesInScope
   ts <- lift traversables
@@ -264,16 +274,16 @@ transesInScope = do
   let joins     =
         map (\m ->
           Trans
-          { from = map Syntactic [m,m]
-          , to   = [Syntactic m]
+          { from = Word [m,m] Nothing
+          , to   = Word [m] Nothing
           , name = AnnotatedTerm (Simple "join") 0
           }
         ) ms
       traverses =
         liftA2 (\t f ->
           Trans
-          { from = map Syntactic [t,f]
-          , to   = map Syntactic [f,t]
+          { from = Word [t,f] Nothing
+          , to   = Word [f,t] Nothing
           , name = AnnotatedTerm (Simple "sequenceA") 0
           }
         ) ts as
@@ -346,7 +356,7 @@ transInterpretations (n, t0) =
             { numArguments            = numArguments
             , functorArgumentPosition = i
             , name                    = n
-            , from                    = map Syntactic sfs
+            , from                    = Word sfs Nothing
             , to                      = fsTarg
             }
 
@@ -356,14 +366,14 @@ transInterpretations (n, t0) =
             { numArguments            = numArguments
             , functorArgumentPosition = i
             , name                    = n
-            , from                    = map Syntactic sfs ++ [ Constant tc ]
+            , from                    = Word sfs (Just tc)
             , to                      = fsTarg
             }
 
         | otherwise = Nothing
         where
         (sfs, inner) = splitSyntancticFuncs argty
-        fsTarg       = map Syntactic sfsTarg
+        fsTarg       = Word sfsTarg Nothing
 
     TyConApp targTc [] ->
       catMaybes (zipWith interp [0..] args)
@@ -375,7 +385,7 @@ transInterpretations (n, t0) =
             { numArguments            = numArguments
             , functorArgumentPosition = i
             , name                    = n
-            , from                    = map Syntactic sfs ++ [ Constant tc ]
+            , from                    = Word sfs (Just tc)
             , to                      = fsTarg
             }
 
@@ -385,14 +395,14 @@ transInterpretations (n, t0) =
             { numArguments            = numArguments
             , functorArgumentPosition = i
             , name                    = n
-            , from                    = map Syntactic sfs
+            , from                    = Word sfs Nothing
             , to                      = fsTarg
             }
 
         | otherwise = Nothing
         where
         (sfs, inner) = splitSyntancticFuncs argTys
-        fsTarg       = map Syntactic sfsTarg  ++ [ Constant targTc ]
+        fsTarg       = Word sfsTarg (Just targTc)
 
     _ -> []
   where
