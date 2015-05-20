@@ -34,10 +34,16 @@ import Search.Graph.Types.NeighborList (NeighborList(..))
 import qualified Search.Graph.Types.NeighborList as NeighborList
 
 import Debug.Trace
+import qualified Search.Graph.ToTerm as ToTerm
+
+-- TODO: Consider detecting when things are destructive (e.g., !! or head)
+-- or trivial (e.g., maybeToList) to weight terms differently
 
 -- TODO: Perhaps add the ability to filter the results by those which
 -- satisfy some test cases.
 
+toTerm :: (Show f, Show o) => NaturalGraph f o -> AnnotatedTerm
+toTerm = ToTerm.toTerm . compressPaths
 
 -- Vert is left ungeneralized for clarity
 -- mapWordVertices :: (forall l. (Vert, l) -> x) -> Word (Vert, f) (Vert, o) -> Word x x
@@ -479,7 +485,7 @@ moveListToGraph = \(m:ms) -> go (moveToGraph m) ms
   where
   go !acc ms =
     case ms of
-      [] -> acc
+      [] -> canonicalize acc
       m:ms -> go (acc `sequence` moveToGraph m) ms
 
 graphsOfSizeAtMost
@@ -625,6 +631,7 @@ renderTerm = \case
 
 renderAnnotatedTerm = renderTerm . unannotatedTerm
 
+{-
 -- toTerm :: NaturalGraph f o -> AnnotatedTerm
 toTerm = toTerm' . compressPaths
 
@@ -633,10 +640,6 @@ toTerm = toTerm' . compressPaths
 -- There are no incoming vertices but there are outgoing vertices
 -- There are no 
 -- there are no incoming vertices or outgoing vertices.
-data TopOrBottom = Top | Bottom deriving (Eq, Show)
-
-data Edge = LeftEdge | RightEdge | Incoming EdgeID
-
 
 -- TODO: Would be nice to have a "scratch pad" where I can write bits of
 -- expressions to see their types
@@ -853,7 +856,7 @@ toTerm' ng0 =
     where
     wrapped = case f of { Simple x -> x; Compound x -> parens x; _ -> error "Search.Graph.fmapped: Impossible" }
     parens x = "(" ++ x ++ ")"
-
+-}
 {-
 Want either
 1. something that has only contiguous Boundary parents (resp children) and at least one of them.

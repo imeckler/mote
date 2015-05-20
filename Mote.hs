@@ -223,7 +223,7 @@ respond' stRef = \case
     gs <- Mote.Search.search src trg 5
     return (SetInfoWindow (showResults gs)) 
     where
-    showResults :: [Search.Graph.Types.NaturalGraph f o] -> String
+    -- TODO:uncomment showResults :: [Search.Graph.Types.NaturalGraph f o] -> String
     showResults =
       unlines
       . map (\(_,(t,_)) -> Search.Graph.renderAnnotatedTerm t)

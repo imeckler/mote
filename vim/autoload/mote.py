@@ -288,6 +288,9 @@ def case_on(expr):
 def refine(expr):
   get_mote_process()._send_message(['Refine', expr, get_client_state()])
 
+def search_(source, target):
+  get_mote_process()._send_message(['Search', source, target])
+
 def search(src_str, trg_str):
   src = src_str.split(' . ')
   trg = trg_str.split(' . ')

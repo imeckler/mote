@@ -26,8 +26,11 @@ import Data.Bitraversable
 import Data.Bifunctor
 
 import Search.Graph.Types
+import qualified Data.HashSet as HashSet
 
-main = do
+main =
+  print =<< comparison (Word ["[]"] (Just "Filepath")) (Word ["IO","[]"] (Just "Int")) 5
+  {-
   void . runWithTestRef $ \r -> runErrorT $ do
     loadFile r "Foo.hs"
     ts <- transesInScope
@@ -36,32 +39,51 @@ main = do
     liftIO $ mapM_ (\(k,v) -> print (k, length v)) (HashMap.toList stsmap)
 
     gs <- search (Word ["[]"] (Just "Filepath")) (Word ["IO","[]"] (Just "Int")) 4
-    liftIO $ print gs
-    liftIO $ print (length gs)
+    liftIO $
+      mapM (\(t, g) ->
+        print (renderAnnotatedTerm t, lex (t,g)) )
+      . List.sortBy (compare `on` lex)
+      . map (\g -> (toTerm g, g))
+      $ gs -}
+
   where
   lex (t, g) = (numHoles t, M.size (digraph g), length $ connectedComponents g)
 
-x = runWithTestRef $ \r -> runErrorT $ do
-  loadFile r "Foo.hs"
-  fs <- lift getSessionDynFlags
-  let renderSyntacticFunc :: SyntacticFunc -> (String, String)
-      renderSyntacticFunc (tc, args) = (showSDoc fs (ppr tc), showSDoc fs (ppr args)) -- (getKey (getUnique tc), hash args)
+render src trg =
+  runWithTestRef $ \r -> runErrorT $ do
+    loadFile r "Foo.hs"
+    fs <- lift getSessionDynFlags
+    let renderSyntacticFunc :: SyntacticFunc -> (String, String)
+        renderSyntacticFunc (tc, args) = (showSDoc fs (ppr tc), showSDoc fs (ppr args)) -- (getKey (getUnique tc), hash args)
 
-      readAndRenderSyntacticFunc =
-        join
-        . fmap
-          ( maybeThrow (OtherError "Could not parse functor for search")
-            . fmap renderSyntacticFunc
-            . extractUnapplied . dropForAlls)
-        . readType
-  src'  <- bitraverse readAndRenderSyntacticFunc readAndRenderSyntacticFunc src
-  trg'  <- bitraverse readAndRenderSyntacticFunc readAndRenderSyntacticFunc trg
-  -- fmap (fmap renderFunc) (readFuncs trg) -- fmap catMaybes $ mapM (fmap (fmap renderSyntacticFunc . extractUnapplied . dropForAlls) . readType) trg
-  tsList <- fmap (fmap (bimap renderSyntacticFunc (renderSyntacticFunc . (,[])))) $ transesInScope -- fmap (fmap (fmap renderFunc)) $ transesInScope
+        readAndRenderSyntacticFunc =
+          join
+          . fmap
+            ( maybeThrow (OtherError "Could not parse functor for search")
+              . fmap renderSyntacticFunc
+              . extractUnapplied . dropForAlls)
+          . readType
+    src'  <- bitraverse readAndRenderSyntacticFunc readAndRenderSyntacticFunc src
+    trg'  <- bitraverse readAndRenderSyntacticFunc readAndRenderSyntacticFunc trg
+    -- fmap (fmap renderFunc) (readFuncs trg) -- fmap catMaybes $ mapM (fmap (fmap renderSyntacticFunc . extractUnapplied . dropForAlls) . readType) trg
+    tsList <- fmap (fmap (bimap renderSyntacticFunc (renderSyntacticFunc . (,[])))) $ transesInScope -- fmap (fmap (fmap renderFunc)) $ transesInScope
+    return (src', trg', tsList)
+
+
+comparison src trg n = do
+  Right (src', trg', tsList) <- render src trg
   let ts = HashMap.fromListWith (++) (map (\t -> (from t, [t])) tsList)
-  return (src', trg', tsList, ts)
-  where
-  (src, trg) = (Word ["[]"] (Just "Filepath"), Word ["IO", "[]"] (Just "Int"))
+
+  print "done with that business"
+  return (length $ graphsOfSizeAtMost tsList n src' trg')
+  {-
+  let programs = moveSequencesOfSizeAtMost tsList n src' trg'
+  return 
+    ( HashSet.size . HashSet.fromList $ map moveListToGraph programs
+    , length programs
+    ) -}
+
+--  (src, trg) = (Word ["[]"] (Just "Filepath"), Word ["IO", "[]"] (Just "Int"))
 
 {-
 main :: IO ()

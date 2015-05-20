@@ -15,7 +15,7 @@ import Data.Foldable (foldMap)
 import Search.Util
 
 data Word f o = Word [f] (Maybe o)
-  deriving (Eq, Ord, Show, Generic)
+  deriving (Eq, Ord, Show, Read, Generic)
 
 instance Bifunctor Word where
   first g (Word fs mo)  = Word (Prelude.map g fs) mo

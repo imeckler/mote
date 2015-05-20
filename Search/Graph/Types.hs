@@ -4,6 +4,7 @@ module Search.Graph.Types
   , NaturalGraph (..)
   , EdgeID
   , EdgeData (..)
+  , TopOrBottom (..)
   , module Search.Graph.Types.Vertex
   ) where
 
@@ -21,6 +22,8 @@ import Search.Graph.Types.Vertex
 import qualified Data.List as List
 import Data.Bifunctor
 import Search.Util
+
+data TopOrBottom = Top | Bottom deriving (Eq, Show)
 
 data VertexData f o = VertexData
   { label    :: TransName

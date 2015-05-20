@@ -31,13 +31,17 @@ data Wedge =
   { leftPath  :: [EdgeID]
   , rightPath :: [EdgeID]
   }
+  deriving (Show)
 
 -- canonicalize :: NaturalGraph f o -> NaturalGraph f o
-canonicalize = deleteStrayVertices . obliterate . traceShowId
+canonicalize = deleteStrayVertices . obliterate -- . traceShowId
 
 -- obliterate :: NaturalGraph f o -> NaturalGraph f o
 obliterate ng0 = Set.foldl' obliterateFrom ng0 (constantEdges ng0)
 
+-- There is at least one bug in this function. It produced the following
+-- silly graph
+-- NaturalGraph {top = NoFogged (Word [(Inner 1,(6,("[]","[]")))] (Just (Inner 0,(1,("Foo.Filepath","[]"))))), bottom = WithFogged [(Inner 1,(8,("GHC.Types.IO","[]"))),(Inner 1,(9,("[]","[]")))] (Word [] (Just (28,("GHC.Types.Int","[]")))), digraph = fromList [(0,VertexData {label = AnnotatedTerm {unannotatedTerm = Simple "readFileMay", numHoles = 0}, incoming = NoFogged (Word [] (Just (Boundary,(1,("Foo.Filepath","[]"))))), outgoing = NoFogged (Word [(Inner 1,(2,("GHC.Types.IO","[]"))),(Boundary,(3,("Data.Maybe.Maybe","[]"))),(Boundary,(4,("[]","[]")))] (Just (Boundary,(5,("GHC.Types.Char","[]")))))}),(1,VertexData {label = AnnotatedTerm {unannotatedTerm = Simple "sequenceA", numHoles = 0}, incoming = NoFogged (Word [(Boundary,(6,("[]","[]"))),(Inner 0,(2,("GHC.Types.IO","[]")))] Nothing), outgoing = NoFogged (Word [(Boundary,(8,("GHC.Types.IO","[]"))),(Boundary,(9,("[]","[]")))] Nothing)})], edges = fromList [(1,EdgeData {source = Clear Boundary, sink = Clear (Inner 0)}),(2,EdgeData {source = Clear (Inner 0), sink = Clear (Inner 1)}),(3,EdgeData {source = Clear (Inner 0), sink = Clear Boundary}),(4,EdgeData {source = Clear (Inner 0), sink = Clear Boundary}),(5,EdgeData {source = Clear (Inner 0), sink = Clear Boundary}),(6,EdgeData {source = Clear Boundary, sink = Clear (Inner 1)}),(8,EdgeData {source = Clear (Inner 1), sink = Clear Boundary}),(9,EdgeData {source = Clear (Inner 1), sink = Clear Boundary}),(27,EdgeData {source = CoveredInFog, sink = CoveredInFog}),(28,EdgeData {source = CoveredInFog, sink = Clear Boundary})], constantEdges = fromList [1,5,27,28], freshVertex = 4, freshEdgeID = 29}
 -- obliterateFrom :: NaturalGraph f o -> EdgeID -> NaturalGraph f o
 obliterateFrom ng0 e0 =
   Set.foldl' (\ng e ->
@@ -102,7 +106,7 @@ fogAt e e_new nl =
 
     NoFogged (Word fs mo) ->
       case List.break (\(_bv, (e',_)) -> e' == e) fs of
-        (pre, []) ->
+        (_pre, []) ->
           case mo of
             Nothing ->
               nl
@@ -253,7 +257,7 @@ diamondRightnessgraph ng =
           wedges
   in
   -- TODO: Check if this is faster than folding over all the edges
-  Map.unionWith (\l r -> l) g0 (Map.map (\_ -> []) (edges ng))
+  Map.unionWith (\l _r -> l) g0 (Map.map (\_ -> []) (edges ng))
   where
   wedges = carets ng ++ vees ng
 
@@ -296,28 +300,46 @@ tendrils ng = (topTendrils, botTendrils)
 
   g = digraph ng
 
-wedges ng start nexts =
-  concatMap wedgesFrom ((Boundary, start) : map (bimap Inner nexts) (Map.toList g))
+vees :: NaturalGraph f o -> [Wedge]
+vees ng = wedges (bottom ng) incoming outgoing ng
+
+carets :: NaturalGraph f o -> [Wedge]
+carets ng = wedges (top ng) outgoing incoming ng
+
+wedges start forward backward ng =
+  concatMap wedgesFrom ((Boundary, start) : map (bimap Inner forward) (Map.toList g))
   where
   -- TODO: I don't think I actually have to push back up for hanging
   -- local tendrils. It might be possible so consider that if this code
   -- doesn't work.
-
   makePath getNext = go
     where
-    go = \case
+    getNext' v e =
+      let vd = lookupExn v g in
+      case getNext (NeighborList.toList (forward vd)) of
+        Nothing ->
+          Nothing
+
+        Just ve ->
+          if Just e == fmap snd (getNext (NeighborList.toList (backward vd)))
+          then Just ve
+          else Nothing
+
+    go (bv, e0) = case bv of
       Clear (Inner v) -> 
-        case (getNext . NeighborList.toList . nexts $ lookupExn' "can 319" v g) of
-          Just (v', e) ->
-            (v', e) : go v'
+        case (getNext' v e0) of
+          Just d ->
+            d : go d
 
           Nothing ->
             []
 
       _ -> []
 
+
+
   goingRight = makePath lastMay
-  goingLeft = makePath headMay
+  goingLeft  = makePath headMay
 
   g = digraph ng
 
@@ -325,105 +347,93 @@ wedges ng start nexts =
   wedgesFrom (_bv, nl) = zipWith wedgeFrom neighbs (tail neighbs)
     where
     neighbs = NeighborList.toList nl
-    wedgeFrom (fbv_l, e_l) (fbv_r, e_r) =
-      Wedge {leftPath = map snd leftPath, rightPath = map snd rightPath}
+
+    wedgeFrom :: (Foggy (OrBoundary Vertex), EdgeID) -> (Foggy (OrBoundary Vertex), EdgeID) -> Wedge
+    wedgeFrom d_l d_r =
+      Wedge { leftPath = map snd leftPath, rightPath = map snd rightPath }
       where
-      leftPath0  = (fbv_l, e_l) : goingRight fbv_l
-      rightPath0 = (fbv_r, e_r) : goingLeft fbv_r
+      leftPath0 = d_l : goingRight d_l
+      rightPath0 = d_r : goingLeft d_r
 
       -- Find the first vertex that appears in both paths and cut the path
       -- off there. The first vertex that appears in both paths is the
       -- first vertex that appears in leftPath0 which also appears in
       -- rightPath0. Theta(n^2). Optimization opportunity.
-      v_intersect = List.find (\(ve,_) -> List.any ((== ve) . fst) rightPath0) leftPath0
-
+      v_intersect = List.find (\(ve, _) -> List.any ((== ve) . fst) rightPath0) leftPath0
       (leftPath, rightPath) =
         case v_intersect of
           Just (ve,_) ->
-            (takeTo ((== ve) . fst) leftPath0, takeTo ((== ve) . fst) rightPath0) -- (takeTo ((== ve) . fst) leftPath0, takeTo ((== ve) . fst) rightPath0)
+            (takeTo ((== ve) . fst) leftPath0, takeTo ((== ve) . fst) rightPath0)
 
           Nothing ->
             (leftPath0, rightPath0)
 
-vees :: NaturalGraph f o -> [Wedge]
-vees ng = wedges ng (bottom ng) incoming
-
-carets :: NaturalGraph f o -> [Wedge]
-carets ng = wedges ng (top ng) outgoing
-
-
--- clean up
 {-
-componentOf :: Vertex -> 
-componentOf v ng = _
+vees :: NaturalGraph f o -> [Wedge]
+vees ng =
+  concatMap veesFrom ((Boundary, bottom ng) : map (bimap Inner incoming) (Map.toList g))
   where
-  go :: [OrBoundary
-  go seen next0 =
-    case next0 of
-      [] -> seen
-      (
+  -- TODO: I don't think I actually have to push back up for hanging
+  -- local tendrils. It might be possible so consider that if this code
+  -- doesn't work.
+  makePath getNext = go
+    where
+    getNext' v e =
+      let vd = lookupExn v g in
+      case getNext (NeighborList.toList (incoming vd)) of
+        Nothing ->
+          Nothing
 
-componentOf v ng = go (Set.singleton v) [v] where
-  go seen q0 =
-    case q0 of
-      []     -> seen
-      ve : q ->
-        case ve of
-          UReal r ->
-            let vd   = lookupExn r g
-                next =
-                  filter (not . (`Set.member` seen)) $
-                    let disambig dir = disambiguate dir . fst
-                    in
-                    Word.toList (bimap (disambig In) (disambig In) (incoming vd))
-                    ++ Word.toList (bimap (disambig Out) (disambig Out) (outgoing vd))
-                    {-
-                    map (\case { (Real r',_) -> UReal r'; (Dummy d,_) -> UDummy In d }) (incoming vd) 
-                    ++ map (\case { (Real r',_) -> UReal r'; (Dummy d,_) -> UDummy Out d }) (outgoing vd) -}
-                seen' = List.foldl' (flip Set.insert) seen next
-            in
-            go seen' (next ++ q)
+        Just ve ->
+          if Just e == fmap snd (getNext (NeighborList.toList (outgoing vd)))
+          then Just ve
+          else Nothing
 
-          UDummy In d ->
-            case lookupExn d inSuccs of
-              CoveredInFog -> go seen q
-              Clear ambigSuc ->
-                let suc         = disambiguate Out ambigSuc
-                    (q', seen') = if suc `Set.member` seen then (q, seen) else (suc : q, Set.insert suc seen)
-                in
-                go seen' q'
+    go (bv, e0) = case bv of
+      Clear (Inner v) -> 
+        case (getNext' v e0) of
+          Just d ->
+            d : go d
 
-          UDummy Out d ->
-            case lookupExn d outPreds of
-              CoveredInFog -> go seen q
-              Clear ambigPred ->
-                let pred = disambiguate Out ambigPred
-                    (q', seen') = if pred `Set.member` seen then (q, seen) else (pred : q, Set.insert pred seen)
-                in
-                go seen' q'
+          Nothing ->
+            []
 
-  inSuccs          = incomingSuccs ng
-  outPreds         = outgoingPreds ng
-  g                = digraph ng
-  disambiguate dir = \case { Real r -> UReal r; Dummy d -> UDummy dir d }
+      _ -> []
 
--- Any stray vertex is reachable from a vertex that has no incoming edges.
-deleteStrayVertices ng = ng { digraph = go g possibleStrays } where
-  go acc remaining =
-    case Map.minViewWithKey remaining of
-      Nothing                     -> acc
-      Just ((r, _vd), remaining') ->
-        let comp = componentOf (UReal r) ng in
-        if isStray comp
-        then go (deleteFrom acc comp) (deleteFrom remaining' comp)
-        else go acc (deleteFrom remaining' comp)
-  possibleStrays = Map.filter (\vd -> Word.length (incoming vd) == 0) g
-  g              = digraph ng
-  isStray        = Set.foldl' (\x r -> case x of {UDummy {} -> False; _ -> r}) True 
-  deleteFrom acc = Set.foldl' (\x h -> case x of {UReal r -> Map.delete r h; _ -> h}) acc
 
+
+  goingRight = makePath lastMay
+  goingLeft  = makePath headMay
+
+  g = digraph ng
+
+  veesFrom :: (OrBoundary Vertex, NeighborList (EdgeID, f) (EdgeID, o)) -> [Wedge]
+  veesFrom (bv, nl) = zipWith veeFrom neighbs (tail neighbs)
+    where
+    neighbs = NeighborList.toList nl
+
+    veeFrom :: (Foggy (OrBoundary Vertex), EdgeID) -> (Foggy (OrBoundary Vertex), EdgeID) -> Wedge
+    veeFrom d_l d_r =
+      Wedge { leftPath = map snd leftPath0, rightPath = map snd rightPath0 }
+      where
+      leftPath0 = d_l : goingRight d_l
+      rightPath0 = d_r : goingLeft d_r
+
+      -- Find the first vertex that appears in both paths and cut the path
+      -- off there. The first vertex that appears in both paths is the
+      -- first vertex that appears in leftPath0 which also appears in
+      -- rightPath0. Theta(n^2). Optimization opportunity.
+      v_intersect = List.find (\(ve, _) -> List.any ((== ve) . fst) rightPath0) leftPath0
+      (leftPath, rightPath) =
+        case v_intersect of
+          Just (ve,_) ->
+            (takeTo ((== ve) . fst) leftPath0, takeTo ((== ve) . fst) rightPath0)
+
+          Nothing ->
+            (leftPath0, rightPath0)
 -}
 
+-- clean up
 deleteStrayVertices :: NaturalGraph f o -> NaturalGraph f o
 deleteStrayVertices ng =
   ng
