@@ -128,7 +128,7 @@ fromNaturalGraph ng =
 
 toTerm' :: Show f => FreeNaturalGraph f -> AnnotatedTerm
 toTerm' ng0 = case findGoodVertex ng of
-  Nothing -> AnnotatedTerm Id 0
+  Nothing -> mempty
   Just (Top, (leftStrands, vGood, vGoodData)) ->
     case toTerm' ng' of
       (unannotatedTerm -> Id) -> fmapped (k + leftStrands) goodProgram
@@ -328,32 +328,32 @@ toTerm' ng0 = case findGoodVertex ng of
   makeTopGoodProgram vd = label vd <> loop (map fst (incoming vd))
     where
     loop = \case
-      []             -> AnnotatedTerm Id 0
-      (Dummy _ : vs) -> let AnnotatedTerm t x = loop vs in case t of
-        Id         -> AnnotatedTerm Id x
-        Simple s   -> AnnotatedTerm (Compound ("fmap (" ++ s ++ ")")) x
-        Compound s -> AnnotatedTerm (Compound ("fmap (" ++ s ++ ")")) x
+      []             -> mempty
+      (Dummy _ : vs) -> let AnnotatedTerm t x w = loop vs in case t of
+        Id         -> AnnotatedTerm Id x w 
+        Simple s   -> AnnotatedTerm (Compound ("fmap (" ++ s ++ ")")) x w
+        Compound s -> AnnotatedTerm (Compound ("fmap (" ++ s ++ ")")) x w
 
       (Real r : vs)  -> label (lookupExn r g) <> loop vs
 
   -- All children of the given vertex are dummys or childless
   makeBottomGoodProgram vd = loop (map fst (outgoing vd)) <> label vd where
     loop = \case
-      []             -> AnnotatedTerm Id 0
+      []             -> mempty
 
-      (Dummy _ : vs) -> let AnnotatedTerm t x = loop vs in case t of
-        Id         -> AnnotatedTerm Id x
-        Simple s   -> AnnotatedTerm (Compound ("fmap (" ++ s ++ ")")) x
-        Compound s -> AnnotatedTerm (Compound ("fmap (" ++ s ++ ")")) x
+      (Dummy _ : vs) -> let AnnotatedTerm t x w = loop vs in case t of
+        Id         -> AnnotatedTerm Id x w
+        Simple s   -> AnnotatedTerm (Compound ("fmap (" ++ s ++ ")")) x w
+        Compound s -> AnnotatedTerm (Compound ("fmap (" ++ s ++ ")")) x w
 
       (Real r : vs) -> loop vs <> label (lookupExn r g)
 
-  fmapped n (AnnotatedTerm f x) = case n of
-    0 -> AnnotatedTerm f x
-    1 -> AnnotatedTerm (Compound ("fmap " ++ wrapped)) x
-    _ -> AnnotatedTerm (Compound (parens (List.intercalate " . " $ replicate n "fmap") ++ " " ++ wrapped)) x
-    where wrapped = case f of { Simple x -> x; Compound x -> parens x; _ -> error "Search.Graph.fmapped: Impossible" }
-
+fmapped n (AnnotatedTerm f x w) = case n of
+  0 -> AnnotatedTerm f x w
+  1 -> AnnotatedTerm (Compound ("fmap " ++ wrapped)) x w
+  _ -> AnnotatedTerm (Compound (parens (List.intercalate " . " $ replicate n "fmap") ++ " " ++ wrapped)) x w
+  where
+  wrapped = case f of { Simple x -> x; Compound x -> parens x; _ -> error "Search.Graph.fmapped: Impossible" }
   parens x = "(" ++ x ++ ")"
 
 -- Maintaining the invariant that the dummys are labelled 0..n

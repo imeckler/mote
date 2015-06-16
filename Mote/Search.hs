@@ -20,6 +20,7 @@ import qualified Data.Map            as Map
 import Data.Traversable (traverse)
 import Data.Bitraversable
 import Data.Bifunctor
+import Data.Monoid
 
 import           GHC
 import           InstEnv             (ClsInst (..))
@@ -129,7 +130,8 @@ transes funcs b = mapMaybe toTrans (transInterpretations b)
     then Nothing
     else if numArguments > 3 then Nothing
     else if null (Word.beginning to) && null (Word.beginning from) then Nothing
-    else Just (Trans {from, to, name=AnnotatedTerm name' (numArguments - 1)})
+    -- TODO: Have higher weights for information destroying programs
+    else Just (Trans {from, to, name=AnnotatedTerm name' (numArguments - 1) 1})
     where
     ident = occNameString $ occName name
     name' =
@@ -202,12 +204,14 @@ search src trg n = do
 
   -- TODO: Check that the kinds make sense
   -- TODO: Be more lenient about what the right String can mean
-  from    <- bitraverse readAndRenderSyntacticFunc readAndRenderSyntacticFunc src
-  to      <- bitraverse readAndRenderSyntacticFunc readAndRenderSyntacticFunc trg
+  src'    <- bitraverse readAndRenderSyntacticFunc readAndRenderSyntacticFunc src
+  trg'      <- bitraverse readAndRenderSyntacticFunc readAndRenderSyntacticFunc trg
   -- fmap (fmap renderFunc) (readFuncs trg) -- fmap catMaybes $ mapM (fmap (fmap renderSyntacticFunc . extractUnapplied . dropForAlls) . readType) trg
   transes <- fmap (fmap (bimap renderSyntacticFunc (renderSyntacticFunc . (,[])))) $ transesInScope -- fmap (fmap (fmap renderFunc)) $ transesInScope
 
-  return $ graphsOfSizeAtMost transes n from to
+  -- TODO: For now don't use transes from or to the identity. Too finicky.
+  let transes' = filter (\t -> not (mempty == Search.Types.from t || mempty == Search.Types.to t)) transes
+  return $ graphsOfSizeAtMost transes' n src' trg'
 
 {-
 readFuncs :: [String] -> M [Func]
@@ -271,19 +275,23 @@ transesInScope = do
   ms <- lift monads
   funcSet <- lift $ fmap (Set.fromList . map squint) functors
   let joins     =
-        map (\m ->
-          Trans
-          { from = Word [m,m] Nothing
-          , to   = Word [m] Nothing
-          , name = AnnotatedTerm (Simple "join") 0
-          }
+        mapMaybe (\m@(tc,_) ->
+          if PrelNames.listTyConKey == getUnique tc
+          then Nothing
+          else
+            Just $
+              Trans
+              { from = Word [m,m] Nothing
+              , to   = Word [m] Nothing
+              , name = AnnotatedTerm (Simple "join") 0 1
+              }
         ) ms
       traverses =
         liftA2 (\t f ->
           Trans
           { from = Word [t,f] Nothing
           , to   = Word [f,t] Nothing
-          , name = AnnotatedTerm (Simple "sequenceA") 0
+          , name = AnnotatedTerm (Simple "sequenceA") 0 1
           }
         ) ts as
   return $

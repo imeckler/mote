@@ -19,6 +19,7 @@ executable searchtest
   main-is: Search/Test.hs
   build-depends:       base >= 4.7 && < 4.8,
                        containers >= 0.5,
+                       random >= 1,
                        bifunctors >= 4.2.1,
                        unordered-containers >= 0.2,
                        hashable >= 1.2,
@@ -35,6 +36,7 @@ executable searchtest
                        ghc-mod >= 5.2,
                        Cabal >= 1.18,
                        directory >= 1.2,
+                       -- DEBUG
                        time >= 1.4,
                        process >= 1.2,
                        strict  >= 0.3.2,

@@ -300,6 +300,7 @@ tendrils ng = (topTendrils, botTendrils)
 
   g = digraph ng
 
+-- The symmetry of the problem is reflected in the symmetry of the program
 vees :: NaturalGraph f o -> [Wedge]
 vees ng = wedges (bottom ng) incoming outgoing ng
 

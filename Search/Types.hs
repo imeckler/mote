@@ -43,6 +43,7 @@ data Term
 data AnnotatedTerm = AnnotatedTerm
   { unannotatedTerm :: Term
   , numHoles        :: Int
+  , weight          :: Int
   }
   deriving (Eq, Ord, Show)
 
@@ -55,8 +56,10 @@ instance Monoid Term where
     extract = \case { Simple s -> s; Compound s -> s; _ -> error "Search.Types.Basic.extract: Impossible" }
 
 instance Monoid AnnotatedTerm where
-  mempty                                            = AnnotatedTerm mempty 0
-  mappend (AnnotatedTerm t n) (AnnotatedTerm t' n') = AnnotatedTerm (t <> t') (n + n')
+  mempty = AnnotatedTerm mempty 0 0
+
+  mappend (AnnotatedTerm t n w) (AnnotatedTerm t' n' w') =
+    AnnotatedTerm (t <> t') (n + n') (w + w')
 
 instance Hashable Term where
   hashWithSalt s Id           = s `hashWithSalt` (0 :: Int)
@@ -64,7 +67,7 @@ instance Hashable Term where
   hashWithSalt s (Compound x) = s `hashWithSalt` (2 :: Int) `hashWithSalt` x
 
 instance Hashable AnnotatedTerm where
-  hashWithSalt s (AnnotatedTerm t _) = hashWithSalt s t
+  hashWithSalt s (AnnotatedTerm t _ _) = hashWithSalt s t
 
 instance ToJSON Term where
   toJSON = \case
@@ -83,7 +86,9 @@ data Trans f o =
   , to   :: Word f o
   , name :: TransName 
   }
-  deriving (Show, Eq, Ord)
+  deriving (Show, Eq, Ord, Generic)
+
+instance (Hashable f, Hashable o) => Hashable (Trans f o) where
 
 instance Bifunctor Trans where
   bimap f g t = t { from=bimap f g (from t), to=bimap f g (to t) }
