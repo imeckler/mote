@@ -1,4 +1,4 @@
-module Mote.Cradle where
+module Mote.Init.Cradle where
 
 import Config (cProjectVersion)
 import Distribution.Helper (buildPlatform)
@@ -13,9 +13,9 @@ import System.IO.Temp (createTempDirectory)
 
 import System.IO.Unsafe (unsafePerformIO)
 
-import Data.Char (isAlphaNum)
-import Data.List (find)
-import Data.Maybe (fromJust)
+import Data.Char (isAlphaNum, isSpace)
+import Data.List (find, isPrefixOf)
+import Data.Maybe (fromJust, listToMaybe)
 import Data.Traversable (traverse)
 
 import Control.Applicative ((<$>))
@@ -266,7 +266,9 @@ extractSandboxDbDir conf = extractValue <$> parse conf
     keyLen = length key
 
     parse = listToMaybe . filter (key `isPrefixOf`) . lines
-    extractValue = U.dropWhileEnd isSpace . dropWhile isSpace . drop keyLen
+    extractValue = dropWhileEnd isSpace . dropWhile isSpace . drop keyLen
+
+    dropWhileEnd p = foldr (\x xs -> if p x && null xs then [] else x : xs) []
 
 mightExist :: FilePath -> IO (Maybe FilePath)
 mightExist f = do
