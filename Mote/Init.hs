@@ -4,8 +4,7 @@ module Mote.Init where
 
 import           Data.List                                     (intercalate)
 import           GHC
-import           Language.Haskell.GhcMod.Internal              hiding (getCompilerOptions,
-                                                                parseCabalFile)
+import           qualified Language.Haskell.GhcMod.Internal    as GhcMod
 import           Outputable
 import           Mote.Types
 import           Mote.Util
@@ -16,7 +15,7 @@ import           Control.Monad
 import           Control.Monad.Error
 import qualified Data.Set                                      as S
 import           DynFlags
-import           Language.Haskell.GhcMod
+import           qualified Language.Haskell.GhcMod as GhcMod
 import ErrUtils
 
 import qualified Distribution.Package                          as C
@@ -95,24 +94,24 @@ ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 POSSIBILITY OF SUCH DAMAGE. -}
 
 init :: GhcMonad m => Ref MoteState -> m (Either String ())
-init stRef = initializeWithCabal stRef defaultOptions
+init stRef = initializeWithCabal stRef GhcMod.defaultOptions
 
 runGhcModT'' opt mx = do
-  env <- newGhcModEnv opt =<< getCurrentDirectory
-  (orErr, _log) <- runGhcModT' env defaultState mx
+  env <- GhcMod.newGhcModEnv opt =<< getCurrentDirectory
+  (orErr, _log) <- GhcMod.runGhcModT' env GhcMod.defaultState mx
   return $ fmap fst orErr
 
-initializeWithCabal :: GhcMonad m => Ref MoteState -> Options -> m (Either String ())
+initializeWithCabal :: GhcMonad m => Ref MoteState -> GhcMod.Options -> m (Either String ())
 initializeWithCabal stRef opt = do
-  c <- liftIO findCradle
-  case cradleCabalFile c of
+  c <- liftIO GhcMod.findCradle
+  case GhcMod.cradleCabalFile c of
     Nothing ->
-      let wdir       = cradleCurrentDir c
-          rdir       = cradleRootDir c
-          pkgOpts    = ghcDbStackOpts $ cradlePkgDbStack c
+      let wdir       = GhcMod.cradleCurrentDir c
+          rdir       = GhcMod.cradleRootDir c
+          pkgOpts    = ghcDbStackOpts $ GhcMod.cradlePkgDbStack c
           importDirs = [".","..","../..","../../..","../../../..","../../../../.."]
           compOpts   =
-            CompilerOptions (ghcOpts ++ pkgOpts)
+            GhcMod.CompilerOptions (ghcOpts ++ pkgOpts)
               (if null pkgOpts then importDirs else [wdir, rdir]) []
       in
       setOptions stRef opt compOpts >> return (Right ())
@@ -126,12 +125,12 @@ initializeWithCabal stRef opt = do
         Right compOpts -> setOptions stRef opt compOpts >> return (Right ())
 
   where
-  ghcOpts = ghcUserOptions opt
+  ghcOpts = GhcMod.ghcUserOptions opt
 
 ghcDbStackOpts = concatMap ghcDbOpt
 -- This should be called once per run.
 -- what to do about different files...
-setOptions stRef (Options {..}) (CompilerOptions{..}) = do
+setOptions stRef (GhcMod.Options {..}) (GhcMod.CompilerOptions{..}) = do
   df <- getSessionDynFlags
   let df' = df
         { hscTarget  = HscInterpreted
@@ -171,7 +170,7 @@ setOptions stRef (Options {..}) (CompilerOptions{..}) = do
     expose pkg = ExposePackageId $ showPkgId pkg
     showPkgId (n,v,i) = intercalate "-" [n,v,i]
 
-ghcDbOpt :: GhcPkgDb -> [String]
+ghcDbOpt :: GhcMod.GhcPkgDb -> [String]
 ghcDbOpt db
   | s == "GlobalDb"                    = ["-global-package-db"]
   | s == "UserDb"                      = ["-user-package-db"]
@@ -180,8 +179,8 @@ ghcDbOpt db
   where s = show db
 
 -- begin implementation of parseCabalFile
-parseCabalFile :: (IOish m, MonadError GhcModError m)
-               => Cradle
+parseCabalFile :: (GhcMod.IOish m, MonadError GhcMod.GhcModError m)
+               => GhcMod.Cradle
                -> FilePath
                -> m P.PackageDescription
 parseCabalFile cradle file = do
@@ -211,21 +210,21 @@ getGHC = do
         Nothing -> throwIO $ userError "ghc not found"
         Just v  -> return v
 
-cabalConfigFlags :: (IOish m, MonadError GhcModError m)
-                 => Cradle
+cabalConfigFlags :: (GhcMod.IOish m, MonadError GhcMod.GhcModError m)
+                 => GhcMod.Cradle
                  -> m FlagAssignment
 cabalConfigFlags cradle = do
   config <- getConfig cradle
   case configFlags config of
     Right x  -> return x
-    Left msg -> throwError (GMECabalFlags (GMEString msg))
+    Left msg -> throwError (GhcMod.GMECabalFlags (GhcMod.GMEString msg))
 
 configFlags :: CabalConfig -> Either String FlagAssignment
 configFlags config = readEither =<< flip extractField "configConfigurationsFlags" =<< extractField config "configFlags"
 
 -- The offending function
-getConfig :: (IOish m, MonadError GhcModError m)
-          => Cradle
+getConfig :: (GhcMod.IOish m, MonadError GhcMod.GhcModError m)
+          => GhcMod.Cradle
           -> m CabalConfig
 getConfig cradle = do
   outOfDate <- liftIO $ isSetupConfigOutOfDate cradle
@@ -236,9 +235,9 @@ getConfig cradle = do
       (ExitFailure _, _, stderr) -> throwIO (ErrorCall stderr))
   where
   file   = setupConfigFile cradle
-  prjDir = cradleRootDir cradle
+  prjDir = GhcMod.cradleRootDir cradle
 
-  configure :: (IOish m, MonadError GhcModError m) => m ()
+  configure :: (GhcMod.IOish m, MonadError GhcMod.GhcModError m) => m ()
   configure = withDirectory_ prjDir $ void $ readProcess' "cabal" ["configure"]
 
   withDirectory_ :: (MonadIO m, ExceptionMonad m) => FilePath -> m a -> m a
@@ -246,16 +245,16 @@ getConfig cradle = do
       gbracket (liftIO getCurrentDirectory) (liftIO . setCurrentDirectory)
                   (\_ -> liftIO (setCurrentDirectory dir) >> action)
 
-  readProcess' :: (MonadIO m, MonadError GhcModError m)
+  readProcess' :: (MonadIO m, MonadError GhcMod.GhcModError m)
               => String
               -> [String]
               -> m String
   readProcess' cmd opts = do
     (rv,output,err) <- liftIO (readProcessWithExitCode cmd opts "")
-        `modifyError'` GMEProcess ([cmd] ++ opts)
+        `modifyError'` GhcMod.GMEProcess ([cmd] ++ opts)
     case rv of
       ExitFailure val -> do
-          throwError $ GMEProcess ([cmd] ++ opts) $ strMsg $
+          throwError $ GhcMod.GMEProcess ([cmd] ++ opts) $ strMsg $
             cmd ++ " " ++ unwords opts ++ " (exit " ++ show val ++ ")"
                 ++ "\n" ++ err
       ExitSuccess ->
@@ -269,9 +268,9 @@ getConfig cradle = do
   modifyError' = flip modifyError
 
 -- adapted from Language.Haskell.GhcMod.World
-isSetupConfigOutOfDate :: Cradle -> IO Bool
+isSetupConfigOutOfDate :: GhcMod.Cradle -> IO Bool
 isSetupConfigOutOfDate crdl =
-  case cradleCabalFile crdl of
+  case GhcMod.cradleCabalFile crdl of
     Nothing  -> return False
     Just cab -> doesFileExist cab >>= \case
       False -> return False
@@ -285,12 +284,12 @@ isSetupConfigOutOfDate crdl =
 getCompilerOptions ghcopts cradle pkgDesc = do
   gopts <- liftIO $ getGHCOptions ghcopts cradle rdir $ head buildInfos
   depPkgs <- cabalConfigDependencies cradle (C.packageId pkgDesc)
-  return $ CompilerOptions gopts idirs depPkgs
+  return $ GhcMod.CompilerOptions gopts idirs depPkgs
   where
-  wdir       = cradleCurrentDir cradle
-  rdir       = cradleRootDir    cradle
-  buildInfos = cabalAllBuildInfo pkgDesc
-  idirs      = includeDirectories rdir wdir $ cabalSourceDirs buildInfos
+  wdir       = GhcMod.cradleCurrentDir cradle
+  rdir       = GhcMod.cradleRootDir    cradle
+  buildInfos = GhcMod.cabalAllBuildInfo pkgDesc
+  idirs      = includeDirectories rdir wdir $ GhcMod.cabalSourceDirs buildInfos
     where
     includeDirectories :: FilePath -> FilePath -> [FilePath] -> [FilePath]
     includeDirectories cdir wdir dirs = uniqueAndSort (extdirs ++ [cdir,wdir])
@@ -302,13 +301,13 @@ getCompilerOptions ghcopts cradle pkgDesc = do
         cabalBuildDirs = ["dist/build", "dist/build/autogen"]
 
 
-getGHCOptions :: [GHCOption] -> Cradle -> FilePath -> P.BuildInfo -> IO [GHCOption]
+getGHCOptions :: [GhcMod.GHCOption] -> GhcMod.Cradle -> FilePath -> P.BuildInfo -> IO [GhcMod.GHCOption]
 getGHCOptions ghcopts cradle rdir binfo = do
   cabalCpp <- cabalCppOptions rdir
   let cpps = map ("-optP" ++) $ P.cppOptions binfo ++ cabalCpp
   return $ ghcopts ++ pkgDb ++ exts ++ [lang] ++ libs ++ libDirs ++ cpps
   where
-  pkgDb = ghcDbStackOpts $ cradlePkgDbStack cradle
+  pkgDb = ghcDbStackOpts $ GhcMod.cradlePkgDbStack cradle
   lang = maybe "-XHaskell98" (("-X" ++) . display) $ P.defaultLanguage binfo
   libDirs = map ("-L" ++) $ P.extraLibDirs binfo
   exts = map (("-X" ++) . display) $ P.usedExtensions binfo
@@ -327,8 +326,8 @@ getGHCOptions ghcopts cradle rdir binfo = do
 cabalConfigDependencies cradle thisPkg =
   configDependencies thisPkg <$> getConfig cradle
 
-setupConfigFile :: Cradle -> FilePath
-setupConfigFile crdl = cradleRootDir crdl </> setupConfigPath
+setupConfigFile :: GhcMod.Cradle -> FilePath
+setupConfigFile crdl = GhcMod.cradleRootDir crdl </> setupConfigPath
 
 setupConfigPath :: FilePath
 setupConfigPath = localBuildInfoFile defaultDistPref
@@ -336,7 +335,7 @@ setupConfigPath = localBuildInfoFile defaultDistPref
 -- end implementation of getCompilerOptions
 
 type CabalConfig = String
-configDependencies :: PackageIdentifier -> CabalConfig -> [Package]
+configDependencies :: PackageIdentifier -> CabalConfig -> [GhcMod.Package]
 configDependencies thisPkg config = map fromInstalledPackageId deps
  where
     deps :: [InstalledPackageId]
@@ -430,14 +429,14 @@ configDependencies thisPkg config = map fromInstalledPackageId deps
            Right x -> x
            Left msg -> error $ "reading config " ++ f ++ " failed ("++msg++")"
 
-fromInstalledPackageId' :: InstalledPackageId -> Maybe Package
+fromInstalledPackageId' :: InstalledPackageId -> Maybe GhcMod.Package
 fromInstalledPackageId' pid = let
     InstalledPackageId pkg = pid
     in case reverse $ splitOn "-" pkg of
       i:v:rest -> Just (intercalate "-" (reverse rest), v, i)
       _ -> Nothing
 
-fromInstalledPackageId :: InstalledPackageId -> Package
+fromInstalledPackageId :: InstalledPackageId -> GhcMod.Package
 fromInstalledPackageId pid =
     case fromInstalledPackageId' pid of
       Just p -> p
