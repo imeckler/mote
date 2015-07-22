@@ -33,7 +33,6 @@ executable searchtest
                        split,
                        transformers >= 0.3,
                        ghc,
-                       ghc-mod >= 5.2,
                        Cabal >= 1.18,
                        directory >= 1.2,
                        -- DEBUG
@@ -41,7 +40,11 @@ executable searchtest
                        process >= 1.2,
                        strict  >= 0.3.2,
                        fingertree >= 0.1,
-                       array >= 0.5
+                       array >= 0.5,
+                       cabal-helper >= 0.3.6.0,
+                       temporary >= 1.2.0.3,
+                       monad-control >= 1.0.0.4,
+                       transformers-base >= 0.4.4
 
 
   default-language:    Haskell2010
@@ -64,14 +67,17 @@ executable mote
                        split,
                        transformers >= 0.3,
                        ghc,
-                       ghc-mod >= 5.2,
                        Cabal >= 1.18,
                        directory >= 1.2,
                        time >= 1.4,
                        process >= 1.2,
                        strict  >= 0.3.2,
                        fingertree >= 0.1,
-                       array >= 0.5
+                       array >= 0.5,
+                       cabal-helper >= 0.3.6.0,
+                       temporary >= 1.2.0.3,
+                       monad-control >= 1.0.0.4,
+                       transformers-base >= 0.4.4
 
 
   default-language:    Haskell2010
