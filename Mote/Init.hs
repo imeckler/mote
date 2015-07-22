@@ -1,12 +1,13 @@
 {-# LANGUAGE ConstraintKinds, FlexibleContexts, LambdaCase, RecordWildCards,
-             ScopedTypeVariables #-}
-module Mote.Init where
+             ScopedTypeVariables, UndecidableInstances, GeneralizedNewtypeDeriving,
+             MultiParamTypeClasses, TypeFamilies, CPP #-}
+module Mote.Init (initializeWithCabal) where
 
 import           Data.List                                     (intercalate)
-import           GHC
-{-
-import           Language.Haskell.GhcMod.Internal              hiding (getCompilerOptions,
-                                                                parseCabalFile) -}
+import Data.Maybe (maybeToList)
+import           GHC hiding (PackageId)
+import qualified Mote.Init.Cradle as Cradle
+import qualified Mote.Init.Error as Error
 import           Outputable
 import           Mote.Types
 import           Mote.Util
@@ -15,6 +16,8 @@ import           Mote.Util
 import           Control.Applicative
 import           Control.Monad
 import           Control.Monad.Error
+import Control.Monad.Base (MonadBase(..), liftBase)
+import Control.Monad.Trans.Control
 import qualified Data.Set                                      as S
 import           DynFlags
 import ErrUtils
@@ -94,39 +97,40 @@ LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
 ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 POSSIBILITY OF SUCH DAMAGE. -}
 
-init :: GhcMonad m => Ref MoteState -> m (Either String ())
-init stRef = initializeWithCabal stRef defaultOptions
-
-initializeWithCabal :: GhcMonad m => Ref MoteState -> Options -> m (Either String ())
-initializeWithCabal stRef opt = do
-  c <- liftIO findCradle
-  case cradleCabalFile c of
+initializeWithCabal :: GhcMonad m => Ref MoteState -> m (Either String ())
+initializeWithCabal stRef = do
+  c <- liftIO Cradle.findCradle
+  case Cradle.cabalFile c of
     Nothing ->
-      let wdir       = cradleCurrentDir c
-          rdir       = cradleRootDir c
-          pkgOpts    = ghcDbStackOpts $ cradlePkgDbStack c
+      let wdir       = Cradle.currentDir c
+          rdir       = Cradle.rootDir c
+          pkgOpts    = ghcDbStackOpts $ Cradle.pkgDbStack c
           importDirs = [".","..","../..","../../..","../../../..","../../../../.."]
-          compOpts   =
-            CompilerOptions (ghcOpts ++ pkgOpts)
-              (if null pkgOpts then importDirs else [wdir, rdir]) []
+
+          ghcOptions = ghcOpts ++ pkgOpts
+          includeDirs = if null pkgOpts then importDirs else [wdir, rdir]
+          depPackages = []
+          compOpts = CompilerOptions ghcOptions includeDirs depPackages
+
       in
-      setOptions stRef opt compOpts >> return (Right ())
+      setOptions stRef compOpts >> return (Right ())
 
     Just cab -> do
-      compOptsErr <- liftIO . runExceptT $ do
+      compOptsErr <- liftIO . runInitT $ do
         getCompilerOptions ghcOpts c =<< parseCabalFile c cab
 
       case compOptsErr of
-        Left err       -> return . Left $ "initializeWithCabal error: " ++ err
-        Right compOpts -> setOptions stRef opt compOpts >> return (Right ())
+        Left err       -> return . Left $ "initializeWithCabal error: " ++ show err
+        Right compOpts -> setOptions stRef compOpts >> return (Right ())
 
   where
-  ghcOpts = ghcUserOptions opt
+  -- TODO: Inline/eliminate the second argument to getCompilerOptions
+  ghcOpts = []
 
 ghcDbStackOpts = concatMap ghcDbOpt
 -- This should be called once per run.
 -- what to do about different files...
-setOptions stRef (Options {..}) (CompilerOptions{..}) = do
+setOptions stRef (CompilerOptions{..}) = do
   df <- getSessionDynFlags
   let df' = df
         { hscTarget  = HscInterpreted
@@ -163,23 +167,28 @@ setOptions stRef (Options {..}) (CompilerOptions{..}) = do
   addPackageFlags pkgs df =
     df { packageFlags = packageFlags df ++ expose `map` pkgs }
     where
-    expose pkg = ExposePackageId $ showPkgId pkg
+    expose pkg =
+#if __GLASGOW_HASKELL__ < 710
+      ExposePackageId $ showPkgId pkg
+#else
+      ExposePackage (PackageIdArg (showPkgId pkg))
+        (ModRenaming False []) -- TODO: Check if this modrenaming is sensible
+#endif
     showPkgId (n,v,i) = intercalate "-" [n,v,i]
 
-ghcDbOpt :: GhcPkgDb -> [String]
-ghcDbOpt db
-  | s == "GlobalDb"                    = ["-global-package-db"]
-  | s == "UserDb"                      = ["-user-package-db"]
-  | ("PackageDb ",s') <-  splitAt 10 s = ["-no-user-package-db", "-package-db", read s']
-  | otherwise                          = []
-  where s = show db
+ghcDbOpt :: Cradle.GhcPkgDb -> [String]
+ghcDbOpt db =
+  case db of
+    Cradle.GlobalDb -> ["-global-package-db"]
+    Cradle.UserDb -> ["-user-package-db"]
+    Cradle.PackageDb s -> ["-no-user-package-db", "-package-db", s]
 
 -- begin implementation of parseCabalFile
-parseCabalFile :: (MonadIO m, MonadError String m)
-               => Cradle
+parseCabalFile :: (IOish m, MonadError Error.Error m)
+               => Cradle.Cradle
                -> FilePath
                -> m P.PackageDescription
-parseCabalFile cradle file = _ {- do
+parseCabalFile cradle file =do
     cid <- liftIO getGHCId
     epgd <- liftIO $ readPackageDescription silent file
     flags <- cabalConfigFlags cradle
@@ -193,34 +202,36 @@ parseCabalFile cradle file = _ {- do
         finalizePackageDescription flags (const True) buildPlatform cid []
     nullPkg pd = name == ""
       where
-        PackageName name = C.pkgName (P.package pd) -}
+        PackageName name = C.pkgName (P.package pd)
 
 getGHCId :: IO CompilerId
 getGHCId = CompilerId GHC <$> getGHC
 
 getGHC :: IO Version
 getGHC = do
-    mv <- programFindVersion C.ghcProgram silent (programName C.ghcProgram)
+    mv <-
+      programFindVersion C.ghcProgram silent
+        (Distribution.Simple.Program.Types.programName C.ghcProgram)
     case mv of
       -- TODO: MonadError it up
         Nothing -> throwIO $ userError "ghc not found"
         Just v  -> return v
 
-cabalConfigFlags :: (IOish m, MonadError GhcModError m)
-                 => Cradle
+cabalConfigFlags :: (IOish m, MonadError Error.Error m)
+                 => Cradle.Cradle
                  -> m FlagAssignment
 cabalConfigFlags cradle = do
   config <- getConfig cradle
   case configFlags config of
     Right x  -> return x
-    Left msg -> throwError (GMECabalFlags (GMEString msg))
+    Left msg -> throwError (Error.CabalFlags (Error.Other msg))
 
 configFlags :: CabalConfig -> Either String FlagAssignment
 configFlags config = readEither =<< flip extractField "configConfigurationsFlags" =<< extractField config "configFlags"
 
 -- The offending function
-getConfig :: (IOish m, MonadError GhcModError m)
-          => Cradle
+getConfig :: (IOish m, MonadError Error.Error m)
+          => Cradle.Cradle
           -> m CabalConfig
 getConfig cradle = do
   outOfDate <- liftIO $ isSetupConfigOutOfDate cradle
@@ -231,9 +242,9 @@ getConfig cradle = do
       (ExitFailure _, _, stderr) -> throwIO (ErrorCall stderr))
   where
   file   = setupConfigFile cradle
-  prjDir = cradleRootDir cradle
+  prjDir = Cradle.rootDir cradle
 
-  configure :: (IOish m, MonadError GhcModError m) => m ()
+  configure :: (IOish m, MonadError Error.Error m) => m ()
   configure = withDirectory_ prjDir $ void $ readProcess' "cabal" ["configure"]
 
   withDirectory_ :: (MonadIO m, ExceptionMonad m) => FilePath -> m a -> m a
@@ -241,16 +252,16 @@ getConfig cradle = do
       gbracket (liftIO getCurrentDirectory) (liftIO . setCurrentDirectory)
                   (\_ -> liftIO (setCurrentDirectory dir) >> action)
 
-  readProcess' :: (MonadIO m, MonadError GhcModError m)
+  readProcess' :: (MonadIO m, MonadError Error.Error m)
               => String
               -> [String]
               -> m String
   readProcess' cmd opts = do
     (rv,output,err) <- liftIO (readProcessWithExitCode cmd opts "")
-        `modifyError'` GMEProcess ([cmd] ++ opts)
+        `modifyError'` Error.Process ([cmd] ++ opts)
     case rv of
       ExitFailure val -> do
-          throwError $ GMEProcess ([cmd] ++ opts) $ strMsg $
+          throwError $ Error.Process ([cmd] ++ opts) $ strMsg $
             cmd ++ " " ++ unwords opts ++ " (exit " ++ show val ++ ")"
                 ++ "\n" ++ err
       ExitSuccess ->
@@ -264,9 +275,9 @@ getConfig cradle = do
   modifyError' = flip modifyError
 
 -- adapted from Language.Haskell.GhcMod.World
-isSetupConfigOutOfDate :: Cradle -> IO Bool
+isSetupConfigOutOfDate :: Cradle.Cradle -> IO Bool
 isSetupConfigOutOfDate crdl =
-  case cradleCabalFile crdl of
+  case Cradle.cabalFile crdl of
     Nothing  -> return False
     Just cab -> doesFileExist cab >>= \case
       False -> return False
@@ -282,8 +293,8 @@ getCompilerOptions ghcopts cradle pkgDesc = do
   depPkgs <- cabalConfigDependencies cradle (C.packageId pkgDesc)
   return $ CompilerOptions gopts idirs depPkgs
   where
-  wdir       = cradleCurrentDir cradle
-  rdir       = cradleRootDir    cradle
+  wdir       = Cradle.currentDir cradle
+  rdir       = Cradle.rootDir    cradle
   buildInfos = cabalAllBuildInfo pkgDesc
   idirs      = includeDirectories rdir wdir $ cabalSourceDirs buildInfos
     where
@@ -293,17 +304,30 @@ getCompilerOptions ghcopts cradle pkgDesc = do
         extdirs = map expand $ dirs ++ cabalBuildDirs
         expand "."    = cdir
         expand subdir = cdir </> subdir
-        uniqueAndSort = S.toList . S.fromList
         cabalBuildDirs = ["dist/build", "dist/build/autogen"]
 
+cabalSourceDirs :: [P.BuildInfo] -> [FilePath]
+cabalSourceDirs bis = uniqueAndSort $ concatMap P.hsSourceDirs bis
 
-getGHCOptions :: [GHCOption] -> Cradle -> FilePath -> P.BuildInfo -> IO [GHCOption]
+uniqueAndSort :: Ord a => [a] -> [a]
+uniqueAndSort = S.toList . S.fromList
+
+cabalAllBuildInfo :: P.PackageDescription -> [P.BuildInfo]
+cabalAllBuildInfo pd = libBI ++ execBI ++ testBI ++ benchBI
+  where
+    libBI   = map P.libBuildInfo       $ maybeToList $ P.library pd
+    execBI  = map P.buildInfo          $ P.executables pd
+    testBI  = map P.testBuildInfo      $ P.testSuites pd
+    benchBI = map P.benchmarkBuildInfo $ P.benchmarks pd
+
+type GHCOption = String
+getGHCOptions :: [GHCOption] -> Cradle.Cradle -> FilePath -> P.BuildInfo -> IO [GHCOption]
 getGHCOptions ghcopts cradle rdir binfo = do
   cabalCpp <- cabalCppOptions rdir
   let cpps = map ("-optP" ++) $ P.cppOptions binfo ++ cabalCpp
   return $ ghcopts ++ pkgDb ++ exts ++ [lang] ++ libs ++ libDirs ++ cpps
   where
-  pkgDb = ghcDbStackOpts $ cradlePkgDbStack cradle
+  pkgDb = ghcDbStackOpts $ Cradle.pkgDbStack cradle
   lang = maybe "-XHaskell98" (("-X" ++) . display) $ P.defaultLanguage binfo
   libDirs = map ("-L" ++) $ P.extraLibDirs binfo
   exts = map (("-X" ++) . display) $ P.usedExtensions binfo
@@ -322,12 +346,22 @@ getGHCOptions ghcopts cradle rdir binfo = do
 cabalConfigDependencies cradle thisPkg =
   configDependencies thisPkg <$> getConfig cradle
 
-setupConfigFile :: Cradle -> FilePath
-setupConfigFile crdl = cradleRootDir crdl </> setupConfigPath
+setupConfigFile :: Cradle.Cradle -> FilePath
+setupConfigFile crdl = Cradle.rootDir crdl </> setupConfigPath
 
 setupConfigPath :: FilePath
 setupConfigPath = localBuildInfoFile defaultDistPref
 
+type PackageBaseName = String
+type PackageVersion = String
+type PackageId = String
+type Package = (PackageBaseName, PackageVersion, PackageId)
+data CompilerOptions =
+  CompilerOptions
+  { ghcOptions :: [String]
+  , includeDirs :: [FilePath]
+  , depPackages :: [Package]
+  }
 -- end implementation of getCompilerOptions
 
 type CabalConfig = String
@@ -457,3 +491,32 @@ extractParens str = extractParens' str 0
        | s `elem` "}])" = s : extractParens' ss (level-1)
        | otherwise = s : extractParens' ss level
 
+newtype InitT m a =
+  InitT
+  { getInitT :: ErrorT Error.Error m a }
+  deriving
+  (Functor, Applicative, Alternative, Monad, MonadPlus, MonadIO, MonadError Error.Error)
+
+type IOish m = (Functor m, MonadIO m, MonadBaseControl IO m, ExceptionMonad m)
+
+runInitT :: InitT m a -> m (Either Error.Error a)
+runInitT = runErrorT . getInitT
+
+instance (MonadBaseControl IO m) => MonadBase IO (InitT m) where
+    liftBase = InitT . liftBase
+
+instance (MonadBaseControl IO m) => MonadBaseControl IO (InitT m) where
+    type StM (InitT m) a = StM (ErrorT Error.Error m) a
+    liftBaseWith f = InitT . liftBaseWith $ \runInBase ->
+        f $ runInBase . getInitT
+
+    restoreM = InitT . restoreM
+    {-# INLINE liftBaseWith #-}
+    {-# INLINE restoreM #-}
+
+instance (MonadIO m, MonadBaseControl IO m) => ExceptionMonad (InitT m) where
+  gcatch act handler = control $ \run ->
+      run act `gcatch` (run . handler)
+
+  gmask = liftBaseOp gmask . liftRestore
+    where liftRestore f r = f $ liftBaseOp_ r

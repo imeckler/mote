@@ -52,9 +52,16 @@ makeScopeMap = goDecls I.empty . hsmodDecls where
   goMatchGroup = \acc (MG {mg_alts}) -> foldl goLMatch acc mg_alts
     where
     goLMatch :: Accum (LMatch RdrName (LHsExpr RdrName))
-    goLMatch acc (L lm (Match ps _ty grhss)) =
-      let acc' = insertManyAt (toSrcLocInterval lm) (concatMap lpatNamesBound ps) acc
-      in goGRHSs acc' grhss
+    goLMatch acc
+#if __GLASGOW_HASKELL__ < 710
+      (L lm (Match m_pats _ty m_grhss)) =
+#else
+      (L lm (Match {m_pats, m_grhss})) =
+#endif
+      let acc' =
+            insertManyAt (toSrcLocInterval lm)
+              (concatMap lpatNamesBound m_pats) acc
+      in goGRHSs acc' m_grhss
 
   -- TODO: grhssLocalBinds
   goGRHSs :: Accum (GRHSs RdrName (LHsExpr RdrName))
@@ -81,7 +88,15 @@ makeScopeMap = goDecls I.empty . hsmodDecls where
     HsPar e                 -> goLExpr acc e
     SectionL e1 e2          -> goMany goLExpr acc [e1, e2]
     SectionR e1 e2          -> goMany goLExpr acc [e1, e2]
-    ExplicitTuple args _box -> goMany goLExpr acc (mapMaybe (\case {Present e -> Just e; _ -> Nothing}) args)
+#if __GLASGOW_HASKELL__ < 710
+    ExplicitTuple args _boxity ->
+      goMany goLExpr acc
+        (mapMaybe (\case {Present e -> Just e; _ -> Nothing}) args)
+#else
+    ExplicitTuple largs _boxity ->
+      goMany goLExpr acc
+        (mapMaybe (\case {L _ (Present e) -> Just e; _ -> Nothing}) largs)
+#endif
     HsCase scrut mg         -> goMatchGroup (goLExpr acc scrut) mg
     HsIf _se e1 e2 e3       -> goMany goLExpr acc [e1, e2, e3]
     HsMultiIf _ty grhss     -> goMany (\m g -> goGRHS m (unLoc g)) acc grhss -- goMany (\acc g -> goGRHSs acc (unLoc g)) acc grhss
@@ -110,12 +125,31 @@ makeScopeMap = goDecls I.empty . hsmodDecls where
     ExplicitPArr _ty es             -> goMany goLExpr acc es
     RecordCon _recName _ty recBinds -> goRecordBinds acc recBinds
     RecordUpd e bs _cons _tys _tys' -> goRecordBinds (goLExpr acc e) bs
-    ExprWithTySig e _ty             -> goLExpr acc e
-    ExprWithTySigOut e _ty          -> goLExpr acc e
-    ArithSeq _ty _se seqInfo        -> goArithSeqInfo acc seqInfo
-    PArrSeq _ty seqInfo             -> goArithSeqInfo acc seqInfo
-    HsSCC _fs e                     -> goLExpr acc e
-    HsCoreAnn _fs e                 -> goLExpr acc e
+
+#if __GLASGOW_HASKELL__ < 710
+    ExprWithTySig e _ty ->
+#else
+    ExprWithTySig e _ty _postrn ->
+#endif
+      goLExpr acc e
+
+    ExprWithTySigOut e _ty   -> goLExpr acc e
+    ArithSeq _ty _se seqInfo -> goArithSeqInfo acc seqInfo
+    PArrSeq _ty seqInfo      -> goArithSeqInfo acc seqInfo
+#if __GLASGOW_HASKELL__ < 710
+    HsSCC _fs e ->
+#else
+    HsSCC _source_text _fs e ->
+#endif
+      goLExpr acc e
+
+#if __GLASGOW_HASKELL__ < 710
+    HsCoreAnn _fs e ->
+#else
+    HsCoreAnn _source_text _fs e ->
+#endif
+      goLExpr acc e
+
     -- Begin template haskell stuff
     HsBracket {}      -> acc
     HsRnBracketOut {} -> acc
@@ -126,12 +160,27 @@ makeScopeMap = goDecls I.empty . hsmodDecls where
     HsProc {}          -> acc -- TODO
     HsTick _tick e     -> goLExpr acc e
     HsBinTick _t _t' e -> goLExpr acc e
-    HsTickPragma _t e  -> goLExpr acc e
+
+#if __GLASGOW_HASKELL__ < 710
+    HsTickPragma _t e ->
+#else
+    HsTickPragma _source_text _t e ->
+#endif
+      goLExpr acc e
+
     HsWrap _w e        -> goLExpr acc (L l e)
     _                  -> acc
 
   goRecordBinds :: Accum (HsRecordBinds RdrName)
-  goRecordBinds acc (HsRecFields {rec_flds, rec_dotdot=_}) = goMany goRecField acc rec_flds
+  goRecordBinds acc
+    (HsRecFields {rec_flds, rec_dotdot=_}) =
+-- TODO: Make this a pattern synonym
+#if __GLASGOW_HASKELL__ < 710
+    let rec_flds' = rec_flds in
+#else
+    let rec_flds' = map unLoc rec_flds in
+#endif
+    goMany goRecField acc rec_flds'
     where
     goRecField :: Accum (HsRecField RdrName (LHsExpr RdrName))
     goRecField m (HsRecField {hsRecFieldArg}) = goLExpr m hsRecFieldArg
@@ -187,7 +236,12 @@ localBindsNamesBound loc = case loc of
   extract :: IPBind RdrName -> RdrName
   extract (IPBind name _) = case name of
     Right id           -> id
-    Left (HsIPName fs) -> mkVarUnqual fs
+#if __GLASGOW_HASKELL__ < 710
+    Left (HsIPName fs) ->
+#else
+    Left (L _ (HsIPName fs)) ->
+#endif
+      mkVarUnqual fs
 
 lhsBindsNamesBound :: LHsBindsLR RdrName RdrName -> [RdrName]
 lhsBindsNamesBound bs = foldBag (++) (hsBindNamesBound . unLoc) [] bs
@@ -232,8 +286,15 @@ patNamesBound = \case
   where
   detailsNamesBound :: HsConPatDetails id -> [id]
   detailsNamesBound = \case
-    RecCon (HsRecFields {rec_flds, rec_dotdot}) -> case rec_dotdot of
-      _ -> concatMap hsRecFieldNamesBound rec_flds -- TODO: do something different in the dotdot case?
+    RecCon (HsRecFields {rec_flds, rec_dotdot}) ->
+#if __GLASGOW_HASKELL__ < 710
+      let rec_flds' = rec_flds in
+#else
+      let rec_flds' = map unLoc rec_flds in
+#endif
+      case rec_dotdot of
+        _ -> concatMap hsRecFieldNamesBound rec_flds' -- TODO: do something different in the dotdot case?
+
     InfixCon p1 p2                              -> lpatNamesBound p1 ++ lpatNamesBound p2
     PrefixCon ps                                -> concatMap lpatNamesBound ps
 

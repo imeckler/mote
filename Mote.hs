@@ -245,7 +245,7 @@ main = do
     hPutStrLn logFile "Testing, testing"
     runGhc (Just libdir) $ do
       -- ghcInit stRef
-      Mote.Init.init stRef >>= \case
+      Mote.Init.initializeWithCabal stRef >>= \case
         Left err -> liftIO $ do
           LB8.putStrLn (encode (Error err))
           exitWith (ExitFailure 1)
@@ -295,7 +295,7 @@ runWithTestRef' x = do
   home <- getHomeDirectory
   withFile (home </> "prog/mote/testlog") WriteMode $ \logFile -> do
     r <- newRef =<< initialState logFile
-    run $ do { Mote.Init.init r; x r }
+    run $ do { Mote.Init.initializeWithCabal r; x r }
 
 run :: Ghc a -> IO a
 run = runGhc (Just libdir)

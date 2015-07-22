@@ -40,9 +40,9 @@ tcRnExprTc rdr_expr = do
   let fresh_it = itName uniq (getLoc rdr_expr)
   -- I guess I could pick up some new holes here, but there's really no
   -- point since in general we might have to load after a refine.
-  ((_tc_expr, res_ty), lie) <- captureConstraints $ tcInferRho rn_expr
+  (((_tc_expr, res_ty), tc_level), lie) <- captureConstraints . captureTcLevel $ tcInferRho rn_expr -- TODO: I have no idea why I use tcInferRho rather than tcInfer
   ((qtvs, dicts, _, _), lie_top) <- captureConstraints $
-    simplifyInfer (TcLevel _) False [(fresh_it, res_ty)] lie
+    simplifyInfer tc_level False [(fresh_it, res_ty)] lie
   simplifyInteractive lie_top
   zonkTcType . mkForAllTys qtvs $ mkPiTypes dicts res_ty
 

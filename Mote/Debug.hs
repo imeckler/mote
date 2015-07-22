@@ -36,7 +36,7 @@ runWithTestRef' x = do
   home <- getHomeDirectory
   withFile (home </> "testlog") WriteMode $ \logFile -> do
     r <- newRef =<< initialState logFile
-    run $ do { Mote.Init.init r; x r }
+    run $ do { Mote.Init.initializeWithCabal r; x r }
 
 run :: Ghc a -> IO a
 run = runGhc (Just libdir)
