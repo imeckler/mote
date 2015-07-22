@@ -11,6 +11,7 @@ import Data.Traversable (traverse)
 import Data.Bitraversable
 import Data.Bifoldable
 import Data.Foldable (foldMap)
+import Prelude hiding (Word)
 
 import Search.Util
 

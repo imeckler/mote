@@ -1,5 +1,5 @@
 {-# LANGUAGE LambdaCase, NamedFieldPuns, NoMonomorphismRestriction,
-             RecordWildCards, TupleSections #-}
+             RecordWildCards, TupleSections, CPP #-}
 module Mote.Holes where
 
 import qualified Bag
@@ -48,7 +48,11 @@ findArgHoles = S.fromList . goDecls . hsmodDecls where
 
   goMatchGroup = concatMap goLMatch . mg_alts
 
+#if __GLASGOW_HASKELL__ < 710
   goLMatch (L _ (Match _pats _ty grhss)) = goGRHSs grhss
+#else
+  goLMatch (L _ (Match {m_grhss})) = goGRHSs m_grhss
+#endif
 
   goGRHSs (GRHSs {grhssGRHSs}) = concatMap (goGRHS . unLoc) grhssGRHSs
 
@@ -70,7 +74,13 @@ findArgHoles = S.fromList . goDecls . hsmodDecls where
     HsPar e'            -> goLExpr e'
     SectionL a b        -> concatMap goLExpr [a, b]
     SectionR a b        -> concatMap goLExpr [a, b]
-    ExplicitTuple ts _  -> concatMap goLExpr $ mapMaybe (\case {Present e -> Just e; _ -> Nothing}) ts
+#if __GLASGOW_HASKELL__ < 710
+    ExplicitTuple ts _boxity ->
+      concatMap goLExpr $ mapMaybe (\case {Present e -> Just e; _ -> Nothing}) ts
+#else
+    ExplicitTuple largs _boxity ->
+      concatMap goLExpr $ mapMaybe (\case {L _ (Present e) -> Just e; _ -> Nothing}) largs
+#endif
     HsCase scrut mg     -> goLExpr scrut ++ goMatchGroup mg
     HsIf _ a b c        -> concatMap goLExpr [a, b, c]
     HsMultiIf _ grhss   -> concatMap (goGRHS . unLoc) grhss

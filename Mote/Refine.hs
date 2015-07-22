@@ -1,5 +1,5 @@
 {-# LANGUAGE FlexibleContexts, LambdaCase, MultiParamTypeClasses,
-             NamedFieldPuns, RecordWildCards, TupleSections #-}
+             NamedFieldPuns, RecordWildCards, TupleSections, CPP #-}
 module Mote.Refine where
 
 import           Bag                 (bagToList)
@@ -26,10 +26,12 @@ import           TcEvidence          (EvBind (..), EvTerm (..), HsWrapper (..))
 import           TcExpr              (tcInferRho)
 import           TcMType             (zonkTcType)
 import           TcRnMonad
-import           TcSimplify          (simplifyInteractive)
-import           TcSimplify          (simplifyInfer)
+import           TcSimplify          (simplifyInfer, simplifyInteractive)
 import           TcType              (UserTypeCtxt (GhciCtxt))
 import           TcUnify             (tcSubType)
+#if __GLASGOW_HASKELL__ >= 710
+import TcType (TcLevel(..))
+#endif
 
 -- tcRnExprTc :: LHsExpr RdrName -> TcRn Type
 tcRnExprTc rdr_expr = do
@@ -40,7 +42,7 @@ tcRnExprTc rdr_expr = do
   -- point since in general we might have to load after a refine.
   ((_tc_expr, res_ty), lie) <- captureConstraints $ tcInferRho rn_expr
   ((qtvs, dicts, _, _), lie_top) <- captureConstraints $
-    simplifyInfer True False [(fresh_it, res_ty)] lie
+    simplifyInfer (TcLevel _) False [(fresh_it, res_ty)] lie
   simplifyInteractive lie_top
   zonkTcType . mkForAllTys qtvs $ mkPiTypes dicts res_ty
 
@@ -140,9 +142,14 @@ withNHoles n e = app e $ replicate n hole where
 -- type [HoleInfo]
 -- TODO: Refinement for record constructors
 subTypeEvTc t1 t2 = do
-  { (wrapper, cons) <- captureConstraints (tcSubType origin ctx t1 t2)
+  { (wrapper, cons) <- captureConstraints (tcSubType' ctx t1 t2)
   ; (wrapper,) <$> simplifyInteractive cons }
   where
-  origin = AmbigOrigin GhciCtxt
+  tcSubType' =
+#if __GLASGOW_HASKELL__ < 710
+    tcSubType (AmbigOrigin GhciCtxt)
+#else
+    tcSubType
+#endif
   ctx = GhciCtxt
 

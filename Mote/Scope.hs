@@ -1,4 +1,4 @@
-{-# LANGUAGE LambdaCase, NamedFieldPuns, RecordWildCards #-}
+{-# LANGUAGE LambdaCase, NamedFieldPuns, RecordWildCards, CPP #-}
 module Mote.Scope where
 
 import           Bag
@@ -198,9 +198,14 @@ hsBindNamesBound b = case b of
   PatBind {pat_lhs}    -> lpatNamesBound pat_lhs
   VarBind {var_id}     -> [var_id]
   AbsBinds {abs_binds} -> lhsBindsNamesBound abs_binds
-  PatSynBind {patsyn_args} -> case patsyn_args of
-    PrefixPatSyn lrs  -> map unLoc lrs
-    InfixPatSyn r1 r2 -> [unLoc r1, unLoc r2]
+#if __GLASGOW_HASKELL__ < 710
+  PatSynBind {patsyn_args} ->
+#else
+  PatSynBind (PSB {psb_args=patsyn_args}) ->
+#endif
+    case patsyn_args of
+      PrefixPatSyn lrs  -> map unLoc lrs
+      InfixPatSyn r1 r2 -> [unLoc r1, unLoc r2]
 
 patNamesBound :: Pat id -> [id]
 patNamesBound = \case

@@ -4,8 +4,9 @@ module Mote.Init where
 
 import           Data.List                                     (intercalate)
 import           GHC
+{-
 import           Language.Haskell.GhcMod.Internal              hiding (getCompilerOptions,
-                                                                parseCabalFile)
+                                                                parseCabalFile) -}
 import           Outputable
 import           Mote.Types
 import           Mote.Util
@@ -16,7 +17,6 @@ import           Control.Monad
 import           Control.Monad.Error
 import qualified Data.Set                                      as S
 import           DynFlags
-import           Language.Haskell.GhcMod
 import ErrUtils
 
 import qualified Distribution.Package                          as C
@@ -97,11 +97,6 @@ POSSIBILITY OF SUCH DAMAGE. -}
 init :: GhcMonad m => Ref MoteState -> m (Either String ())
 init stRef = initializeWithCabal stRef defaultOptions
 
-runGhcModT'' opt mx = do
-  env <- newGhcModEnv opt =<< getCurrentDirectory
-  (orErr, _log) <- runGhcModT' env defaultState mx
-  return $ fmap fst orErr
-
 initializeWithCabal :: GhcMonad m => Ref MoteState -> Options -> m (Either String ())
 initializeWithCabal stRef opt = do
   c <- liftIO findCradle
@@ -118,11 +113,11 @@ initializeWithCabal stRef opt = do
       setOptions stRef opt compOpts >> return (Right ())
 
     Just cab -> do
-      compOptsErr <- liftIO . runGhcModT'' opt $ do
+      compOptsErr <- liftIO . runExceptT $ do
         getCompilerOptions ghcOpts c =<< parseCabalFile c cab
 
       case compOptsErr of
-        Left err       -> return . Left $ "initializeWithCabal error: " ++ show err
+        Left err       -> return . Left $ "initializeWithCabal error: " ++ err
         Right compOpts -> setOptions stRef opt compOpts >> return (Right ())
 
   where
@@ -180,11 +175,11 @@ ghcDbOpt db
   where s = show db
 
 -- begin implementation of parseCabalFile
-parseCabalFile :: (IOish m, MonadError GhcModError m)
+parseCabalFile :: (MonadIO m, MonadError String m)
                => Cradle
                -> FilePath
                -> m P.PackageDescription
-parseCabalFile cradle file = do
+parseCabalFile cradle file = _ {- do
     cid <- liftIO getGHCId
     epgd <- liftIO $ readPackageDescription silent file
     flags <- cabalConfigFlags cradle
@@ -198,7 +193,7 @@ parseCabalFile cradle file = do
         finalizePackageDescription flags (const True) buildPlatform cid []
     nullPkg pd = name == ""
       where
-        PackageName name = C.pkgName (P.package pd)
+        PackageName name = C.pkgName (P.package pd) -}
 
 getGHCId :: IO CompilerId
 getGHCId = CompilerId GHC <$> getGHC

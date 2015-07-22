@@ -1,4 +1,4 @@
-{-# LANGUAGE LambdaCase, RecordWildCards #-}
+{-# LANGUAGE LambdaCase, RecordWildCards, FlexibleContexts #-}
 module Mote.GhcUtil where
 
 import           Bag (Bag, foldrBag)
