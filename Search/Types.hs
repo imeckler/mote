@@ -82,8 +82,8 @@ instance ToJSON AnnotatedTerm where
 type TransName = AnnotatedTerm
 data Trans f o =
   Trans
-  { from :: Word f o
-  , to   :: Word f o
+  { from :: Search.Types.Word.Word f o
+  , to   :: Search.Types.Word.Word f o
   , name :: TransName 
   }
   deriving (Show, Eq, Ord, Generic)

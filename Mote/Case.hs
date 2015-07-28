@@ -1,4 +1,5 @@
-{-# LANGUAGE LambdaCase, NamedFieldPuns, RecordWildCards, TupleSections #-}
+{-# LANGUAGE LambdaCase, NamedFieldPuns, RecordWildCards, TupleSections,
+             CPP #-}
 module Mote.Case where
 
 import           Bag                 (bagToList)
@@ -15,6 +16,7 @@ import qualified Data.IntervalMap.FingerTree as I
 import           DataCon             (DataCon, dataConFieldLabels,
                                       dataConInstArgTys, dataConIsInfix,
                                       dataConName, isTupleDataCon,
+                                      dataConUserType,
                                       isUnboxedTupleCon)
 import           DynFlags            (ExtensionFlag (Opt_PolyKinds))
 import           FamInst             (tcGetFamInstEnvs)
@@ -41,6 +43,10 @@ import           TcRnMonad           (setXOptM)
 import           TyCon
 import           Type
 import           TypeRep
+#if __GLASGOW_HASKELL__ >= 710
+import Var (mkGlobalVar)
+import IdInfo(IdDetails(VanillaId), vanillaIdInfo)
+#endif
 
 import           Mote.Types
 import           Mote.Util
@@ -49,6 +55,8 @@ type SatDataConRep = (Name, [Type])
 
 type TypedDataCon = (DataCon, [Type])
 type DataType = [TypedDataCon]
+
+type NAME = RdrName
 
 normaliseType :: (GhcMonad m) => Type -> m Type
 normaliseType t = do
@@ -79,17 +87,23 @@ type Scoped = State (S.Set FastString)
 --   one that has a variable named as requested.
 -- > replace case exprs with expanded one
 
-conPattern :: S.Set FastString -> (DataCon, [Type]) -> Pat RdrName
+conPattern :: S.Set FastString -> (DataCon, [Type]) -> Pat NAME
 conPattern scope (dc, argTys)
   | isTupleDataCon dc =
     let b    = if isUnboxedTupleCon dc then Unboxed else Boxed
         pats = evalState (mapM varPat argTys) scope
     in
-    TuplePat pats b argTys
-  | otherwise = ConPatIn (noLoc (nameRdrName (dataConName dc))) deets
+    TuplePat pats b []
+  | otherwise =
+      ConPatIn (noLoc (nameRdrName (dataConName dc)))
+      {-
+        (noLoc
+          (mkGlobalVar VanillaId (dataConName dc) (dataConUserType dc) vanillaIdInfo)) -}
+        deets
+      {- (noLoc (nameRdrName (dataConName dc))) -}
     -- ConPatIn (noLoc . nameRdrName $ dataConName dc) deets
   where
-  deets :: HsConPatDetails RdrName
+  deets :: HsConPatDetails NAME
   deets
     | dataConIsInfix dc = case argTys of
         [x, y] -> evalState (InfixCon <$> varPat x <*> varPat y) scope
@@ -100,12 +114,22 @@ conPattern scope (dc, argTys)
         [] -> PrefixCon (evalState (mapM varPat argTys) scope)
         fs -> RecCon $
           HsRecFields
-          { rec_flds   = map (\l -> HsRecField (noLoc (Exact l)) (noLoc $ WildPat undefined) pun) fs
+          { rec_flds   =
+#if __GLASGOW_HASKELL__ < 710
+              map (\l -> HsRecField (noLoc (Exact l)) (noLoc $ WildPat undefined) pun) fs
+#else
+              map (\x ->
+                noLoc $
+                  HsRecField {  hsRecFieldId = noLoc (nameRdrName x), hsRecFieldArg = (noLoc $ WildPat undefined), hsRecPun = pun })
+                fs
+#endif
           , rec_dotdot = Nothing
           }
-          where pun = True
+          where
+          -- TODO: Only pun if the extension is on
+          pun = True
 
-varPat :: Type -> Scoped (LPat RdrName)
+varPat :: Type -> Scoped (LPat NAME)
 varPat t = noLoc . VarPat . mkVarUnqual <$> freshWithPrefix (typePrefix t)
 
 freshWithPrefix :: FastString -> Scoped FastString
@@ -175,8 +199,14 @@ data MatchInfo id
 
 namesBound
   :: GenLocated t (Match id body) -> [(id, Pat id -> Match id body)]
-namesBound (L _ (Match pats t rhs)) = listyPat (\pats' -> Match pats' t rhs) pats where
-
+#if __GLASGOW_HASKELL__ < 710
+namesBound (L _ (Match m_pats m_type m_grhss)) =
+  listyPat (\m_pats' -> Match m_pats' m_type m_grhss) m_pats
+#else
+namesBound (L _ m@(Match {m_pats, m_type, m_grhss})) =
+  listyPat (\m_pats' -> m { m_pats = m_pats' }) m_pats
+#endif
+  where
   goPat = \case
     WildPat _        -> []
     VarPat x         -> [(x, id)]
@@ -193,6 +223,7 @@ namesBound (L _ (Match pats t rhs)) = listyPat (\pats' -> Match pats' t rhs) pat
       RecCon (HsRecFields {rec_flds, rec_dotdot}) -> case rec_dotdot of
         Just _  -> [] -- TODO: This should really expand out the dotdot
         Nothing ->
+#if __GLASGOW_HASKELL__ < 710
           concatMap (\(pre,fld,post) ->
             wrapWith (wrap pre fld post) . goLPat $ hsRecFieldArg fld)
             (listViews rec_flds)
@@ -200,6 +231,18 @@ namesBound (L _ (Match pats t rhs)) = listyPat (\pats' -> Match pats' t rhs) pat
           wrap pre fld post lp =
             ConPatIn c $
               RecCon (HsRecFields (pre ++ fld { hsRecFieldArg = lp } : post) Nothing)
+#else
+          concatMap (\(pre,lfld,post) ->
+            wrapWith (wrap pre lfld post) . goLPat . hsRecFieldArg $ GHC.unLoc lfld)
+            (listViews rec_flds)
+          where
+          wrap pre lfld post p' =
+            ConPatIn c
+              (RecCon
+                (HsRecFields
+                  (pre ++ fmap (\fld -> fld { hsRecFieldArg = p' }) lfld : post)
+                  Nothing))
+#endif
 
     ConPatOut {}     -> error "TODO: ConPatOut"
     ViewPat {}       -> error "TODO: ViewPat"
@@ -238,7 +281,12 @@ scopeAt stRef loc = do
 matchesForTypeAt :: Ref MoteState -> Type -> SrcLoc -> M [Match RdrName (LHsExpr RdrName)]
 matchesForTypeAt stRef ty loc = do
   scope <- scopeAt stRef loc
-  fmap (map (\p -> Match [p] Nothing holyGRHSs)) (patternsForType scope ty)
+#if __GLASGOW_HASKELL__ < 710
+  fmap (map (\p -> Match [p] Nothing holyGRHSs))
+#else
+  fmap (map (\p -> Match { m_fun_id_infix = Nothing, m_pats = [p], m_type = Nothing, m_grhss = holyGRHSs }))
+#endif
+    (patternsForType scope ty)
   where
   holyGRHSs :: GRHSs RdrName (LHsExpr RdrName)
   holyGRHSs = GRHSs [noLoc $ GRHS [] (noLoc EWildPat)] EmptyLocalBinds
@@ -264,7 +312,8 @@ expansions stRef var ty loc mod =
         Nothing  -> return Nothing
         Just dcs -> do
           let matches = map (patPosn . conPattern scope) dcs
-          logS stRef . show $ map (\(dc, args) -> (dataConIsInfix dc, map typePrefix args)) dcs -- lift (showSDocM . vcat . map (pprMatch (CaseAlt :: HsMatchContext RdrName)) $ matches)
+          logS stRef . show $
+            map (\(dc, args) -> (dataConIsInfix dc, map typePrefix args)) dcs -- lift (showSDocM . vcat . map (pprMatch (CaseAlt :: HsMatchContext RdrName)) $ matches)
           return $ Just (mgi, matches)
 
     Nothing -> throwError $ NoVariable var
@@ -295,7 +344,13 @@ containingMatchGroups loc = goDecls [] . GHC.hsmodDecls where
   goMatchGroup mi acc =
     maybe acc (goLMatch mi acc) . List.find ((loc `isSubspanOf`) . getLoc) . GHC.mg_alts
 
-  goLMatch mi acc lm@(L _ (Match _pats _ty grhss)) = goGRHSs ((lm, mi):acc) grhss
+  goLMatch mi acc
+#if __GLASGOW_HASKELL__ < 710
+    lm@(L _ (Match _pats _ty m_grhss)) =
+#else
+    lm@(L _ (Match {m_grhss})) =
+#endif
+      goGRHSs ((lm, mi):acc) m_grhss
 
   goGRHSs acc (GRHSs { grhssGRHSs, grhssLocalBinds }) =
     case nextSubexpr' loc grhssGRHSs of
@@ -324,7 +379,14 @@ containingMatchGroups loc = goDecls [] . GHC.hsmodDecls where
     HsPar e'            -> goLExpr acc e'
     SectionL a b        -> goLExpr acc $ nextSubLExpr [a, b]
     SectionR a b        -> goLExpr acc $ nextSubLExpr [a, b]
-    ExplicitTuple ts _  -> goLExpr acc . nextSubLExpr $ mapMaybe (\case {Present e -> Just e; _ -> Nothing}) ts
+    ExplicitTuple args _boxity  ->
+#if __GLASGOW_HASKELL__ < 710
+      goLExpr acc . nextSubLExpr $
+        mapMaybe (\case {Present e -> Just e; _ -> Nothing}) args
+#else
+      goLExpr acc . nextSubLExpr $
+        mapMaybe (\case {L _ (Present e) -> Just e; _ -> Nothing}) args
+#endif
     HsCase _scrut mg    -> goMatchGroup CaseBranch acc mg
     HsIf _ a b c        -> goLExpr acc . nextSubLExpr $ [a, b, c]
     HsMultiIf _ grhss   -> goGRHS acc . nextSubexpr loc $ grhss
@@ -334,7 +396,9 @@ containingMatchGroups loc = goDecls [] . GHC.hsmodDecls where
     -- TODO: let expr
     _                   -> acc
 
-  nextSubLExpr = fromMaybe (error "Where?") . List.find ((loc `isSubspanOf`) . getLoc)
+  nextSubLExpr =
+    let find = List.find :: (a -> Bool) -> [a] -> Maybe a in
+    fromMaybe (error "Where?") . find ((loc `isSubspanOf`) . getLoc)
 
   goStmt acc = \case
     LastStmt e _synE           -> goLExpr acc e -- TODO: figure out what the deal is with syntaxexpr

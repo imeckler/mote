@@ -1,4 +1,4 @@
-{-# LANGUAGE LambdaCase, NamedFieldPuns, BangPatterns, NoMonomorphismRestriction #-} -- TODO : mono
+{-# LANGUAGE LambdaCase, NamedFieldPuns, BangPatterns, FlexibleContexts, NoMonomorphismRestriction #-} -- TODO : mono
 module Search.Graph.Canonicalize where
 
 import qualified Data.Map as Map

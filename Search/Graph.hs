@@ -1,10 +1,10 @@
 {-# LANGUAGE RecordWildCards, NamedFieldPuns, LambdaCase,
              ScopedTypeVariables, BangPatterns, ViewPatterns,
-             TupleSections, DeriveFunctor, RankNTypes
-             , NoMonomorphismRestriction #-}
+             TupleSections, DeriveFunctor, RankNTypes,
+             NoMonomorphismRestriction, FlexibleContexts #-}
 module Search.Graph where
 
-import Prelude hiding (sequence)
+import Prelude hiding (sequence, Word)
 import Data.Maybe
 import qualified Data.Set as Set
 import qualified Data.Map as Map

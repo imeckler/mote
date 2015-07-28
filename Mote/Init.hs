@@ -1,26 +1,28 @@
-{-# LANGUAGE ConstraintKinds, FlexibleContexts, LambdaCase, RecordWildCards,
-             ScopedTypeVariables, UndecidableInstances, GeneralizedNewtypeDeriving,
-             MultiParamTypeClasses, TypeFamilies, CPP #-}
+{-# LANGUAGE CPP, ConstraintKinds, FlexibleContexts, GeneralizedNewtypeDeriving,
+             LambdaCase, MultiParamTypeClasses, RecordWildCards,
+             ScopedTypeVariables, TypeFamilies, UndecidableInstances #-}
 module Mote.Init (initializeWithCabal) where
 
 import           Data.List                                     (intercalate)
-import Data.Maybe (maybeToList)
-import           GHC hiding (PackageId)
-import qualified Mote.Init.Cradle as Cradle
-import qualified Mote.Init.Error as Error
-import           Outputable
+import           Data.Maybe                                    (maybeToList)
+import           GHC                                           hiding
+                                                                (PackageId)
+import qualified Mote.Init.Cradle                              as Cradle
+import qualified Mote.Init.Error                               as Error
 import           Mote.Types
 import           Mote.Util
+import           Outputable
 -- I had to write my own "getCompilerOptions" and "parseCabalFile"
 -- since the ghcmod versions die on new binary format cabal files.
 import           Control.Applicative
 import           Control.Monad
+import           Control.Monad.Base                            (MonadBase (..),
+                                                                liftBase)
 import           Control.Monad.Error
-import Control.Monad.Base (MonadBase(..), liftBase)
-import Control.Monad.Trans.Control
+import           Control.Monad.Trans.Control
 import qualified Data.Set                                      as S
 import           DynFlags
-import ErrUtils
+import           ErrUtils
 
 import qualified Distribution.Package                          as C
 import qualified Distribution.PackageDescription               as P
@@ -33,6 +35,7 @@ import           Distribution.System                           (buildPlatform)
 import           Distribution.Verbosity                        as Verbosity
 -- import Distribution.Simple.LocalBuildInfo (configFlags)
 import           Data.Version                                  (Version)
+import           Distribution.Compiler                         (AbiTag (NoAbiTag), unknownCompilerInfo)
 import           Distribution.PackageDescription               (FlagAssignment)
 import           Distribution.Simple.Program.Types             (programFindVersion,
                                                                 programName)
@@ -172,7 +175,7 @@ setOptions stRef (CompilerOptions{..}) = do
       ExposePackageId $ showPkgId pkg
 #else
       ExposePackage (PackageIdArg (showPkgId pkg))
-        (ModRenaming False []) -- TODO: Check if this modrenaming is sensible
+        (ModRenaming True []) -- TODO: Check if this modrenaming is sensible
 #endif
     showPkgId (n,v,i) = intercalate "-" [n,v,i]
 
@@ -199,7 +202,8 @@ parseCabalFile cradle file =do
                         else return pd
   where
     toPkgDesc cid flags =
-        finalizePackageDescription flags (const True) buildPlatform cid []
+        finalizePackageDescription flags (const True) buildPlatform (unknownCompilerInfo cid NoAbiTag) []
+-- OLD:        finalizePackageDescription flags (const True) buildPlatform cid []
     nullPkg pd = name == ""
       where
         PackageName name = C.pkgName (P.package pd)

@@ -6,7 +6,8 @@ import           Control.Monad
 import           Data.Aeson          hiding (Error)
 import qualified Data.Text           as T
 import qualified Data.Vector         as V
-import Search.Types.Word (Word(..))
+import           Prelude             hiding (Word)
+import           Search.Types.Word   (Word (..))
 
 type Pos  = (Int, Int)
 type Span = (Pos, Pos)

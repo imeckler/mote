@@ -1,5 +1,5 @@
 {-# LANGUAGE LambdaCase, RecordWildCards, TupleSections,
-             NoMonomorphismRestriction #-}
+             NoMonomorphismRestriction, CPP #-}
 module Mote.Suggest where
 
 import           Control.Applicative
@@ -20,7 +20,11 @@ import           GHC
 import           RdrName
 import           TcRnMonad           (TcRn)
 import           Type
+#if __GLASGOW_HASKELL__ < 710
 import           Module              (packageIdString)
+#else
+import           Packages            (packageKeyPackageIdString)
+#endif
 import           Name                (isInternalName, nameModule_maybe)
 import           TcEvidence          (HsWrapper (..))
 
@@ -60,9 +64,15 @@ vagueness (RefineMatch {..}) = go refineWrapper where
 burdensomeness :: RefineMatch -> Int
 burdensomeness (RefineMatch {..}) = length refineArgTys
 
-locality :: Name -> Locality
-locality n = case nameModule_maybe n of
-  Just mod -> case packageIdString (modulePackageId mod) of
+#if __GLASGOW_HASKELL__ < 710
+packageIdString' _ mod = packageIdString (modulePackageId mod)
+#else
+packageIdString' dflags mod = packageKeyPackageIdString dflags (modulePackageKey mod)
+#endif
+
+locality :: DynFlags -> Name -> Locality
+locality dynFlags n = case nameModule_maybe n of
+  Just mod -> case packageIdString' dynFlags mod of
     "main" -> Project
     _      -> External
   Nothing  -> if isInternalName n then Module else External
@@ -83,9 +93,9 @@ matchInnerArgs goalTy ty = mapMaybeM (refineMatch goalTy) (innerArgs ty)
 
 -- discardConstraints . fmap catMaybes . forM (holeEnv hi) $ \(id, ty) -> score True goalTy ty (getName id)
 -- discardConstraints . fmap catMaybes . sequence . map (\(id, ty) -> score True goalTy ty (getName id)) $ (holeEnv hi)
-score :: Bool -> Type -> Type -> Name -> TcRn (Maybe (Score, (Name, Type)))
-score hole goalTy ty n = do
-  let loc       = if hole then Hole else locality n
+score :: DynFlags -> Bool -> Type -> Type -> Name -> TcRn (Maybe (Score, (Name, Type)))
+score dynFlags hole goalTy ty n = do
+  let loc       = if hole then Hole else locality dynFlags n
       score' rm = (vagueness rm, burdensomeness rm, loc)
 
   let attempts = ty : innerArgs ty
@@ -101,13 +111,18 @@ score hole goalTy ty n = do
 suggestions :: TypecheckedModule -> HoleInfo -> M [(Name, Type)]
 suggestions tcmod hi = do
   gblScope <- lift getNamesInScope
+  dynFlags <- lift getSessionDynFlags
+  let
+    gblScore n  = fmap join . maybeErr . inHoleEnv tcmod hi . discardConstraints $ do
+      ty <- tcRnExprTc . noLoc . HsVar $ Exact n
+      score dynFlags False goalTy ty n
   -- not sure if it's stricly necessary to do this in Tc environment of the
   -- hole
   gblSuggestions <- mapMaybeM gblScore gblScope
   -- TODO: tlm style
   lclSuggestions <- inHoleEnv tcmod hi $
     discardConstraints . fmap catMaybes . forM (holeEnv hi) $ \(id, ty) ->
-      score True goalTy ty (getName id)
+      score dynFlags True goalTy ty (getName id)
 
   return
     . map snd
@@ -116,9 +131,6 @@ suggestions tcmod hi = do
   where
   goalTy      = holeType hi
   maybeErr ex = fmap Just ex `catchError` \_ -> return Nothing
-  gblScore n  = fmap join . maybeErr . inHoleEnv tcmod hi . discardConstraints $ do
-    ty <- tcRnExprTc . noLoc . HsVar $ Exact n
-    score False goalTy ty n
 
 getAndMemoizeSuggestions :: Ref MoteState -> AugmentedHoleInfo -> M [(Name, Type)]
 getAndMemoizeSuggestions stRef ahi = 

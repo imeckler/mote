@@ -7,20 +7,25 @@ import           Mote.ReadType
 import           Mote.Refine         (tcRnExprTc)
 import           Mote.Types
 import           Mote.Util
-import           Search.Graph hiding (sequence)
+import           Prelude             hiding (Word)
+import           Search.Graph        hiding (sequence)
+import           Search.Graph.Types
 import           Search.Types
+import           Search.Types.Word   (Word (..))
+import qualified Search.Types.Word   as Word
 
 import           Control.Applicative
 import           Control.Monad.Error
+
+import           Data.Bifunctor
+import           Data.Bitraversable
 import           Data.Hashable
 import qualified Data.List           as List
-import           Data.Maybe
-import qualified Data.Set            as Set
 import qualified Data.Map            as Map
-import Data.Traversable (traverse)
-import Data.Bitraversable
-import Data.Bifunctor
-import Data.Monoid
+import           Data.Maybe
+import           Data.Monoid
+import qualified Data.Set            as Set
+import           Data.Traversable    (traverse)
 
 import           GHC
 import           InstEnv             (ClsInst (..))
@@ -34,11 +39,7 @@ import           TypeRep
 import           UniqSet             (elementOfUniqSet)
 import           Unique              (getKey, getUnique)
 
-import Search.Graph.Types
-import qualified Search.Types.Word as Word
-import Search.Types.Word (Word(..))
-
-import Debug.Trace
+import           Debug.Trace
 
 {-
 search stRef = do

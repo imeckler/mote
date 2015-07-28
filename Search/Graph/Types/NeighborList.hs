@@ -1,6 +1,7 @@
 {-# LANGUAGE LambdaCase #-}
 module Search.Graph.Types.NeighborList where
 
+import Prelude hiding (Word)
 import Data.Monoid
 import Data.Bifunctor
 import Search.Graph.Types.Vertex
