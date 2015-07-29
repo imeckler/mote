@@ -278,9 +278,9 @@ runWithTestRef x = do
   home <- getHomeDirectory
   withFile (home </> "testlog") WriteMode $ \logFile -> do
     r <- newRef =<< initialState logFile
-    run $ do { ghcInit; x r }
+    run $ do { ghcInit r; x r }
   where
-  ghcInit = do
+  ghcInit r = do
     dfs <- getSessionDynFlags
     void . setSessionDynFlags . withFlags [DynFlags.Opt_DeferTypeErrors] $ dfs
       { hscTarget  = HscInterpreted
@@ -293,7 +293,7 @@ runWithTestRef x = do
 
 runWithTestRef' x = do
   home <- getHomeDirectory
-  withFile (home </> "prog/mote/testlog") WriteMode $ \logFile -> do
+  withFile (home </> "testlog") WriteMode $ \logFile -> do
     r <- newRef =<< initialState logFile
     run $ do { Mote.Init.initializeWithCabal r; x r }
 

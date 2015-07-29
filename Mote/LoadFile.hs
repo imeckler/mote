@@ -22,6 +22,22 @@ import qualified Data.List               as List
 import qualified Data.Map                as M
 import           System.Directory        (getModificationTime)
 
+-- TODO: Debug imports
+import qualified DynFlags
+
+{-
+loadModule' :: [(FilePath, Maybe Phase)] -> Ghc SuccessFlag-- InputT GHCi SuccessFlag
+loadModule' files = do
+  targets <- mapM (uncurry GHC.guessTarget) files
+
+  _ <- GHC.abandonAll
+  GHC.setTargets []
+  _ <- GHC.load LoadAllTargets
+
+  GHC.setTargets targets
+  GHC.load LoadAllTargets -}
+
+
 loadFile :: Ref MoteState -> FilePath -> M ()
 loadFile stRef p = do
   _pmod <- eitherThrow =<< lift handled -- bulk of time is here
@@ -45,21 +61,27 @@ loadFile stRef p = do
   loadModuleAt p = do
     -- TODO: I think we can used the parsed and tc'd module that we get
     -- ourselves and then call GHC.loadMoudle to avoid duplicating work
-    setTargets . (:[]) =<< guessTarget p Nothing
-    load LoadAllTargets >>= \case
+
+    -- The hack of prepending "*" is due to Simon Marlow.
+    -- See http://stackoverflow.com/questions/12790341/haskell-ghc-dynamic-compliation-only-works-on-first-compile
+    setTargets . (:[]) =<< guessTarget ("*" ++ p) Nothing
+    (load LoadAllTargets) >>= \case
       Succeeded ->
         (List.find ((== p) . GHC.ms_hspp_file) <$> GHC.getModuleGraph) >>= \case
           Just m  -> do
             setContext [IIModule . moduleName . ms_mod $ m]
+
             Right <$> GHC.parseModule m
           Nothing -> error "Could not load module" -- TODO: Throw real error here
-      Failed -> 
+
+      Failed -> do
         Left . GHCError . unlines . reverse . loadErrors <$> gReadRef stRef
 
   getModules = do
     clearOldHoles
     clearErrors
-    _fs <- getSessionDynFlags
+    dfs <- getSessionDynFlags
+    GHC.setProgramDynFlags (DynFlags.gopt_set dfs DynFlags.Opt_DeferTypedHoles)
     loadModuleAt p >>= \case
       Left err -> return (Left err)
       Right mod -> do
@@ -67,7 +89,8 @@ loadFile stRef p = do
         setStateForData stRef p tcmod (unLoc $ parsedSource mod)
         gReadRef stRef >>| loadErrors >>| \case
           []   -> Right mod
-          errs -> Left . GHCError . ("getModules: " ++) . unlines $ reverse errs
+          errs ->
+            Left . GHCError . ("getModules: " ++) . unlines $ reverse errs
 
   handled :: Ghc (Either ErrorType ParsedModule)
   handled = do

@@ -136,19 +136,21 @@ getHoleInfos stRef tcmod = do
       let summary = pm_mod_summary (tm_parsed_module typecheckedModule)
           mod_name = moduleName $ ms_mod summary
           dflags  = ms_hspp_opts summary
-          -- TODOThe reason the overlapping instances bug was occuring
+          -- TODO: The reason the overlapping instances bug was occuring
           -- is that the instances from the current module were hanging around
           -- in the hsc_env (in hsc_HPT) from when the file was loaded. To
           -- remedy this I delete the module's entry, which I think is
           -- kosher.
           hsc_HPT0 = hsc_HPT hsc_env0
+          -- TODO: The modified env is now causing a separate issue...
+          -- Not sure what it is, switching back to using hsc_env0 for now.
           hsc_env =
             hsc_env0
             { hsc_dflags = dflags
             , hsc_HPT    = delFromUFM hsc_HPT0 mod_name
             }
 
-      ((_warningmsgs, errmsgs), mayHoles) <- liftIO . runTcInteractive hsc_env $ do
+      ((_warningmsgs, errmsgs), mayHoles) <- liftIO . runTcInteractive hsc_env0 $ do
         (_, wc) <- captureConstraints $ tcTopSrcDecls mod_details grp
         let cts = filter isHoleCt $ wcCts wc
         mapM (zonkCt >=> (\ct -> HoleInfo ct <$> getRelevantBindings ct)) cts

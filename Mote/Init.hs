@@ -4,6 +4,7 @@
 module Mote.Init (initializeWithCabal) where
 
 import           Data.List                                     (intercalate)
+import Data.Char (isSpace)
 import           Data.Maybe                                    (maybeToList)
 import           GHC                                           hiding
                                                                 (PackageId)
@@ -143,7 +144,7 @@ setOptions stRef (CompilerOptions{..}) = do
             let msg =
                   showSDocForUser dfs neverQualify
                   $ mkLocMessage sev span msgdoc
-                isHoleMsg = and . zipWith (==) "Found hole" $ showSDoc dfs msgdoc
+                isHoleMsg = and . zipWith (==) "Found hole" . dropWhile isSpace $ showSDoc dfs msgdoc
                 isError = case sev of { SevError -> True; SevFatal -> True; _ -> False }
             in
             if isHoleMsg || not isError
@@ -165,7 +166,14 @@ setOptions stRef (CompilerOptions{..}) = do
   -- add warnings about hidden packages. Consider using it.
   setIncludeDirs idirs df = df { importPaths = idirs }
 
-  setFlags df = (df `gopt_unset` Opt_SpecConstr) `gopt_set` Opt_DeferTypeErrors
+  setFlags df =
+    -- TODO: not sure about this...
+#if __GLASGOW_HASKELL_ < 710
+    (df `gopt_unset` Opt_SpecConstr) `gopt_set` Opt_DeferTypeErrors
+#else
+    (df `gopt_unset` Opt_SpecConstr) `gopt_set` Opt_DeferTypedHoles `gopt_set` Opt_DeferTypeErrors
+#endif
+
 
   addPackageFlags pkgs df =
     df { packageFlags = packageFlags df ++ expose `map` pkgs }
