@@ -326,7 +326,7 @@ score (t, g) = (numHoles t, Map.size (digraph g), length $ connectedComponents g
 
 transesInScope :: M [Trans SyntacticFunc TyCon]
 transesInScope = do
-  namedTys <- fmap catMaybes . mapM (\n -> (n,) <$> nameType n) =<< lift getNamesInScope
+  namedTys <- fmap catMaybes . mapM (\n -> fmap (n,) <$> nameType n) =<< lift getNamesInScope
   ts <- lift traversables
   as <- lift applicatives
   ms <- lift monads
