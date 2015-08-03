@@ -7,6 +7,7 @@ import           Mote.ReadType
 import           Mote.Refine         (tcRnExprTc)
 import           Mote.Types
 import           Mote.Util
+import qualified Mote.Search.Poset as Poset
 import           Prelude             hiding (Word)
 import           Search.Graph        hiding (sequence)
 import           Search.Graph.Types
@@ -28,6 +29,8 @@ import qualified Data.Set            as Set
 import           Data.Traversable    (traverse)
 
 import           GHC
+import Class (classOpItems, classTyVars)
+import Var (tyVarKind)
 import           InstEnv             (ClsInst (..))
 import           Name
 import           Outputable
@@ -38,6 +41,7 @@ import           Type                (dropForAlls, splitFunTys)
 import           TypeRep
 import           UniqSet             (elementOfUniqSet)
 import           Unique              (getKey, getUnique)
+import Var
 
 import           Debug.Trace
 
@@ -81,6 +85,11 @@ search stRef = do
 
 -- TODO: SyntacticFuncs should be bundled with the variables that they're
 -- universally quantified over
+
+data TypeFunction
+  = TFTyCon TyCon
+  | TFTVar Var
+
 
 type SyntacticFunc = (TyCon, [WrappedType])
 data TransInterpretation = TransInterpretation
@@ -163,9 +172,60 @@ instancesOneParamFunctorClass name =
     Just (_,_,insts,_) -> mapMaybe (extractUnapplied . head . is_tys) insts
     Nothing            -> []
 
+relevantMethods :: GhcMonad m => m [Trans SyntacticFunc TyCon]
+relevantMethods = getNamesInScope >>= fmap concat . mapM (\name ->
+  getInfo True name >>| \case
+    Just (_,_,insts,_) ->
+      case insts of
+        [] -> []
+        x:_ ->
+          let cls = is_cls x in
+          mapMaybe (\(name,_default) ->
+            _)
+            (classOpItems cls)
+
+    Nothing -> [])
+
+  where
+  functorialTyVars =
+    filter (\tv ->
+      case tyVarKind tv of
+        FunTy t t' ->
+          True
+        _ ->
+          False)
+        -- TODO: Casing on x here fails with "Where?". Test it later
+
+{-
+relevantMethods :: GhcMonad m => m  [Trans SyntacticFunc TyCon]
+relevantMethods = getNamesInScope >>= fmap concat . mapM (\name ->
+  getInfo True name >>| \case
+    Just (_,_,insts,_) ->
+      case insts of
+        [] -> []
+        x:_ ->
+          let cls = is_cls x in
+          mapMaybe (\(name,_default) ->
+            _)
+            (classOpItems cls)
+
+    Nothing -> [])
+
+  where
+  functorialTyVars =
+    filter (\tv ->
+      case tyVarKind tv of
+        x -> _)
+        -- TODO: Casing on x here fails with "Where?". Test it later
+-}
+
 extractUnapplied :: Type -> Maybe SyntacticFunc
 extractUnapplied t = case t of
-  TyConApp tc kots -> Just (tc, map WrappedType kots)
+  TyConApp tc kots ->
+    Just (tc, map WrappedType kots)
+
+  AppTy t1 t2 ->
+    fmap (\(f, args) -> (f, WrappedType t2 : args)) (extractUnapplied t1)
   -- TODO: In the future, this should extract applications of type
   -- variables
   _                -> Nothing
@@ -270,7 +330,7 @@ score (t, g) = (numHoles t, Map.size (digraph g), length $ connectedComponents g
 
 transesInScope :: M [Trans SyntacticFunc TyCon]
 transesInScope = do
-  namedTys <- fmap catMaybes . mapM typeName =<< lift getNamesInScope
+  namedTys <- fmap catMaybes . mapM (\n -> (n,) <$> nameType n) =<< lift getNamesInScope
   ts <- lift traversables
   as <- lift applicatives
   ms <- lift monads
@@ -297,12 +357,14 @@ transesInScope = do
         ) ts as
   return $
     concatMap (transes funcSet) namedTys ++ traverses ++ joins
-  where
-  typeName n = do
-    hsc_env <- lift getSession
-    (_errs, mayTy) <- liftIO $
-      runTcInteractive hsc_env . discardConstraints . tcRnExprTc . noLoc . HsVar . Exact $ n
-    return $ fmap (n,) mayTy
+
+nameType :: Name -> M (Maybe Type)
+nameType n = do
+  hsc_env <- lift getSession
+  (_errs, mayTy) <- liftIO $
+    runTcInteractive hsc_env . discardConstraints . tcRnExprTc . noLoc . HsVar . Exact $ n
+  return $ mayTy
+
 
 -- TODO: Turn SyntacticFunc into SyntacticFuncScheme
 -- so runErrorT can work
@@ -509,3 +571,10 @@ TyConApp IO
     ]
   ]
 -}
+
+
+inScopePoset = do
+  names <- getNamesInScope
+  _
+
+

@@ -156,16 +156,19 @@ respond' stRef = \case
 
   -- Precondition here: Hole has already been entered
   CaseFurther var ClientState {} -> do
+    logS stRef "casefurther:0"
     MoteState {..} <- gReadRef stRef
     FileData {path, hsModule} <- getFileDataErr stRef
     hi@(HoleInfo {holeEnv})   <- holeInfo <$> getCurrentHoleErr stRef
 
+    logS stRef "casefurther:1"
     (id, ty) <- maybeThrow (NoVariable var) $
       List.find (\(id,_) -> var == occNameToString (getOccName id)) holeEnv
 
     expansions stRef (occNameToString (getOccName id)) ty (holeSpan hi) hsModule >>= \case
       Nothing                        -> return (Error "Variable not found")
       Just ((L sp _mg, mi), matches) -> do
+        logS stRef "casefurther:2"
         fs <- lift getSessionDynFlags
         unqual <- lift getPrintUnqual
         let span              = toSpan sp
