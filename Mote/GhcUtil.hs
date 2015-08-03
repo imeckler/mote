@@ -111,3 +111,6 @@ splitPredTys :: Type -> ([PredType], Type)
 splitPredTys (FunTy t1 t2) | isPredTy t1 = let (ps, t) = splitPredTys t2 in (t1:ps, t)
 splitPredTys t                           = ([], t)
 
+addPredTys :: [PredType] -> Type -> Type
+addPredTys preds t = foldr FunTy t preds
+

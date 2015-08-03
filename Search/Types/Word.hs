@@ -13,7 +13,13 @@ import Data.Bifoldable
 import Data.Foldable (foldMap)
 import Prelude hiding (Word)
 
+import Outputable hiding ((<>))
+import FastString (sLit)
+
 import Search.Util
+
+instance (Outputable f, Outputable o) => Outputable (Word f o) where
+  ppr (Word fs mo) = ptext (sLit "Word") <+> ppr fs <+> ppr mo
 
 data Word f o = Word [f] (Maybe o)
   deriving (Eq, Ord, Show, Read, Generic)

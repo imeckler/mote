@@ -27,7 +27,7 @@ import           TcExpr              (tcInferRho)
 import           TcMType             (zonkTcType)
 import           TcRnMonad
 import           TcSimplify          (simplifyInfer, simplifyInteractive)
-import           TcType              (UserTypeCtxt (GhciCtxt))
+import           TcType              (UserTypeCtxt (ExprSigCtxt, GhciCtxt))
 import           TcUnify             (tcSubType)
 #if __GLASGOW_HASKELL__ >= 710
 import TcType (TcLevel(..))
@@ -147,9 +147,9 @@ subTypeEvTc t1 t2 = do
   where
   tcSubType' =
 #if __GLASGOW_HASKELL__ < 710
-    tcSubType (AmbigOrigin GhciCtxt)
+    tcSubType (AmbigOrigin ctx)
 #else
     tcSubType
 #endif
-  ctx = GhciCtxt
+  ctx = ExprSigCtxt
 

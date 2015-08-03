@@ -42,6 +42,9 @@ import qualified Mote.Search
 import qualified Search.Graph
 import qualified Search.Graph.Types
 
+-- TODO: DEBUG
+import Scratch
+
 getEnclosingHole :: Ref MoteState -> (Int, Int) -> M (Maybe AugmentedHoleInfo)
 getEnclosingHole stRef pos =
   M.foldrWithKey (\k hi r -> if k `spans` pos then Just hi else r) Nothing
