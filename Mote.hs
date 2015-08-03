@@ -281,10 +281,14 @@ initialState logFile = mkSplitUniqSupply 'x' >>| \uniq -> MoteState
 
 runWithTestRef :: (Ref MoteState -> Ghc b) -> IO b
 runWithTestRef x = do
+  print 0
   home <- getHomeDirectory
+  print 1
   withFile (home </> "testlog") WriteMode $ \logFile -> do
+    print 2
     r <- newRef =<< initialState logFile
-    run $ do { ghcInit r; x r }
+    liftIO $ print 3
+    run $ do { liftIO $ print 4; ghcInit r; liftIO $ print 5; x r }
   where
   ghcInit r = do
     dfs <- getSessionDynFlags
@@ -302,6 +306,10 @@ runWithTestRef' x = do
   withFile (home </> "testlog") WriteMode $ \logFile -> do
     r <- newRef =<< initialState logFile
     run $ do { Mote.Init.initializeWithCabal r; x r }
+
+runWithTestRef'' :: a -> IO ()
+runWithTestRef'' x = do
+  print 0
 
 run :: Ghc a -> IO a
 run = runGhc (Just libdir)

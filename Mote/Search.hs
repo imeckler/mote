@@ -168,52 +168,6 @@ instancesOneParamFunctorClass name =
     Just (_,_,insts,_) -> mapMaybe (extractUnapplied . head . is_tys) insts
     Nothing            -> []
 
-relevantMethods :: GhcMonad m => m [Trans SyntacticFunc TyCon]
-relevantMethods = getNamesInScope >>= fmap concat . mapM (\name ->
-  getInfo True name >>| \case
-    Just (_,_,insts,_) ->
-      case insts of
-        [] -> []
-        x:_ ->
-          let cls = is_cls x in
-          mapMaybe (\(name,_default) ->
-            _)
-            (classOpItems cls)
-
-    Nothing -> [])
-
-  where
-  functorialTyVars =
-    filter (\tv ->
-      case tyVarKind tv of
-        FunTy t t' ->
-          True
-        _ ->
-          False)
-        -- TODO: Casing on x here fails with "Where?". Test it later
-
-{-
-relevantMethods :: GhcMonad m => m  [Trans SyntacticFunc TyCon]
-relevantMethods = getNamesInScope >>= fmap concat . mapM (\name ->
-  getInfo True name >>| \case
-    Just (_,_,insts,_) ->
-      case insts of
-        [] -> []
-        x:_ ->
-          let cls = is_cls x in
-          mapMaybe (\(name,_default) ->
-            _)
-            (classOpItems cls)
-
-    Nothing -> [])
-
-  where
-  functorialTyVars =
-    filter (\tv ->
-      case tyVarKind tv of
-        x -> _)
-        -- TODO: Casing on x here fails with "Where?". Test it later
--}
 
 extractUnapplied :: Type -> Maybe SyntacticFunc
 extractUnapplied t = case t of
@@ -493,10 +447,5 @@ TyConApp IO
     ]
   ]
 -}
-
-
-inScopePoset = do
-  names <- getNamesInScope
-  _
 
 
