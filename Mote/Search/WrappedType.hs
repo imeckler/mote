@@ -6,11 +6,11 @@ import Data.Hashable
 import TypeRep
 import Unique
 import qualified Data.List as List
-import Type (cmpType)
+import Type (cmpType, eqType)
 
 newtype WrappedType = WrappedType { unwrapType :: Type }
 instance Eq WrappedType where
-  (==) (WrappedType t) (WrappedType t') = eqTy t t'
+  (==) (WrappedType t) (WrappedType t') = eqType t t'
 
 instance Ord WrappedType where
   compare (WrappedType t) (WrappedType t') = cmpType t t'
@@ -18,18 +18,6 @@ instance Ord WrappedType where
 instance Outputable WrappedType where
   ppr (WrappedType t) = ppr t
   pprPrec r (WrappedType t) = pprPrec r t
-
--- Hacky syntactic equality for Type so that it can be used as the functor
--- parameter in all the Search types
-eqTy :: Type -> Type -> Bool
-eqTy x y = case (x, y) of
-  (AppTy t1 t2, AppTy t1' t2')           -> eqTy t1 t1' && eqTy t2 t2'
-  (TyConApp tc kots, TyConApp tc' kots') -> tc == tc' && and (zipWith eqTy kots kots')
-  (FunTy t1 t2, FunTy t1' t2')           -> eqTy t1 t1' && eqTy t2 t2'
-  (ForAllTy v t, ForAllTy v' t')         -> v == v' && eqTy t t'
-  (LitTy tl, LitTy tl')                  -> tl == tl'
-  (TyVarTy v, TyVarTy v')                -> v == v'
-  _                                      -> False
 
 instance Hashable WrappedType where
   hashWithSalt s (WrappedType t) = hashTypeWithSalt s t

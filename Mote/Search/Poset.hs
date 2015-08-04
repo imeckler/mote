@@ -12,9 +12,7 @@ import qualified Data.Set as Set
 import qualified Data.List as List
 import qualified Control.Exception as Exception
 import qualified Data.Dynamic as Dynamic
-
-import Outputable (Outputable, ppr, ptext, (<+>), braces, fsep, punctuate, comma)
-import FastString (sLit)
+import Mote.Search.Poset.ElementData
 
 import Mote.Util
 
@@ -36,25 +34,6 @@ flipOrder ord =
 pairs :: [a] -> [(a, a)]
 pairs []     = []
 pairs (x:xs) = map (x,) xs ++ pairs xs
-
-data ElementData k v =
-  ElementData
-  { above :: Set.Set k
-  , below :: Set.Set k
-  , value :: v
-  }
-  deriving (Show, Eq)
-
-instance (Outputable k, Outputable v) => Outputable (ElementData k v) where
-  ppr (ElementData {..}) =
-    ptext (sLit "ElementData") <+>
-      braces
-        (fsep
-          (punctuate comma 
-            [ ptext (sLit "above =") <+> ppr above
-            , ptext (sLit "below =") <+> ppr below
-            , ptext (sLit "value =") <+> ppr value
-            ]))
 
 type HashTable k v
   = HashTable.BasicHashTable k v
