@@ -2,7 +2,7 @@
 
 {-# LANGUAGE CPP #-}
 
-module Unify (
+module Cloned.Unify (
         -- Matching of types:
         --      the "tc" prefix indicates that matching always
         --      respects newtypes (rather than looking through them)
@@ -15,12 +15,11 @@ module Unify (
 
         -- Side-effect free unification
         tcUnifyTy, tcUnifyTys, BindFlag(..),
+        tcUnifyTyExtending,
 
         UnifyResultM(..), UnifyResult, tcUnifyTysFG
 
    ) where
-
-#include "HsVersions.h"
 
 import Var
 import VarEnv
@@ -446,6 +445,16 @@ tcUnifyTy ty1 ty2
   = case initUM (const BindMe) (unify emptyTvSubstEnv ty1 ty2) of
       Unifiable subst_env -> Just (niFixTvSubst subst_env)
       _other              -> Nothing
+
+tcUnifyTyExtending
+  :: TvSubstEnv
+  -> Type -> Type
+  -> Maybe TvSubstEnv
+tcUnifyTyExtending initSubst ty1 ty2
+  = case initUM (const BindMe) (unify initSubst ty1 ty2) of
+      Unifiable subst_env -> Just subst_env
+      _other              -> Nothing
+
 
 -----------------
 tcUnifyTys :: (TyVar -> BindFlag)

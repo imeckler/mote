@@ -9,7 +9,7 @@ import           Data.Bifoldable
 import           Data.Bifunctor
 import           Data.Bitraversable
 import           Data.Foldable
-import           Data.Maybe              (catMaybes, isJust, isNothing, fromJust)
+import           Data.Maybe              (catMaybes, isJust, isNothing, fromJust, mapMaybe)
 import           Data.Monoid
 import Data.Hashable
 import qualified Data.Map as Map
@@ -52,6 +52,7 @@ import qualified InstEnv
 import qualified TcEnv
 import qualified VarSet
 import qualified UniqFM
+import qualified Cloned.Unify
 import qualified Unify
 import qualified BasicTypes
 import qualified Data.HashTable.IO as HashTable
@@ -62,6 +63,7 @@ import           FastString              (sLit)
 import           Outputable              (Outputable, comma, fsep, ppr, ptext,
                                           punctuate, showSDoc, (<+>), braces)
 
+import Cloned.Unify
 import Debug.Trace
 
 -- First we make a poset of the things in scope ordered by their
@@ -349,7 +351,7 @@ x i r = do
 
   unifs <- lift . fmap (map (\(_,unifs,_) -> unifs)) $ f (map unwrapType (context someInterp))
   lift $ output (name someInterp, context someInterp, unifs)
-
+  liftIO $ print "coming soon"
   lift $ output $ moreSpecificContexts instEnvs (map unwrapType (context someInterp))
 
 newTyVar :: (GhcMonad m) => m Var
@@ -411,31 +413,38 @@ moreSpecificContexts instEnvs predTys =
         unifs)
         predTys
   in
-  go substses0
+  go Type.emptyTvSubstEnv substses0
   where
+
+  uniquesToVars :: UniqFM.UniqFM Var
+  uniquesToVars = tyVarsOfTypes predTys
+
   go :: Type.TvSubstEnv -> [[(ClsInst, TvSubst)]] -> [[(ClsInst, TvSubst)]]
   go commitments [] = [ [] ]
   go commitments (substsForCls : substses) =
     concatMap (\instAndSubst@(_, subst1) ->
-      _
-      )
-      {-
-      map (instAndSubst :)
-        (go
-          (map
-            (filter (\(_, subst2) ->
-              agreeOnCommonVars subst1 subst2))
-            substses))) -}
+      case extendMany commitments (Type.getTvSubstEnv subst1) of
+        Nothing ->
+          []
+
+        Just commitments' ->
+          map (instAndSubst :)
+            (go commitments' substses))
       substsForCls
     where
-    {-
-    tryToMerge substEnv1 substEnv2 =
-      agreeOnCommonVars subst1 subst2 =
-        UniqFM.foldUFM (&&) True
-          (UniqFM.intersectUFM_C Type.eqType
-            (Type.getTvSubstEnv subst1)
-            (Type.getTvSubstEnv subst2)) -- (UniqFM.intersectUFM_C Type.eqType subst1 subst1)
--}
+    extendMany substEnv0 substEnv_new =
+      loop substEnv0
+        (mapMaybe
+          (\(u, ty) -> (,ty) <$> UniqFM.lookupUFM_Directly uniquesToVars u)
+          (UniqFM.ufmToList substEnv_new))
+      where
+      loop substEnv [] =
+        Just substEnv
+
+      loop substEnv ((var, ty) : bindings) =
+        extendEnv substEnv var ty >>= \substEnv' ->
+        loop substEnv' bindings
+
 moreSpecificPredecessors
   :: InstEnv.InstEnvs
   -> WrappedType
@@ -748,6 +757,6 @@ insert_overlapping new_item (old_item : old_items)
        -- Latest change described in: Trac #9242.
        -- Previous change: Trac #3877, Dec 10.
 
-unifyWithVar :: _
-unifyWithVar subst v ty =
-  Unify.tcUnifyTy (TyVarTy v) ty
+extendEnv :: Type.TvSubstEnv -> Var -> Type -> Maybe Type.TvSubstEnv
+extendEnv subst v ty =
+  Cloned.Unify.tcUnifyTyExtending subst (TyVarTy v) ty -- Unify.tcUnifyTyWithSubst subst (TyVarTy v) ty
