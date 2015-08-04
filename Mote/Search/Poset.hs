@@ -10,6 +10,8 @@ import Data.Maybe (isJust, catMaybes)
 import Data.Monoid ((<>))
 import qualified Data.Set as Set
 import qualified Data.List as List
+import qualified Control.Exception as Exception
+import qualified Data.Dynamic as Dynamic
 
 import Outputable (Outputable, ppr, ptext, (<+>), braces, fsep, punctuate, comma)
 import FastString (sLit)
@@ -59,6 +61,15 @@ type HashTable k v
 
 type PosetStore k v
   = HashTable k (ElementData k v)
+
+insert
+  :: (MonadIO m, Hashable k, Ord k, Monoid v)
+  => (k -> k -> m PartialOrdering)
+  -> k -> v
+  -> PosetStore k v
+  -> m ()
+insert f k v table =
+  _
 
 -- n^2 don't care
 fromList
@@ -139,6 +150,7 @@ fromList cmp xs = do
               (Set.insert k_x usedKeys)
               xs'
 
+  -- TODO: Convert to using foldM
   liftIO (go Set.empty Set.empty =<< HashTable.toList table_tmp)
 
   return table
@@ -171,4 +183,27 @@ minimalElements =
     []
   where
   isMinimal (ElementData {above}) = Set.null above
+
+data Processing a
+  = Done a
+  | Continue a
+  deriving (Show, Eq, Ord)
+
+-- Exceptions are awesome.
+hashTableFoldBreak
+  :: (Dynamic.Typeable a,  Ord k, Hashable k)
+  => (a -> (k, v) -> IO (Processing a))
+  -> a
+  -> HashTable k v
+  -> IO a
+hashTableFoldBreak f z h =
+  HashTable.foldM (\s kv ->
+    f s kv >>= \case
+      Done s' ->
+        Exception.throwIO (Dynamic.toDyn s')
+      Continue s' ->
+        return s')
+    z h
+  `Exception.catch`
+  \e -> return (Dynamic.fromDyn e z)
 
