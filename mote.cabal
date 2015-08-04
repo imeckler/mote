@@ -49,7 +49,7 @@ executable searchtest
 
 
   default-language:    Haskell2010
-  ghc-options: -O2 -W
+  ghc-options: -O2 -W 
 
 executable mote
   main-is: Mote.hs
