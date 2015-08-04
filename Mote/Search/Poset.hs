@@ -50,12 +50,12 @@ type PosetStore k v =
   HashTable k (ElementData k v)
 
 -- n^2 don't care
-fromList'
+fromList
   :: (MonadIO m, Hashable k, Ord k, Monoid v)
   => (k -> k -> m PartialOrdering)
   -> [(k, v)]
   -> m (PosetStore k v)
-fromList' cmp xs = do
+fromList cmp xs = do
   table_tmp <- liftIO (HashTable.new :: IO (HashTable k (HashTable k Ordering, v)))
   let
     getCreateSubTable (k, v) =
@@ -139,67 +139,6 @@ fromList' cmp xs = do
           -- y < x
           GT ->
             (k_y : bel, eq, abv)
-
-fromList
-  :: (MonadIO m, Hashable k, Ord k, Monoid v)
-  => (k -> k -> m PartialOrdering)
-  -> [(k, v)]
-  -> m (PosetStore k v)
-fromList cmp xs = do
-  table <- liftIO HashTable.new
-
-  let
-    getCreateElementData (k, v) =
-      HashTable.lookup table k >>= \case
-        Just eltData ->
-          return eltData
-
-        Nothing -> do
-          let
-            eltData =
-              ElementData { above = Set.empty, below = Set.empty, value = v }
-          HashTable.insert table k eltData
-          return eltData
-
-  mapM_ (\(x@(k_x,_), y@(k_y,value_y)) -> do
-    pord <- cmp k_x k_y
-    case pord of
-      Nothing ->
-        return ()
-
-      Just EQ ->
-        liftIO $ do
-          ElementData {above=above_x,below=below_x,value=value_x} <- getCreateElementData x
-          ElementData {above=above_y,below=below_y,value=_} <- getCreateElementData y
-          HashTable.delete table k_y
-          HashTable.insert table k_x
-            (ElementData
-            { above = Set.union above_x above_y
-            , below = Set.union below_x below_y
-            , value = value_x <> value_y
-            })
-
-      Just o ->
-        liftIO $ do
-          print o
-          eltData_x <- getCreateElementData x
-          eltData_y <- getCreateElementData y
-          case o of
-            -- x < y
-            LT -> do
-              HashTable.insert table k_x
-                (eltData_x { above = Set.insert k_y (above eltData_x) })
-              HashTable.insert table k_y
-                (eltData_y { below = Set.insert k_x (below eltData_y) })
-            -- y < x
-            _ -> do
-              HashTable.insert table k_x
-                (eltData_x { below = Set.insert k_y (below eltData_x) })
-              HashTable.insert table k_y
-                (eltData_y { above = Set.insert k_x (above eltData_y) }))
-    (pairs xs)
-
-  return table
 
 -- tbl ! x ! y === compare x y
 
