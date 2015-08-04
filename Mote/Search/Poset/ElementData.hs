@@ -2,6 +2,7 @@
 module Mote.Search.Poset.ElementData where
 
 import qualified Data.Set as Set
+import qualified Data.Map as Map
 import Outputable (Outputable, ppr, ptext, (<+>), braces, fsep, punctuate, comma)
 import FastString (sLit)
 import Data.Monoid ((<>))

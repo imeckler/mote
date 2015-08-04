@@ -23,7 +23,7 @@ import           Mote.Types
 import           Mote.Util
 import           Search.Types.Word       (Word (..))
 import qualified Search.Types.Word       as Word
-import qualified Mote.Search.Poset as Poset
+-- import qualified Mote.Search.Poset as Poset
 import Mote.Search.Poset
 import qualified Mote.Search.Poset.ElementData as ElementData
 import qualified Mote.Search.Poset.Pure as PurePoset
@@ -204,6 +204,8 @@ toStringyData =
   toStr o = fmap (\fs -> showSDoc fs (ppr o)) getSessionDynFlags
 
 -- TODO: Check that no other arg of targSfs contains the inner poly var
+-- TODO: Should disallow transes whose from ConstantFunctor is a tyvar
+-- different from the inner polyvar of the target
 natTransInterpretations :: (Name, Type) -> [NatTransData NatTransContext ConstantFunctor]
 natTransInterpretations (name, t0) =
   catMaybes (zipWith interp [0..] args)
@@ -369,7 +371,7 @@ newTyVar = do
 compareFromTypes
   :: WrappedType -- NatTransData NatTransContext ConstantFunctor
   -> WrappedType -- NatTransData NatTransContext ConstantFunctor
-  -> M Poset.PartialOrdering
+  -> M (Maybe Ordering)
 compareFromTypes (WrappedType t1_0) (WrappedType t2_0) = do
   -- TODO: Not sure if it's kosher to get one "v" like this.
   hsc_env0 <- lift getSession
@@ -434,6 +436,9 @@ moreSpecificContexts instEnvs predTys =
     where
     extendMany substEnv0 substEnv_new =
       loop substEnv0
+      -- TODO: This is wrong.
+      -- If it isn't in the map, it should be in the inScope or whatever
+      -- and added to the thing.
         (mapMaybe
           (\(u, ty) -> (,ty) <$> UniqFM.lookupUFM_Directly uniquesToVars u)
           (UniqFM.ufmToList substEnv_new))
