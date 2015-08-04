@@ -1,4 +1,4 @@
-{-# LANGUAGE TupleSections, ScopedTypeVariables, LambdaCase, NamedFieldPuns #-}
+{-# LANGUAGE TupleSections, ScopedTypeVariables, LambdaCase, NamedFieldPuns, RecordWildCards #-}
 module Mote.Search.Poset where
 
 import qualified Data.HashTable.IO as HashTable
@@ -11,7 +11,7 @@ import Data.Monoid ((<>))
 import qualified Data.Set as Set
 import qualified Data.List as List
 
-import Outputable (Outputable, ppr, ptext)
+import Outputable (Outputable, ppr, ptext, (<+>), braces, fsep, punctuate, comma)
 import FastString (sLit)
 
 import Mote.Util
@@ -41,13 +41,24 @@ data ElementData k v =
   , below :: Set.Set k
   , value :: v
   }
-  deriving (Show)
+  deriving (Show, Eq)
+
+instance (Outputable k, Outputable v) => Outputable (ElementData k v) where
+  ppr (ElementData {..}) =
+    ptext (sLit "ElementData") <+>
+      braces
+        (fsep
+          (punctuate comma 
+            [ ptext (sLit "above =") <+> ppr above
+            , ptext (sLit "below =") <+> ppr below
+            , ptext (sLit "value =") <+> ppr value
+            ]))
 
 type HashTable k v
   = HashTable.BasicHashTable k v
 
-type PosetStore k v =
-  HashTable k (ElementData k v)
+type PosetStore k v
+  = HashTable k (ElementData k v)
 
 -- n^2 don't care
 fromList
@@ -85,7 +96,7 @@ fromList cmp xs = do
   table <- liftIO HashTable.new
 
   let
-    { getCreateSubTable (k, v) =
+    getCreateSubTable (k, v) =
       HashTable.lookup table k >>= \case
         Just eltData ->
           return eltData
@@ -99,14 +110,20 @@ fromList cmp xs = do
 
     -- This is what we in the business call a very stupid algorithm.
     -- Would be better to "contract equality edges".
-    ; go seen xs =
+    go seen usedKeys xs =
       case xs of
         [] ->
-          return ()
+          HashTable.mapM_ (\(k_x, eltData_x) ->
+            HashTable.insert table k_x
+              (eltData_x
+              { above = Set.intersection usedKeys (above eltData_x)
+              , below = Set.intersection usedKeys (below eltData_x)
+              }))
+            table
 
         (k_x, (tbl_x, val_x)) : xs' ->
           if k_x `Set.member` seen
-          then go seen xs'
+          then go seen usedKeys xs'
           else do
             ys <- HashTable.toList tbl_x
             let (bel, eq, abv) = partition ys
@@ -117,10 +134,12 @@ fromList cmp xs = do
               , below = Set.fromList bel
               , value = val_x <> mconcat (catMaybes mayVals)
               })
-            go (List.foldl' (flip Set.insert) seen eq) xs'
-    }
+            go
+              (Set.insert k_x (List.foldl' (flip Set.insert) seen eq))
+              (Set.insert k_x usedKeys)
+              xs'
 
-  liftIO (go Set.empty =<< HashTable.toList table_tmp)
+  liftIO (go Set.empty Set.empty =<< HashTable.toList table_tmp)
 
   return table
   where
