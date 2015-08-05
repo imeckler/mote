@@ -443,9 +443,9 @@ monomorphizings instEnvs (predTys0, ty0) = go 2 predTys0 ty0
 
 moreSpecificMonomorphizedContexts
   :: InstEnv.InstEnvs
-  -> [PredType]
-  -> [Type.TvSubst]
-moreSpecificMonomorphizedContexts instEnvs = go 2 _
+  -> _ -- [PredType]
+  -> _ -- [Type.TvSubst]
+moreSpecificMonomorphizedContexts instEnvs = _
   where
   go 0 _ _ = []
   go fuel subst predTys = _ {-
