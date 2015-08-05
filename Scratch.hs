@@ -9,7 +9,7 @@ import           Data.Bifoldable
 import           Data.Bifunctor
 import           Data.Bitraversable
 import           Data.Foldable
-import           Data.Maybe              (catMaybes, isJust, isNothing, fromJust, mapMaybe)
+import           Data.Maybe              (catMaybes, isJust, isNothing, fromJust, mapMaybe, fromMaybe)
 import           Data.Monoid
 import Data.Hashable
 import qualified Data.Map as Map
@@ -25,7 +25,7 @@ import           Search.Types.Word       (Word (..))
 import qualified Search.Types.Word       as Word
 -- import qualified Mote.Search.Poset as Poset
 import Mote.Search.Poset
-import qualified Mote.Search.Poset.ElementData as ElementData
+-- import qualified Mote.Search.Poset.ElementData as ElementData
 import qualified Mote.Search.Poset.Pure as PurePoset
 import qualified Mote.LoadFile as LoadFile
 
@@ -56,6 +56,10 @@ import qualified Cloned.Unify
 import qualified Unify
 import qualified BasicTypes
 import qualified Data.HashTable.IO as HashTable
+import qualified TcType
+import qualified Id
+import qualified Data.HashMap.Strict as HashMap
+import qualified PrelNames
 
 import qualified Unsafe.Coerce
 
@@ -203,12 +207,15 @@ toStringyData =
   where
   toStr o = fmap (\fs -> showSDoc fs (ppr o)) getSessionDynFlags
 
+isReasonableTrans :: NatTransData NatTransContext ConstantFunctor -> Bool
+isReasonableTrans nd = numberOfArguments nd < 4
+
 -- TODO: Check that no other arg of targSfs contains the inner poly var
 -- TODO: Should disallow transes whose from ConstantFunctor is a tyvar
 -- different from the inner polyvar of the target
 natTransInterpretations :: (Name, Type) -> [NatTransData NatTransContext ConstantFunctor]
 natTransInterpretations (name, t0) =
-  catMaybes (zipWith interp [0..] args)
+  filter isReasonableTrans $ catMaybes (zipWith interp [0..] args)
   where
   (_polyVars, t1)   = splitForAllTys t0
   (predTys, t)      = splitPredTys t1
@@ -340,21 +347,35 @@ x i r = do
   let interps = concatMap natTransInterpretations typedNames
 
   v <- lift $ newTyVar
-  {-
-  poset <- Poset.fromList compareFromTypes
-    (map (\nd -> (WrappedType (contextualizedFromType nd v), [nd])) interps) -}
-
-  let someInterps = List.filter ((> 1) . length . context) interps -- (!! i) interps
-  let someInterp = (!! 41) someInterps
-  lift $ output $ zip [(0::Int)..] (map name someInterps)
-
   hsc_env <- lift getSession
   (_messages, Just instEnvs) <- liftIO (runTcInteractive hsc_env TcEnv.tcGetInstEnvs)
+  let someInterps = List.filter ((> 1) . length . context) interps -- (!! i) interps
+  let someInterp = (!! i) someInterps
+
+  lift . output $
+    monomorphizings instEnvs
+      (map unwrapType (context someInterp), uncontextualizedFromType (\x -> case x of
+        ConstantFunctorTyVar v -> TyVarTy v
+        ConstantFunctorTyCon tc -> TyConApp tc []) someInterp v)
+
+  lift . forM_ (zip [(0::Int)..] interps) $ \(i, interp) -> do
+    output $ (i, interp)
+    output . length . take 100 $
+      monomorphizings instEnvs
+        (map unwrapType (context interp), uncontextualizedFromType (\x -> case x of
+          ConstantFunctorTyVar v -> TyVarTy v
+          ConstantFunctorTyCon tc -> TyConApp tc []) interp v)
+
+{-
+  liftIO $ print (length interps)
+  lift $ output $ zip [(0::Int)..] (map name someInterps)
+
 
   unifs <- lift . fmap (map (\(_,unifs,_) -> unifs)) $ f (map unwrapType (context someInterp))
   lift $ output (name someInterp, context someInterp, unifs)
   liftIO $ print "coming soon"
-  lift $ output $ moreSpecificContexts instEnvs (map unwrapType (context someInterp))
+  lift $ output $ (someInterp, moreSpecificContexts instEnvs (map unwrapType (context someInterp))) -}
+
 
 newTyVar :: (GhcMonad m) => m Var
 newTyVar = do
@@ -401,47 +422,140 @@ compareFromTypes (WrappedType t1_0) (WrappedType t2_0) = do
     (Nothing, Nothing) ->
       Nothing
 
+monomorphizings
+  :: InstEnv.InstEnvs
+  -> ([PredType], Type)
+  -> [Type]
+monomorphizings instEnvs (predTys0, ty0) = go 2 predTys0 ty0
+  where
+  -- We're as productive as possible
+  go 0 _ _ = []
+  go fuel predTys ty =
+    let
+      contextsAndSubsts =
+        moreSpecificContexts instEnvs predTys
+
+      (readyToGo, keepCooking) =
+        List.partition (\(predTys',_) -> List.null predTys') $ contextsAndSubsts
+    in
+    List.map (\(_, subst) -> Type.substTy subst ty) readyToGo
+    ++ concatMap (\(predTys, subst) -> go (fuel - 1) predTys (Type.substTy subst ty)) keepCooking
+
+{- TODO: Report that this code's failure to type check triggers a panic.
+λ > runWithTestRef $ runErrorT  . x 10
+
+<interactive>:6:18: Warning:
+    In the use of ‘runErrorT’
+    (imported from Control.Monad.Error, but defined in Control.Monad.Trans.Error):
+    Deprecated: "Use Control.Monad.Trans.Except instead"
+ghc: panic! (the 'impossible' happened)
+  (GHC version 7.10.1 for x86_64-unknown-linux):
+	nameModule $dNum_a1huO
+
+moreSpecificMonomorphizedContexts
+  :: InstEnv.InstEnvs
+  -> [PredType]
+  -> [Type.TvSubst]
+moreSpecificMonomorphizedContexts instEnvs = go 2 Type.emptyTvSubst
+  where
+  go 0 _ _ = []
+  go fuel subst predTys =
+    let
+      contextsAndSubsts =
+        moreSpecificContexts instEnvs predTys
+      (readyToGo, keepCooking) =
+        List.partition (\(predTys',_) -> List.null predTys') $ contextsAndSubsts
+    in
+    List.map (\(_, subst') ->
+      let
+        inScope = Type.getTvInScope subst'
+      in
+      Type.mkTvSubst inScope
+        (Type.composeTvSubst
+          inScope
+          (Type.getTvSubstEnv subst')
+          (Type.getTvSubstEnv subst)))
+      readyToGo
+    ++ concatMap (\(predTys', subst') -> go (fuel - 1) _ predTys') keepCooking
+-}
 moreSpecificContexts
   :: InstEnv.InstEnvs
   -> [PredType]
-  -> _
+  -> [ ([PredType], Type.TvSubst) ]
 moreSpecificContexts instEnvs predTys =
   let
     substses0 =
       map (\predTy ->
-        let (cls, args) = Type.getClassPredTys predTy
-            (matches, unifs, _) = lookupInstEnv instEnvs cls args
+        let
+          (cls, args) =
+            Type.getClassPredTys predTy
+          (matches, unifs, _) =
+            lookupInstEnv instEnvs cls args
         in
         unifs)
         predTys
   in
-  go Type.emptyTvSubstEnv substses0
+  map (first (concatMap instConstraints)) $ go Type.emptyTvSubst substses0
   where
-
   uniquesToVars :: UniqFM.UniqFM Var
   uniquesToVars = tyVarsOfTypes predTys
 
-  go :: Type.TvSubstEnv -> [[(ClsInst, TvSubst)]] -> [[(ClsInst, TvSubst)]]
-  go commitments [] = [ [] ]
-  go commitments (substsForCls : substses) =
-    concatMap (\instAndSubst@(_, subst1) ->
-      case extendMany commitments (Type.getTvSubstEnv subst1) of
-        Nothing ->
-          []
+  instConstraints :: ClsInst -> [PredType]
+  instConstraints inst =
+    let
+      dfun =
+        InstEnv.is_dfun inst
+      (_tvs, theta0, _res_ty) =
+        TcType.tcSplitSigmaTy (idType dfun)
+      theta =
+        drop (Id.dfunNSilent dfun) theta0
+    in
+    theta
 
-        Just commitments' ->
-          map (instAndSubst :)
-            (go commitments' substses))
+  acceptableSubst subst =
+    UniqFM.foldUFM (\t b ->
+      case t of
+        TyConApp tc kots ->
+          -- TODO: Change this to use Uniques. PrelNames.proxyPrimTyConKey
+          -- is the wrong one.
+          if nameToString (getName tc) == "Proxy"
+          then False
+          else b
+        _ ->
+          b)
+      True
+      (Type.getTvSubstEnv subst)
+
+  go :: Type.TvSubst -> [ [(ClsInst, TvSubst)] ]  -> [ ([ClsInst], Type.TvSubst) ]
+  go commitments [] = [ ([], commitments) ]
+  go commitments (substsForCls : substses) =
+    concatMap (\(inst1, subst1) ->
+      if acceptableSubst subst1
+      then 
+        case extendMany commitments subst1 of
+          Nothing ->
+            []
+
+          Just commitments' ->
+            map (first (inst1 :))
+              (go commitments' substses)
+      else [])
       substsForCls
     where
-    extendMany substEnv0 substEnv_new =
-      loop substEnv0
-      -- TODO: This is wrong.
-      -- If it isn't in the map, it should be in the inScope or whatever
-      -- and added to the thing.
-        (mapMaybe
-          (\(u, ty) -> (,ty) <$> UniqFM.lookupUFM_Directly uniquesToVars u)
-          (UniqFM.ufmToList substEnv_new))
+    extendMany :: Type.TvSubst -> Type.TvSubst -> Maybe Type.TvSubst
+    extendMany subst0 subst_new =
+      let
+        maySubstEnv' =
+          loop (Type.getTvSubstEnv subst0)
+            (mapMaybe
+              (\(u, ty) -> (,ty) <$> UniqFM.lookupUFM_Directly uniquesToVars u)
+              (UniqFM.ufmToList (Type.getTvSubstEnv subst_new)))
+      in
+      Type.mkTvSubst
+        (VarEnv.unionInScope
+          (Type.getTvInScope subst0)
+          (Type.getTvInScope subst_new))
+      <$> maySubstEnv'
       where
       loop substEnv [] =
         Just substEnv
@@ -470,11 +584,25 @@ moreSpecificPredecessors instEnvs (WrappedType ty0) =
         substses
     -}
   in
+          -- (cls, args) = Type.getClassPredTys predTy
   moreSpecificContexts instEnvs predTys
+
+-- Checks if t1 is as general as t2
+match :: Type -> Type -> Maybe Type.TvSubst
+match t1_0 t2_0 =
+  let
+    t1 = Type.dropForAlls t1_0
+    t2 = Type.dropForAlls t2_0
+  in
+  Unify.tcMatchTy
+    (Type.tyVarsOfType t1)
+    t1
+    t2
 
 -- It's very possible that the "above" pointers get broken. That's not so
 -- bad since "below" is what we really care about, but they do need to be
 -- fixed before finding minimal elements
+{-
 addMoreSpecificPredecessorsToPoset
   :: (WrappedType, [WrappedType])
   -> PurePoset.PosetStore WrappedType [NatTransContext]
@@ -501,7 +629,7 @@ addMoreSpecificPredecessorsToPoset (ty, specTys) poset0 =
         HashTable.insert poset specTy (ed { ElementData.below = _ })
       Nothing -> _)
     specTys -}
-
+-}
 instances :: GhcMonad m => NatTransContext -> m [(NatTransContext, TvSubst)]
 instances constraints =
   _
@@ -577,6 +705,115 @@ contextualizedFromType (NatTransData {context, from}) innerVar =
             else
               TyConApp tc
                 (args ++ [stitchUp fs' innerTy])
+
+
+type Map = Map.Map -- TODO: Switch to IntMap for performance
+data ElementData
+  = ElementData
+  { above :: Map WrappedType Type.TvSubst -- More specific types
+  -- , below :: Map WrappedType Type.TvSubst
+  , natTranses :: HashMap.HashMap (Int, Int) (NatTransData () Type) -- transes keyed by their name and functorArgumentPosition
+  }
+
+typePoset ::
+  Var -- A fresh var which we apply the from-type-functors to
+  -> [(Type, [ NatTransData () Type ])] -- NatTranses by monomorphized pre-cooked from-type
+  ->
+    Map.Map
+      WrappedType -- monomorphized type
+      ElementData
+typePoset freshVar transesByType =
+  let
+    addAbove tyBottom tyTop substBottomToTop ndsBottom =
+      Map.alter (\case
+        Nothing ->
+          Just
+          (ElementData
+          { above = Map.singleton (WrappedType tyTop) substBottomToTop
+          , natTranses = transMapFromList ndsBottom
+          })
+
+        Just ed ->
+          Just
+          (ed
+          { above = Map.insert (WrappedType tyTop) substBottomToTop (above ed)
+          }))
+        (WrappedType tyBottom)
+  in
+  List.foldl'
+    (\m ((fromTy1, nds1), (fromTy2, nds2)) ->
+      case (match fromTy1 fromTy2, match fromTy2 fromTy1) of
+        -- The two are unrelated
+        (Nothing, Nothing) ->
+          m
+
+        -- fromTy1 is strictly more general than fromTy2
+        (Just subst1to2, Nothing) ->
+          addAbove fromTy1 fromTy2 subst1to2 nds1 m
+
+        -- fromTy2 is strictly more general than fromTy1
+        (Nothing, Just subst2to1) ->
+          addAbove fromTy2 fromTy1 subst2to1 nds2 m
+
+        (Just subst1to2, Just subst2to1) ->
+          let
+            defaultData =
+              ElementData Map.empty HashMap.empty
+          in
+          let
+            ElementData {above=above1, natTranses=natTranses1} =
+              fromMaybe defaultData (Map.lookup (WrappedType fromTy1) m)
+            (fromMaybe defaultData -> ElementData {above=above2,natTranses=natTranses2}, m') = 
+              Map.updateLookupWithKey (\_ _ -> Nothing) (WrappedType fromTy2) m
+          in
+          Map.insert
+            (WrappedType fromTy1)
+            (ElementData
+            { above = Map.union above1 above2
+            , natTranses = HashMap.union natTranses1 natTranses2 
+            })
+            m')
+    Map.empty
+    (pairs transesByType)
+  where
+  transMapFromList =
+    HashMap.fromList . map (\nd -> ((getKey (getUnique (name nd)), functorArgumentPosition nd), nd))
+
+  pairs :: [a] -> [(a, a)]
+  pairs []     = []
+  pairs (x:xs) = map (x,) xs ++ pairs xs
+
+
+uncontextualizedFromType :: (constant -> Type) -> NatTransData context constant -> Var -> Type
+uncontextualizedFromType conv (NatTransData {from = Word fs inner}) freshVar =
+  stitchUp fs 
+  where
+  innerTy =
+    maybe (TyVarTy freshVar) conv inner
+
+  stitchUp fs =
+    case fs of
+      [] ->
+        innerTy
+
+      (tyFun, map unwrapType -> args) : fs' ->
+        case tyFun of
+          TypeFunctionTyVar v ->
+            AppTy 
+              (foldl
+                (\r arg -> AppTy r arg)
+                (TyVarTy v)
+                args)
+              (stitchUp fs')
+
+          TypeFunctionTyCon tc ->
+            if isFunTyCon tc
+            then
+              let [arg] = args in
+              FunTy arg (stitchUp fs')
+            else
+              TyConApp tc
+                (args ++ [stitchUp fs'])
 
 nameType :: Name -> M (Maybe Type)
 nameType n = do
