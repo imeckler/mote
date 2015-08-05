@@ -441,25 +441,14 @@ monomorphizings instEnvs (predTys0, ty0) = go 2 predTys0 ty0
     List.map (\(_, subst) -> Type.substTy subst ty) readyToGo
     ++ concatMap (\(predTys, subst) -> go (fuel - 1) predTys (Type.substTy subst ty)) keepCooking
 
-{- TODO: Report that this code's failure to type check triggers a panic.
-λ > runWithTestRef $ runErrorT  . x 10
-
-<interactive>:6:18: Warning:
-    In the use of ‘runErrorT’
-    (imported from Control.Monad.Error, but defined in Control.Monad.Trans.Error):
-    Deprecated: "Use Control.Monad.Trans.Except instead"
-ghc: panic! (the 'impossible' happened)
-  (GHC version 7.10.1 for x86_64-unknown-linux):
-	nameModule $dNum_a1huO
-
 moreSpecificMonomorphizedContexts
   :: InstEnv.InstEnvs
   -> [PredType]
   -> [Type.TvSubst]
-moreSpecificMonomorphizedContexts instEnvs = go 2 Type.emptyTvSubst
+moreSpecificMonomorphizedContexts instEnvs = go 2 _
   where
   go 0 _ _ = []
-  go fuel subst predTys =
+  go fuel subst predTys = _ {-
     let
       contextsAndSubsts =
         moreSpecificContexts instEnvs predTys
@@ -476,8 +465,8 @@ moreSpecificMonomorphizedContexts instEnvs = go 2 Type.emptyTvSubst
           (Type.getTvSubstEnv subst')
           (Type.getTvSubstEnv subst)))
       readyToGo
-    ++ concatMap (\(predTys', subst') -> go (fuel - 1) _ predTys') keepCooking
--}
+    ++ concatMap (\(predTys', subst') -> go (fuel - 1) _ predTys') keepCooking -}
+
 moreSpecificContexts
   :: InstEnv.InstEnvs
   -> [PredType]
