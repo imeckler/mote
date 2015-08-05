@@ -9,6 +9,7 @@ import           Data.Bifoldable
 import           Data.Bifunctor
 import           Data.Bitraversable
 import           Data.Foldable
+import Data.Function (on)
 import           Data.Maybe              (catMaybes, isJust, isNothing, fromJust, mapMaybe, fromMaybe)
 import           Data.Monoid
 import Data.Hashable
@@ -60,6 +61,7 @@ import qualified TcType
 import qualified Id
 import qualified Data.HashMap.Strict as HashMap
 import qualified PrelNames
+import qualified TyCon
 
 import qualified Unsafe.Coerce
 
@@ -332,6 +334,15 @@ splitSyntacticFunctors t =
       let (sfs, tyInner) = splitSyntacticFunctors t_last in
       ((tyFun, map WrappedType (preArgs ++ ts')) : sfs, tyInner)
 
+equivalentContexts :: [PredType] -> [PredType] -> Bool
+equivalentContexts ctx1 ctx2 =
+  case (f ctx1 ctx2, f ctx2 ctx1) of
+    (Just _, Just _) -> True
+    _ -> False
+  where
+  f x y =
+    Unify.tcMatchTys (Type.tyVarsOfTypes x) x y
+
 splitLast :: [a] -> Maybe ([a], a)
 splitLast [] = Nothing
 splitLast xs = Just (splitLast' xs)
@@ -340,6 +351,14 @@ splitLast xs = Just (splitLast' xs)
   splitLast' [x]    = ([], x)
   splitLast' (x:xs) = first (x:) (splitLast' xs)
   splitLast' _      = error "Mote.Search.splitLast': Impossible"
+
+groupAllBy :: (a -> a -> Bool) -> [a] -> [(a, [a])]
+groupAllBy f xs =
+  case xs of
+    [] -> []
+    x : xs' ->
+      let (grp, xs'') = List.partition (f x) xs' in
+      (x, grp) : groupAllBy f xs''
 
 x i r = do
   LoadFile.loadFile r "Foo.hs"
@@ -352,7 +371,27 @@ x i r = do
   let someInterps = List.filter ((> 1) . length . context) interps -- (!! i) interps
   let someInterp = (!! i) someInterps
 
-  lift . output $
+  let conv =(\x -> case x of
+        ConstantFunctorTyVar v -> TyVarTy v
+        ConstantFunctorTyCon tc -> TyConApp tc [])
+
+  lift . output
+    . map (\(repr, nds) ->
+      ( repr
+      , moreSpecificMonomorphizedSubsts instEnvs
+          (map unwrapType (context repr))
+      ))
+    . groupAllBy (equivalentContexts `on` (map unwrapType . context)) $ interps
+
+  lift . output . length . List.nubBy equivalentContexts . List.map (map unwrapType) . Set.toList $
+    Set.fromList (map context interps)
+{-
+
+  lift . output . length . map (\subst -> Type.substTy subst (uncontextualizedFromType conv someInterp v)) $
+    moreSpecificMonomorphizedSubsts instEnvs
+      (map unwrapType (context someInterp))
+
+  lift . output . length $
     monomorphizings instEnvs
       (map unwrapType (context someInterp), uncontextualizedFromType (\x -> case x of
         ConstantFunctorTyVar v -> TyVarTy v
@@ -360,11 +399,15 @@ x i r = do
 
   lift . forM_ (zip [(0::Int)..] interps) $ \(i, interp) -> do
     output $ (i, interp)
-    output . length . take 100 $
+    output . map (\subst -> Type.substTy subst (uncontextualizedFromType conv interp v)) . take 100 $
+      moreSpecificMonomorphizedSubsts instEnvs
+        (map unwrapType (context interp)) -}
+
+      {-
       monomorphizings instEnvs
         (map unwrapType (context interp), uncontextualizedFromType (\x -> case x of
           ConstantFunctorTyVar v -> TyVarTy v
-          ConstantFunctorTyCon tc -> TyConApp tc []) interp v)
+          ConstantFunctorTyCon tc -> TyConApp tc []) interp v) -}
 
 {-
   liftIO $ print (length interps)
@@ -441,14 +484,24 @@ monomorphizings instEnvs (predTys0, ty0) = go 2 predTys0 ty0
     List.map (\(_, subst) -> Type.substTy subst ty) readyToGo
     ++ concatMap (\(predTys, subst) -> go (fuel - 1) predTys (Type.substTy subst ty)) keepCooking
 
-moreSpecificMonomorphizedContexts
+{- TODO: Do something like this if efficiency turns out to be an issue
+makeMoreSpecificMonomorphizedSubsts
+  :: (MonadState (Set.Set [WrappedType]) m)
+  => InstEnv.InstEnv
+  -> [PredType]
+  -> m ()
+makeMoreSpecificMonomorphizedSubsts instEnvs predTys =
+  go 2 Type.emptyTvSubst
+-}
+
+moreSpecificMonomorphizedSubsts
   :: InstEnv.InstEnvs
-  -> _ -- [PredType]
-  -> _ -- [Type.TvSubst]
-moreSpecificMonomorphizedContexts instEnvs = _
+  -> [PredType]
+  -> [Type.TvSubst]
+moreSpecificMonomorphizedSubsts instEnvs predTys0 = go 2 Type.emptyTvSubst predTys0
   where
-  go 0 _ _ = []
-  go fuel subst predTys = _ {-
+  go :: Int -> Type.TvSubst -> [PredType] -> [Type.TvSubst]
+  go fuel subst predTys =
     let
       contextsAndSubsts =
         moreSpecificContexts instEnvs predTys
@@ -456,16 +509,22 @@ moreSpecificMonomorphizedContexts instEnvs = _
         List.partition (\(predTys',_) -> List.null predTys') $ contextsAndSubsts
     in
     List.map (\(_, subst') ->
-      let
-        inScope = Type.getTvInScope subst'
-      in
-      Type.mkTvSubst inScope
-        (Type.composeTvSubst
-          inScope
-          (Type.getTvSubstEnv subst')
-          (Type.getTvSubstEnv subst)))
+      compose subst subst')
       readyToGo
-    ++ concatMap (\(predTys', subst') -> go (fuel - 1) _ predTys') keepCooking -}
+    ++
+    concatMap (\(predTys', subst') ->
+      go (fuel - 1) (compose subst subst') predTys')
+      keepCooking
+
+  compose subst subst' =
+    let
+      inScope = Type.getTvInScope subst'
+    in
+    Type.mkTvSubst inScope
+      (Type.composeTvSubst
+        inScope
+        (Type.getTvSubstEnv subst')
+        (Type.getTvSubstEnv subst))
 
 moreSpecificContexts
   :: InstEnv.InstEnvs
@@ -507,13 +566,23 @@ moreSpecificContexts instEnvs predTys =
         TyConApp tc kots ->
           -- TODO: Change this to use Uniques. PrelNames.proxyPrimTyConKey
           -- is the wrong one.
-          if nameToString (getName tc) == "Proxy"
+          if tyConArity tc > 3 || nameToString (getName tc) == "Proxy"
+          then False
+          else if traceShowId (TyCon.isTupleTyCon tc) && hasTrivialUnitArg kots -- too trivial a tuple
           then False
           else b
         _ ->
           b)
       True
       (Type.getTvSubstEnv subst)
+    where
+    hasTrivialUnitArg args =
+      case args of
+        [] ->
+          False
+        _ ->
+          any (\case {TyConApp tc _ -> traceShow "trivs?" (getUnique tc == PrelNames.unitTyConKey); _ -> False})
+            args
 
   go :: Type.TvSubst -> [ [(ClsInst, TvSubst)] ]  -> [ ([ClsInst], Type.TvSubst) ]
   go commitments [] = [ ([], commitments) ]
