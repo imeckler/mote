@@ -68,7 +68,7 @@ import qualified Unsafe.Coerce
 import           FastString              (sLit)
 import           Outputable              (Outputable, comma, fsep, ppr, ptext,
                                           punctuate, showSDoc, (<+>), braces)
-
+import qualified Outputable
 import Cloned.Unify
 import Debug.Trace
 
@@ -209,12 +209,12 @@ toStringyData =
   where
   toStr o = fmap (\fs -> showSDoc fs (ppr o)) getSessionDynFlags
 
-isReasonableTrans :: NatTransData NatTransContext ConstantFunctor -> Bool
+isReasonableTrans :: NatTransData context constant -> Bool
 isReasonableTrans nd = numberOfArguments nd < 4
 
 -- TODO: Check that no other arg of targSfs contains the inner poly var
 -- TODO: Should disallow transes whose from ConstantFunctor is a tyvar
--- different from the inner polyvar of the target
+-- different from the innerpolyvar of the target
 natTransInterpretations :: (Name, Type) -> [NatTransData NatTransContext ConstantFunctor]
 natTransInterpretations (name, t0) =
   filter isReasonableTrans $ catMaybes (zipWith interp [0..] args)
@@ -303,6 +303,144 @@ natTransInterpretations (name, t0) =
   (targSfs, targInner) = splitSyntacticFunctors targ
   nonParametricTypes   = tyVarsOfTypes predTys
 
+-- TODO: Check that no other arg of targSfs contains the inner poly var
+-- TODO: Should disallow transes whose from ConstantFunctor is a tyvar
+-- different from the innerpolyvar of the target
+
+natTransInterpretationsStrict
+  :: Class -> InstEnv.InstEnvs
+  -> (Name, Type)
+  -> [NatTransData NatTransContext Type]
+natTransInterpretationsStrict functorClass instEnvs (name, t0) =
+  filter isReasonableTrans $ catMaybes (zipWith interp [0..] args)
+  where
+  (_polyVars, t1)   = splitForAllTys t0
+  (predTys, t)      = splitPredTys t1
+  (args, targ)      = splitFunTys t
+  numberOfArguments = length args
+
+  interp :: Int -> Type -> Maybe (NatTransData NatTransContext Type)
+  interp i argTy =
+    let
+      (argSfs, argInner) =
+        splitSyntacticFunctors argTy
+      cf =
+        case argInner of
+          TyConApp tc [] ->
+            ConstantFunctorTyCon tc
+          TyVarTy v ->
+            ConstantFunctorTyVar v
+          _ ->
+            error "interp: Impossible"
+    in
+    checkSource (argSfs, cf) >>= \from ->
+      let
+        nd =
+          NatTransData
+          { name
+          , context = map WrappedType predTys
+          , from
+          , to = natTransTo
+          , functorArgumentPosition = i
+          , numberOfArguments
+          }
+      in
+      if hasFunctorialEnds nd then Just nd else Nothing
+
+  natTransTo = Word targSfs targEndCap
+
+  hasFunctorialEnds :: NatTransData NatTransContext Type -> Bool
+  hasFunctorialEnds (NatTransData {context, from, to}) =
+    isFunctorialWord context from && isFunctorialWord context to
+
+  isFunctorialWord :: NatTransContext -> Word SyntacticFunctor Type -> Bool
+  isFunctorialWord ctx (Word fs _inner) =
+    all (isFunctor ctx) fs
+
+  isFunctor :: NatTransContext -> SyntacticFunctor -> Bool
+  isFunctor (map unwrapType -> ctx) (tyFun, map unwrapType -> args) =
+    let
+      (matches, unifs, _) = lookupInstEnv instEnvs functorClass [addPredTys ctx joined]
+    in
+    not (null matches) || not (null unifs)
+    where
+    joined =
+      case tyFun of
+        TypeFunctionTyVar v ->
+          List.foldl' AppTy (TyVarTy v) args
+        TypeFunctionTyCon tc ->
+          TyConApp tc args
+
+  checkSource :: ([SyntacticFunctor], ConstantFunctor) -> Maybe (Word SyntacticFunctor Type)
+
+  targEndCap :: Maybe Type
+  (targEndCap, checkSource) =
+    case targInner of
+      TyVarTy v ->
+        let
+          targVarOccursInArgs args =
+            v `elementOfUniqSet` tyVarsOfTypes (map unwrapType args)
+        in
+        if v `elementOfUniqSet` nonParametricTypes
+        then 
+          ( Just (TyVarTy v)
+          , \(sfs, inner) ->
+              let
+                innerTyMay =
+                  case inner of
+                    ConstantFunctorTyVar v' ->
+                      if v' `elementOfUniqSet` nonParametricTypes
+                      then Just (TyVarTy v')
+                      else Nothing
+                    ConstantFunctorTyCon tc ->
+                      Just (TyConApp tc [])
+              in
+              Just (Word sfs _)
+          )
+        else
+          ( Nothing
+          , \(sfs, inner) ->
+              if any (\(_f, args) -> targVarOccursInArgs args) sfs
+              then Nothing
+              else
+                case inner of
+                  ConstantFunctorTyVar v' ->
+                    if v' == v
+                    then Just (Word sfs Nothing)
+                    else Nothing
+
+                  ConstantFunctorTyCon tc ->
+                    Just (Word sfs (Just (TyConApp tc [])))
+          )
+
+      TyConApp tc [] ->
+        ( Just (TyConApp tc [])
+        , \(sfs, inner) ->
+            let
+              innerTyMay =
+                case inner of
+                  ConstantFunctorTyVar v' ->
+                    if v' `elementOfUniqSet` nonParametricTypes
+                    then Just (TyVarTy v')
+                    else Nothing
+            in
+            Just (Word sfs (Just innerTyMay))
+        )
+
+      -- TODO: Impossible cases
+      TyConApp _tc (_:_) ->
+        error "natTransInterpretations: TyConApp args non-empty"
+      AppTy _t _t' ->
+        error "natTransInterpretations: AppTy"
+      FunTy _t _t' ->
+        error "natTransInterpretations: FunTy"
+      ForAllTy _v _t ->
+        error "natTransInterpretations: ForAllTy"
+      LitTy _tl ->
+        error "natTransInterpretations: LitTy"
+
+  (targSfs, targInner) = splitSyntacticFunctors targ
+  nonParametricTypes   = tyVarsOfTypes predTys
 splitSyntacticFunctors :: Type -> ([SyntacticFunctor], Type)
 splitSyntacticFunctors t =
   let
@@ -368,20 +506,24 @@ x i r = do
   v <- lift $ newTyVar
   hsc_env <- lift getSession
   (_messages, Just instEnvs) <- liftIO (runTcInteractive hsc_env TcEnv.tcGetInstEnvs)
-  let someInterps = List.filter ((> 1) . length . context) interps -- (!! i) interps
-  let someInterp = (!! i) someInterps
 
   let conv =(\x -> case x of
         ConstantFunctorTyVar v -> TyVarTy v
         ConstantFunctorTyCon tc -> TyConApp tc [])
 
-  lift . output
-    . map (\(repr, nds) ->
-      ( repr
-      , moreSpecificMonomorphizedSubsts instEnvs
-          (map unwrapType (context repr))
-      ))
-    . groupAllBy (equivalentContexts `on` (map unwrapType . context)) $ interps
+  let thingies =
+        map (\(repr, nds) ->
+          ( repr
+          , moreSpecificMonomorphizedSubsts instEnvs
+              (map unwrapType (context repr))
+          ))
+        . groupAllBy (equivalentContexts `on` (map unwrapType . context)) $ interps
+  
+  lift . output . (\(nd, substs) -> let t = (uncontextualizedFromType conv nd v) in(t, context nd, map
+    (\subst -> Type.substTy subst t)
+    substs)) . (!! i) $ thingies
+  -- liftIO . print . zipWith const [0..] . snd . (!! i) $ thingies
+  -- lift . output $ acceptableSubst wtf
 
   lift . output . length . List.nubBy equivalentContexts . List.map (map unwrapType) . Set.toList $
     Set.fromList (map context interps)
@@ -498,23 +640,57 @@ moreSpecificMonomorphizedSubsts
   :: InstEnv.InstEnvs
   -> [PredType]
   -> [Type.TvSubst]
-moreSpecificMonomorphizedSubsts instEnvs predTys0 = go 2 Type.emptyTvSubst predTys0
+moreSpecificMonomorphizedSubsts instEnvs predTys0 = go' 1 Type.emptyTvSubst predTys0
   where
+  go' :: Int -> Type.TvSubst -> [PredType] -> [Type.TvSubst]
+  go' 0 _ _ = []
+  go' fuel subst predTys =
+    case predTys of
+      [] ->
+        [subst]
+
+      _ ->
+        let
+          contextsAndSubsts =
+            moreSpecificContexts instEnvs predTys
+          (readyToGo, keepCooking) =
+            List.partition (null . fst) contextsAndSubsts
+        in
+        mapMaybe (\(_, subst') -> 
+          let subst'' = compose subst subst' in
+          if acceptableSubst subst''
+          then Just subst''
+          else Nothing)
+          readyToGo
+        ++
+        List.concatMap (\(predTys', subst') ->
+          let subst'' = compose subst subst' in
+          if acceptableSubst subst''
+          then go' (fuel - 1) subst'' predTys'
+          else [])
+          contextsAndSubsts
+
+{-
   go :: Int -> Type.TvSubst -> [PredType] -> [Type.TvSubst]
+  go 0 _ _ = []
   go fuel subst predTys =
-    let
-      contextsAndSubsts =
-        moreSpecificContexts instEnvs predTys
-      (readyToGo, keepCooking) =
-        List.partition (\(predTys',_) -> List.null predTys') $ contextsAndSubsts
-    in
-    List.map (\(_, subst') ->
-      compose subst subst')
-      readyToGo
-    ++
-    concatMap (\(predTys', subst') ->
-      go (fuel - 1) (compose subst subst') predTys')
-      keepCooking
+    if acceptableSubst subst
+    then 
+      let
+        contextsAndSubsts =
+          moreSpecificContexts instEnvs predTys
+        (readyToGo, keepCooking) =
+          List.partition (\(predTys',_) -> List.null predTys') $ contextsAndSubsts
+      in
+      List.map (\(_, subst') ->
+        compose subst subst')
+        readyToGo
+      ++
+      concatMap (\(predTys', subst') ->
+        go (fuel - 1) (compose subst subst') predTys')
+        keepCooking
+    else
+      [] -}
 
   compose subst subst' =
     let
@@ -560,44 +736,17 @@ moreSpecificContexts instEnvs predTys =
     in
     theta
 
-  acceptableSubst subst =
-    UniqFM.foldUFM (\t b ->
-      case t of
-        TyConApp tc kots ->
-          -- TODO: Change this to use Uniques. PrelNames.proxyPrimTyConKey
-          -- is the wrong one.
-          if tyConArity tc > 3 || nameToString (getName tc) == "Proxy"
-          then False
-          else if traceShowId (TyCon.isTupleTyCon tc) && hasTrivialUnitArg kots -- too trivial a tuple
-          then False
-          else b
-        _ ->
-          b)
-      True
-      (Type.getTvSubstEnv subst)
-    where
-    hasTrivialUnitArg args =
-      case args of
-        [] ->
-          False
-        _ ->
-          any (\case {TyConApp tc _ -> traceShow "trivs?" (getUnique tc == PrelNames.unitTyConKey); _ -> False})
-            args
-
   go :: Type.TvSubst -> [ [(ClsInst, TvSubst)] ]  -> [ ([ClsInst], Type.TvSubst) ]
   go commitments [] = [ ([], commitments) ]
   go commitments (substsForCls : substses) =
     concatMap (\(inst1, subst1) ->
-      if acceptableSubst subst1
-      then 
-        case extendMany commitments subst1 of
-          Nothing ->
-            []
+      case extendMany commitments subst1 of
+        Nothing ->
+          []
 
-          Just commitments' ->
-            map (first (inst1 :))
-              (go commitments' substses)
-      else [])
+        Just commitments' ->
+          map (first (inst1 :))
+            (go commitments' substses))
       substsForCls
     where
     extendMany :: Type.TvSubst -> Type.TvSubst -> Maybe Type.TvSubst
@@ -621,6 +770,42 @@ moreSpecificContexts instEnvs predTys =
       loop substEnv ((var, ty) : bindings) =
         extendEnv substEnv var ty >>= \substEnv' ->
         loop substEnv' bindings
+
+acceptableSubst :: Type.TvSubst -> Bool
+acceptableSubst subst =
+  UniqFM.foldUFM (\t b -> let x = not (isUndesirableType t) in {-trace ("desirables=" ++ show x)-} (x && b))
+    True
+    (Type.getTvSubstEnv subst)
+
+isUndesirableType :: Type -> Bool
+isUndesirableType t0 =
+  case t0 of
+    TyConApp tc kots ->
+      tyConArity tc > 3
+      || nameToString (getName tc) == "Proxy"
+      || (TyCon.isTupleTyCon tc && hasTrivialUnitArg kots)
+      || any isUndesirableType kots
+
+    AppTy t t' ->
+      isUndesirableType t || isUndesirableType t'
+
+    FunTy t t' ->
+      isUndesirableType t || isUndesirableType t'
+
+    ForAllTy v t ->
+      isUndesirableType t
+
+    _ ->
+      False
+
+  where
+  hasTrivialUnitArg args =
+    case args of
+      [] ->
+        False
+      _ ->
+        any (\case {TyConApp tc _ -> getUnique tc == PrelNames.unitTyConKey; _ -> False})
+          args
 
 moreSpecificPredecessors
   :: InstEnv.InstEnvs
@@ -872,6 +1057,30 @@ uncontextualizedFromType conv (NatTransData {from = Word fs inner}) freshVar =
             else
               TyConApp tc
                 (args ++ [stitchUp fs'])
+
+contextualizedFromFunctor :: NatTransData NatTransContext Type -> Maybe Type
+contextualizedFromFunctor (NatTransData {context, from = Word fs inner}) =
+  addPredTys (map unwrapType context) (stitchUp fs)
+  where
+  stitchUp fs =
+    case fs of
+      [] ->
+        Nothing
+
+      [f] ->
+        Just f
+
+      (tyFun, map unwrapType -> args) : fs' ->
+        case tyFun of
+          TypeFunctionTyVar v ->
+            AppTy
+              (foldl AppTy (TyVarTy v))
+            <$>
+            stitchUp fs'
+          TypeFunctionTyCon tc ->
+            TyConApp tc
+              (args ++ [stitchUp fs'])
+
 
 nameType :: Name -> M (Maybe Type)
 nameType n = do
