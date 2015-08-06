@@ -281,16 +281,12 @@ initialState logFile = mkSplitUniqSupply 'x' >>| \uniq -> MoteState
 
 runWithTestRef :: (Ref MoteState -> Ghc b) -> IO b
 runWithTestRef x = do
-  print 0
   home <- getHomeDirectory
-  print 1
   withFile (home </> "testlog") WriteMode $ \logFile -> do
-    print 2
     r <- newRef =<< initialState logFile
-    liftIO $ print 3
-    run $ do { liftIO $ print 4; ghcInit r; liftIO $ print 5; x r }
+    run $ do { ghcInit r; x r }
   where
-  ghcInit r = do
+  ghcInit _ = do
     dfs <- getSessionDynFlags
     void . setSessionDynFlags . withFlags [DynFlags.Opt_DeferTypeErrors] $ dfs
       { hscTarget  = HscInterpreted

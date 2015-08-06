@@ -1,6 +1,6 @@
 {-# LANGUAGE LambdaCase, NamedFieldPuns, RecordWildCards, TupleSections, ViewPatterns #-}
 
-module Scratch where
+-- module Scratch where
 
 import           Prelude                 hiding (Word)
 import           Control.Applicative
@@ -25,7 +25,6 @@ import           Mote.Util
 import           Search.Types.Word       (Word (..))
 import qualified Search.Types.Word       as Word
 -- import qualified Mote.Search.Poset as Poset
-import Mote.Search.Poset
 -- import qualified Mote.Search.Poset.ElementData as ElementData
 import qualified Mote.Search.Poset.Pure as PurePoset
 import qualified Mote.LoadFile as LoadFile
@@ -72,6 +71,7 @@ import           Outputable              (Outputable, comma, fsep, ppr, ptext,
 import qualified Outputable
 import Cloned.Unify
 import Debug.Trace
+import qualified Mote.Debug
 
 -- First we make a poset of the things in scope ordered by their
 -- contextualized from types. This forms the skeleton of our DAG. We then
@@ -88,13 +88,6 @@ type CanonicalFromType
   ( CanonicalContext
   , Type
   )
-
-canonicalize :: (NatTransContext, Type) -> CanonicalFromType
-canonicalize (ctx, ty) =
-  let
-    ctx' = map (Type.getClassPredTys . unwrapType) ctx
-  in
-  _
 
 -- This should usually be enough for cmpType to take us the rest of the
 -- way.
@@ -481,6 +474,12 @@ splitSyntacticFunctors t =
       let (sfs, tyInner) = splitSyntacticFunctors t_last in
       ((tyFun, map WrappedType (preArgs ++ ts')) : sfs, tyInner)
 
+equivalentTypes :: Type -> Type -> Bool
+equivalentTypes t1 t2 =
+  case (match t1 t2, match t2 t1) of
+    (Just _, Just _) -> True
+    _ -> False
+
 equivalentContexts :: [PredType] -> [PredType] -> Bool
 equivalentContexts ctx1 ctx2 =
   case (f ctx1 ctx2, f ctx2 ctx1) of
@@ -567,6 +566,8 @@ groupAllBy f xs =
       let (grp, xs'') = List.partition (f x) xs' in
       (x, grp) : groupAllBy f xs''
 
+main = Mote.Debug.runWithTestRef $ runErrorT . x 0
+
 x i r = do
   LoadFile.loadFile r "Foo.hs"
 
@@ -609,7 +610,7 @@ x i r = do
               (\subst0 ->
                 let subst = compose ndToRepr subst0 in
                 closedSubstNatTransData subst nd >>| \nd' ->
-                  (subst, nd, WrappedType (uncontextualizedFromType id nd' v), [nd']))
+                  (WrappedType (uncontextualizedFromType id nd' v), [nd']))
               substs)
             nds)
           thingies
@@ -626,7 +627,8 @@ x i r = do
 
   lift . output . length . List.nubBy equivalentContexts . List.map (map unwrapType) . Set.toList $
     Set.fromList (map context interps)
-  liftIO . print . map fst . zip [(0::Int)..] $ stuff
+
+  lift . output . groupAllBy (equivalentTypes `on` unwrapType) . Map.toList . Map.fromListWith (++) $ stuff
 {-
 
   lift . output . length . map (\subst -> Type.substTy subst (uncontextualizedFromType conv someInterp v)) $
@@ -924,7 +926,7 @@ isUndesirableType t0 =
 moreSpecificPredecessors
   :: InstEnv.InstEnvs
   -> WrappedType
-  -> _ -- [WrappedType]
+  -> [([PredType], TvSubst)]
 moreSpecificPredecessors instEnvs (WrappedType ty0) =
   let
     (predTys, ty) = splitPredTys ty0
