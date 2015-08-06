@@ -344,7 +344,7 @@ natTransInterpretationsStrict functorClass instEnvs (name, t0) =
           , numberOfArguments
           }
       in
-      if Word.isEmpty from then Nothing else Just nd
+      if Word.isEmpty from || from == natTransTo then Nothing else Just nd
       -- if hasFunctorialEnds nd then Just nd else Nothing
 
   natTransTo = Word targSfs targEndCap
@@ -610,11 +610,12 @@ x i r = do
               (\subst0 ->
                 let subst = compose ndToRepr subst0 in
                 closedSubstNatTransData subst nd >>| \nd' ->
-                  (WrappedType (uncontextualizedFromType id nd' v), [nd']))
+                  ( (uncontextualizedFromType id nd' v), [nd']))
               substs)
             nds)
           thingies
-
+  lift . output $ (map (second (Map.size . above)) . Map.toList) (typePoset v stuff)
+  return stuff
   -- let (subst, nd0, fromTy, [nd1]) =
 
 
@@ -625,10 +626,12 @@ x i r = do
   -- liftIO . print . zipWith const [0..] . snd . (!! i) $ thingies
   -- lift . output $ acceptableSubst wtf
 
+{-
   lift . output . length . List.nubBy equivalentContexts . List.map (map unwrapType) . Set.toList $
     Set.fromList (map context interps)
-
-  lift . output . groupAllBy (equivalentTypes `on` unwrapType) . Map.toList . Map.fromListWith (++) $ stuff
+  return (stuff, v)
+-}
+  -- liftIO . print . map fst . zip [0..] . groupAllBy (equivalentTypes `on` (unwrapType . fst)) . Map.toList . Map.fromListWith (++) $ stuff
 {-
 
   lift . output . length . map (\subst -> Type.substTy subst (uncontextualizedFromType conv someInterp v)) $
@@ -742,7 +745,7 @@ moreSpecificMonomorphizedSubsts
   :: InstEnv.InstEnvs
   -> [PredType]
   -> [Type.TvSubst]
-moreSpecificMonomorphizedSubsts instEnvs predTys0 = go' 2 Type.emptyTvSubst predTys0
+moreSpecificMonomorphizedSubsts instEnvs predTys0 = go' 1 Type.emptyTvSubst predTys0
   where
   -- Eq just balloons too fast
   acceptableContext = all acceptablePredType
@@ -945,6 +948,41 @@ moreSpecificPredecessors instEnvs (WrappedType ty0) =
   in
           -- (cls, args) = Type.getClassPredTys predTy
   moreSpecificContexts instEnvs predTys
+
+
+
+-- forall t1 t2 : Type,
+-- let (t, s1, s2) = lub t1 t2 in
+-- t is the least general type such that there are substitutions takin
+-- t to t1 and t to t2 (and s1 and s2 are such substitutions)
+
+lub :: Type -> Type -> (Type, Type.TvSubst, Type.TvSubst)
+lub t1 t2 =
+  case (t1, t2) of
+    (TyVarTy v1, _) ->
+      ( TyVarTy v1
+      , Type.emptyTvSubst
+      , Type.mkTvSubst VarEnv.emptyInScopeSet (VarEnv.mkVarEnv [(v1, t2)])
+      )
+
+    (_, TyVarTy v2) ->
+      ( TyVarTy v2
+      , Type.emptyTvSubst
+      , Type.mkTvSubst VarEnv.emptyInScopeSet (VarEnv.mkVarEnv [(v2, t1)])
+      )
+
+    (TyConApp tc1 args1, TyConApp tc2 args2) ->
+      if tc1 == tc2
+      then _
+      else _
+
+    (AppTy t11 t12, AppTy t21 t22) ->
+      _
+  where
+  resolve :: Type.TvSubst -> (Var, Env) -> Type.TvSubst
+
+zipLinear :: [a] -> [b] -> ([(a, b)], Maybe (Either [a] [b]))
+zipLinear []  = _
 
 -- Checks if t1 is as general as t2
 match :: Type -> Type -> Maybe Type.TvSubst
