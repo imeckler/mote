@@ -73,6 +73,10 @@ data InContext f o vmid vend
   | End [f] vend
   deriving (Eq, Ord, Show, Generic)
 
+isEmpty :: Word f o -> Bool
+isEmpty (Word (_:_) _)    = False
+isEmpty (Word _ (Just _)) = False
+isEmpty _                 = True
 {-
 data InContext f o vno vyesmid vyesend
   = NoO [f] vno [f]
