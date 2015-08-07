@@ -48,6 +48,7 @@ import Unique (getUnique, getKey)
 import           UniqSet                 (elementOfUniqSet)
 import qualified UniqSet
 import           Var                     (Var, mkGlobalVar)
+import qualified Var
 import qualified VarEnv
 import TcRnMonad (newUnique, TcRnIf)
 import IdInfo (IdDetails (VanillaId), vanillaIdInfo)
@@ -1314,60 +1315,132 @@ data TypeRelation
   | RightMoreGeneral {- Right to left -} Type.TvSubst
   | Unrelated
 
-data CanonicalElementData
-  = CanonicalElementData
-  { natTranses :: HashMap.HashMap (Int, Int) (NatTransData () Type)
-  , above :: Map.Map WrappedType Type.TvSubst {- not necessarily canonical types! -}
-  , below :: Map.Map WrappedType Type.TvSubst {- not necessarily canonical types! -}
---  , equivalenceClass :: Map.Map WrappedType Type.TvSubst
+renameVars :: MonadUnique m => Type -> m Type
+renameVars ty = runStateT (go VarSet.emptyVarSet ty) VarEnv.emptyVarEnv
+  where
+  go boundVars ty =
+    case ty of
+      TyVarTy v ->
+        if v `VarSet.elemVarSet` boundVars
+        then return (TyVarTy v)
+        else
+          get >>= \env -> case VarEnv.lookupVarEnv env v of
+            Just v' ->
+              return (TyVarTy v')
+
+            Nothing -> do
+              v' <- lift $ freshTyVarOfKind (Var.tyVarKind v)
+              put (VarEnv.extendVarEnv env v v')
+              return (TyVarTy v')
+
+      AppTy t1 t2 ->
+        AppTy <$> go boundVars t1 <*> go boundVars t2
+
+      TyConApp tc args ->
+        TyConApp <$> mapM (go boundVars) args
+
+      FunTy t1 t2 ->
+        FunTy <$> go boundVars t1 <*> go boundVars t2
+
+      ForAllTy v t ->
+        ForAllTy v <$> go (VarSet.extendVarSet boundVars v) t
+
+data ElementData
+  = ElementData
+  { moreGeneral :: Map.Map WrappedType Type.TvSubst
+  , lessGeneral :: Map.Map WrappedType Type.TvSubst
+  , natTranses :: HashMap.HashMap (Int, Int) (NatTransData () Type)
   }
 
 typePoset natTransesByType = do
   uniqSupply <- getUniqueSupplyM
   let transesList = Map.toList natTransesByType
-      (eltDatas, lubs) = go m0 Set.empty (pairs transesList)
-  _
+      (eltDatas, lubs) = go (Just uniqSupply) m0 Set.empty (pairs transesList)
+
+  lubs' <- mapM renameVars (Set.toList lubs)
+  let
+    (eltDatas', _) = go Nothing eltDatas Set.empty (pairs lubs ++ liftA2 (,) lubs transesList)
+    (tysToReprs, reprsToData) = makeCanonicalReprs (Map.empty, Map.empty) eltDatas'
+  return (canonicalize tysToReprs reprsToData)
   where
-  go eltDatas lubs [] = (eltDatas, lubs)
-  go eltDatas lubs ( ((ty1, natTranses1), (ty2, natTranses2)) : ps) =
-    let (uty1, uty2) = (unwrapType t1, unwrapType t2) in
+  canonicalize tysToReprs reprsToData =
+    Map.mapWithKey (\repr (natTranses, moreGeneral, lessGeneral) ->
+      ElementData
+      { moreGeneral =
+          Map.mapKeys (\t -> fromJust (Map.lookup t tysToReprs)) moreGeneral
+      , lessGeneral =
+          Map.mapKeys (\t -> fromJust (Map.lookup t tysToReprs)) lessGeneral
+      , natTranses = natTranses
+      })
+      reprsToData
+
+  makeCanonicalReprs acc@(tysToReprs0, reprsToData) remaining =
+    case Map.minViewWithKey remaining of
+      Nothing ->
+        acc
+
+      Just ((ty1, (natTranses, moreGeneral, equal, lessGeneral)), remaining') ->
+        let
+          (tysToReprs', natTranses') =
+            Map.foldlWithKey' (\(tysToReprs, natTranses1) ty2 (natTranses2, (subst1to2, subst2to1)) ->
+              ( Map.insert ty2 ty1 tysToReprs
+              , HashMap.union
+                  natTranses1
+                  (HashMap.map (transportNatTransData subst2to1) natTranses2)
+              ))
+              (tysToReprs0, natTranses)
+              equal
+        in
+        go
+          (tysToReprs', Map.insert ty1 (natTranses', moreGeneral, lessGeneral) reprsToData)
+          (Map.difference remaining' equal)
+
+  go _ eltDatas lubs [] = (eltDatas, lubs)
+  go uniqSupplyMay eltDatas lubs ( ((ty1, natTranses1), (ty2, natTranses2)) : ps) =
+    let (uty1, uty2) = (unwrapType ty1, unwrapType ty2) in
     case compareTypeEv uty1 uty2 of
       Equal subst1to2 subst2to1 ->
         let
           eltDatas' =
-            addEqualElt t1 t2 (subst1to2, subst2to1)
-              (addEqualElt t2 t1 (subst2to1, subst1to2))
+            addEqualElt ty1 ty2 natTranses2 (subst1to2, subst2to1)
+              (addEqualElt ty2 ty1 natTranses1 (subst2to1, subst1to2))
         in
-        go eltDatas' lubs ps
+        go uniqSupplyMay eltDatas' lubs ps
 
       Unrelated ->
-        let
-          (lub, _lubTo1, _lubTo2) = initUs_ uniqSupply (lub uty1 uty2)
-        in
-        go eltDatas (Set.insert (WrappedType lub) lubs)
+        case uniqSupplyMay of
+          Just uniqSupply ->
+            let
+              (lub, _lubTo1, _lubTo2) = initUs_ uniqSupply (lub uty1 uty2)
+            in
+            go uniqSupplyMay eltDatas (Set.insert (WrappedType lub) lubs)
+          Nothing ->
+            go uniqSupplyMay eltDatas lubs
 
       LeftMoreGeneral subst1to2 ->
         let
           eltDatas' =
-            addMoreGeneralElt t2 t1 subst1to2
-              (addLessGeneralElt t1 t2 subst1to2 eltDatas)
+            addMoreGeneralElt ty2 ty1 subst1to2
+              (addLessGeneralElt ty1 ty2 subst1to2 eltDatas)
         in
-        go eltDatas' lubs ps
+        go uniqSupplyMay eltDatas' lubs ps
 
       RightMoreGeneral subst2to1 ->
         let
           eltDatas' =
-            addMoreGeneralElt t1 t2 subst2to1
-              (addLessGeneralElt t2 t1 subst2to1 eltDatas)
+            addMoreGeneralElt ty1 ty2 subst2to1
+              (addLessGeneralElt ty2 ty1 subst2to1 eltDatas)
         in
-        go eltDatas' lubs
+        go uniqSupplyMay eltDatas' lubs
 
   m0 =
     Map.map (\transes -> (transes, Map.empty, Map.empty, Map.empty)) natTransesByType
 
-  addEqualElt t1 t2 substs eltDatas =
+  -- TODO: Don't even both storing the substs. Just convert transes2 here
+  -- using it and it won't get evaluated unless t1 is chosen as canonical.
+  addEqualElt t1 t2 transes2 substs eltDatas =
     Map.adjust (\(transes, moreGeneral, equal, lessGeneral) ->
-      (transes, moreGeneral, Map.insert t2 substs equal, lessGeneral))
+      (transes, moreGeneral, Map.insert t2 (transes2, substs) equal, lessGeneral))
       t1
       eltDatas
 
@@ -1383,185 +1456,6 @@ typePoset natTransesByType = do
 
   pairs [] = []
   pairs (x:xs) = map (x,) xs ++ pairs xs
--- This is all too damn confusing. Going to do something relatively simple.
-typePoset uniqSupply natTransesByType = do
-  relations <-
-    HashTable.new
-  canonicalRepresentatives <-
-    HashTable.new
-  dataForCanonicalRepresentatives <-
-    HashTable.new
-  lubs <-
-    HashTable.new
-
-  -- TODO: Would be nice to use `pairs` to avoid repeated computation but
-  -- it's too complicated and I don't have time.
-  
-  let
-    go (
-  forM_ natTransesByType $ \(t1, transes1) -> do
-    repr1May <- HashTable.lookup canonicalRepresentatives t1
-    case repr1May of
-      Nothing -> do
-        HashTable.insert canonicalRepresentatives t1 (t1, Type.emptyTvSubst, Type.emptyTvSubst)
-        HashTable.insert dataForCanonicalRepresentatives t1
-          ( CanonicalElementData
-          { natTranses = transes1
-          , above = Map.empty
-          , below = Map.empty
-          })
-
-        forM_ natTransesByType $ \(t2, transes2) ->
-          let (ut1, ut2) = (unwrapType t1, unwrapType t2) in
-          case compareTypeEv ut1 ut2 of
-            Unrelated ->
-              HashTable.lookup lubs (t2, t1) >>= \case 
-                -- Already did it (this check will be unnecessary when we loop over distinct pairs)
-                Just _ -> return ()
-                Nothing ->
-                  HashTable.insert lubs (t1, t2) (initUs_ uniqSupply (lub ut1 ut2))
-
-            -- t1 is the first member of its equivalence class
-            Equal subst1to2 subst2to1 -> do
-              HashTable.insert canonicalRepresentatives t2 (t1, subst1to2, subst2to1)
-              modifyHT dataForCanonicalRepresentatives t1 $ \cData ->
-                cData
-                { natTranses =
-                    HashMap.union 
-                      (natTranses cData)
-                      (HashMap.map (transportNatTransData subst2to1) transes2)
-                }
-
-            LeftMoreGeneral subst1to2 -> do
-              modifyHT dataForCanonicalRepresentatives t1 $ \cData ->
-                cData
-                { above = Map.insert t2 subst1to2 (above cData)
-                }
-
-            RightMoreGeneral subst2to1 ->
-              modifyHT dataForCanonicalRepresentatives t1 $ \cData ->
-                cData
-                { below = Map.insert t2 subst2to1 (below cData)
-                }
-
-      Just repr1 ->
-        return ()
-
-  -- now canonicalize everything
-  -- todo: canonicalize lubs
-
-  canonicalLubs <- HashTable.new
-
-  HashTable.mapM_ (\( (ty1, ty2), (lub, substLubTo1, substLubTo2) )  -> do
-    Just (ty1Repr, _substReprTo1, subst1toRepr) <- HashTable.lookup canonicalRepresentatives ty1
-    Just (ty2Repr, _substReprTo2, subst2toRepr) <- HashTable.lookup canonicalRepresentatives ty2
-    x1 <- HashTable.lookup canonicalLubs (ty1Repr, ty2Repr)
-    x2 <- HashTable.lookup canonicalLubs (ty2Repr, ty1Repr)
-    case (x1, x2) of
-      (Just _, _) ->
-        return ()
-
-      (_, Just _) ->
-        return ()
-
-      (Nothing, Nothing) -> do
-        let substLubToRepr1 = compose substLubTo1 subst1toRepr
-            substLubToRepr2 = compose substLubTo2 subst2toRepr
-        HashTable.insert canonicalLubs (ty1Repr, ty2Repr) ()
-
-        modifyHT dataForCanonicalRepresentatives ty1Repr $ \cData ->
-          cData
-          { above = Map.insert (WrappedType lub) substLubToRepr1 (above cData) }
-
-        modifyHT dataForCanonicalRepresentatives ty2Repr $ \cData ->
-          cData
-          { above = Map.insert (WrappedType lub) substLubToRepr2 (above cData) }
-    )
-    lubs
-
-  HashTable.mapM_ (\(ty0, cData0) -> do
-    above' <-
-      Map.fromList <$> 
-        mapM (\(ty1, subst0to1) -> do
-          Just (repr, _substReprTo1, subst1toRepr) <-  HashTable.lookup canonicalRepresentatives ty1
-          return (repr, compose subst0to1 subst1toRepr))
-          (Map.toList (above cData0))
-    below' <-
-      Map.fromList <$>
-        mapM (\(ty1, subst1to0) -> do
-          Just (repr, substReprTo1, _subst1toRepr) <- HashTable.lookup canonicalRepresentatives ty1
-          return (repr, compose substReprTo1 subst1to0))
-          (Map.toList (below cData0))
-
-    HashTable.insert
-      dataForCanonicalRepresentatives
-      ty0
-      (cData0 { above = above', below = below' }))
-
-    dataForCanonicalRepresentatives
-  return dataForCanonicalRepresentatives
-  where
-  pairs [] = []
-  pairs (x:xs) = map (x,) xs ++ pairs xs
-
-  withTails [] = []
-  withTails (x:xs) = (x, xs) : withTails xs
-
-  modifyHT ht k f =
-    HashTable.lookup ht k >>= \case
-      Just x -> HashTable.insert ht k (f x)
-      Nothing -> error "Impossible happend :("
-
-{-
-typePoset =
-  forM_ (withTails transesByType) $ \( (ty1, transes1), laterOn) -> do
-    (status1, (repr1, subst1toRepr1, loc1)) <- getCreateCanonicalRepresentative ty1 transes1
-    when (status1 == Unfinished) $ do
-      forM_ laterOn $ \(ty2, transes2) -> do
-        (status2, (repr2, subst2toRepr2, loc2)) <- getCreateCanonicalRepresentative ty2 transes2
-        when (status2 == Unfinished) $ do
-
-          case (match repr1 repr2, match repr2 repr1) of
-            (Just _ _, Just _ _) ->
-              return ()
-
-      modify (Map.insert ty1 (Finished, (repr1, subst1toRepr1, loc1)))
-
-  where
-  getCreateCanonicalRepresentative t transes = do
-    canonicalReps <- get
-    case Map.lookup t canonicalReps of
-      -- No canonical representative yet. t gets to be it.
-      Nothing -> do
-        loc <- lift (newSTRef (PosetNodeData { natTranses = transes, above = Set.empty, below = Set.empty }))
-        let tData = (t, Type.emptyTvSubst, loc)
-        return (Unfinished, tData)
-
-      Just (status, tData) ->
-        -- No need to do add the transes since we must have previously
-        -- encounted t and found it to be equivalent to the repr. But
-        -- doesn't that also imply that status == Finished? Verify
-        -- experimentally.
-        return (status, tData)
--}
-{-
-typePoset :: _
-typePoset transesByType = _
-  go :: [(Type, [NatTransData () Type])] -> _ -> _
-  go [] = _
-  go ((t,transes) : rest) =
-    let
-      (below, matching, above) = _
-    in
-    _
-
-  partition
-    :: Type
-    -> [(Type, x)]
-    -> (Map WrappedType Subst, [NatTransData () Type], Map WrappedType Subst)
-  partition ty0 ((ty1,x) : ps) =
-    case (
--}
 
 
 uncontextualizedFromType :: (constant -> Type) -> NatTransData context constant -> Var -> Type
