@@ -15,44 +15,35 @@ import           Control.Monad.Error
 import           Data.Bifoldable
 import           Data.Bifunctor
 import           Data.Bitraversable
-import           Data.Foldable
 import Data.Function (on)
-import           Data.Maybe              (catMaybes, isJust, isNothing, fromJust, mapMaybe, fromMaybe)
+import           Data.Maybe              (catMaybes, isJust, isNothing, fromJust, mapMaybe)
 import           Data.Monoid
 import Data.Hashable
 import qualified Data.Map as Map
 import qualified Data.Set as Set
 import qualified Data.List as List
 import           Mote.GhcUtil            (discardConstraints, addPredTys, splitPredTys)
-import           Mote.Refine             (tcRnExprTc, subTypeEvTc)
+import           Mote.Refine             (tcRnExprTc)
 import           Mote.Search.WrappedType
 import           Mote.Types
 import           Mote.Util
 import           Search.Types.Word       (Word (..))
 import qualified Search.Types.Word       as Word
-import qualified Mote.Search.Poset.Pure as PurePoset
 import qualified Mote.LoadFile as LoadFile
-import qualified TcSMonad as TcS
-import qualified DynFlags
-import HscTypes (hsc_dflags)
 import           GHC
 import OccName (mkVarOcc)
 import Name (mkInternalName)
 import qualified Name
 import           RdrName                 (RdrName (Exact))
-import           Type                    (splitAppTys, splitFunTys, mkForAllTys, TvSubst)
+import           Type                    (splitAppTys, splitFunTys)
 import qualified Type
 import qualified Kind
-import           TypeRep                 (Type (..), tyVarsOfTypes, tyVarsOfType)
+import           TypeRep                 (Type (..))
 import Unique (getUnique, getKey)
-import           UniqSet                 (elementOfUniqSet)
-import qualified UniqSet
 import           Var                     (Var, mkGlobalVar)
 import qualified Var
 import qualified VarEnv
-import TcRnMonad (newUnique, TcRnIf)
 import IdInfo (IdDetails (VanillaId), vanillaIdInfo)
-import qualified Bag
 import qualified InstEnv
 import qualified TcEnv
 import qualified VarSet
@@ -61,7 +52,6 @@ import UniqSupply
 import qualified Cloned.Unify
 import qualified Unify
 import qualified BasicTypes
-import qualified Data.HashTable.ST.Basic as HashTable
 import qualified TcType
 import qualified Id
 import qualified Data.HashMap.Strict as HashMap
@@ -72,14 +62,10 @@ import Control.Monad.State
 import qualified Unsafe.Coerce
 import           FastString              (sLit)
 import           Outputable              (Outputable, comma, fsep, ppr, ptext,
-                                          punctuate, showSDoc, (<+>), braces)
--- import Data.STRef
-import qualified Outputable
+                                          punctuate, (<+>), braces)
 import Cloned.Unify
 
-import Debug.Trace
 import Mote.Debug
-import Mote.ReadType
 
 -- Need to make sure that everyone gets the functions with the empty
 -- context though.
@@ -271,9 +257,9 @@ natTransInterpretationsStrict functorClass instEnvs (name, t0) =
       TyVarTy v ->
         let
           targVarOccursInArgs args =
-            v `elementOfUniqSet` tyVarsOfTypes (map unwrapType args)
+            v `VarEnv.elemVarEnv` Type.tyVarsOfTypes (map unwrapType args)
         in
-        if v `elementOfUniqSet` nonParametricTypes
+        if v `VarEnv.elemVarEnv` nonParametricTypes
         then 
           ( Just (TyVarTy v)
           , \(sfs, inner) ->
@@ -281,7 +267,7 @@ natTransInterpretationsStrict functorClass instEnvs (name, t0) =
                 innerTyMay =
                   case inner of
                     ConstantFunctorTyVar v' ->
-                      if v' `elementOfUniqSet` nonParametricTypes
+                      if v' `VarEnv.elemVarEnv` nonParametricTypes
                       then Just (TyVarTy v')
                       else Nothing
                     ConstantFunctorTyCon tc ->
@@ -312,7 +298,7 @@ natTransInterpretationsStrict functorClass instEnvs (name, t0) =
               innerTyMay =
                 case inner of
                   ConstantFunctorTyVar v' ->
-                    if v' `elementOfUniqSet` nonParametricTypes
+                    if v' `VarEnv.elemVarEnv` nonParametricTypes
                     then Just (TyVarTy v')
                     else Nothing
                   ConstantFunctorTyCon tc ->
@@ -334,7 +320,7 @@ natTransInterpretationsStrict functorClass instEnvs (name, t0) =
         error "natTransInterpretations: LitTy"
 
   (targSfs, targInner) = splitSyntacticFunctors targ
-  nonParametricTypes   = tyVarsOfTypes predTys
+  nonParametricTypes   = Type.tyVarsOfTypes predTys
 splitSyntacticFunctors :: Type -> ([SyntacticFunctor], Type)
 splitSyntacticFunctors t =
   let
@@ -460,14 +446,17 @@ groupAllBy f xs =
       let (grp, xs'') = List.partition (f x) xs' in
       (x, grp) : groupAllBy f xs''
 
-main = Mote.Debug.runWithTestRef $ runErrorT . x 0
-
-x i r = do
-  LoadFile.loadFile r "Foo.hs"
- 
+inScopePosetAndInnerDummy = do
   theInnerDummy <- liftIO $ do
     uniqSupply <- newUniqueSupply
-    return (initUs_ uniqSupply freshTyVar)
+    return . initUs_ uniqSupply $ do
+      uniq <- getUniqueM
+      return $
+        mkGlobalVar
+          VanillaId
+          (mkInternalName uniq (mkVarOcc "innermostdummy") noSrcSpan)
+          Kind.liftedTypeKind
+          vanillaIdInfo
 
   hsc_env <- lift getSession
 
@@ -481,9 +470,7 @@ x i r = do
 
   let interps = concatMap (natTransInterpretationsStrict functorClass instEnvs) typedNames
 
-  let conv = id
-
-  let thingies =
+  let monomorphizedSubstsForEquivalentContexts =
         map (\(repr, nds) ->
           ( repr
           , nds
@@ -492,37 +479,34 @@ x i r = do
           ))
         . groupAllBy (equivalentContexts `on` (map unwrapType . context)) $ interps
 
-      stuff =
-        concatMap (\(repr, nds, substs) ->
-          let
-            reprContext = map unwrapType (context repr)
-          in
-          concatMap (\nd ->
+      natTransesByType =
+        Map.fromListWith HashMap.union $
+          concatMap (\(repr, nds, substs) ->
             let
-              ndContext = map unwrapType (context nd)
-              Just ndToRepr =
-                Unify.tcMatchTys (Type.tyVarsOfTypes ndContext) ndContext reprContext
+              reprContext = map unwrapType (context repr)
             in
-            mapMaybe
-              (\subst0 ->
-                let subst = compose ndToRepr subst0 in
-                closedSubstNatTransData subst nd >>| \nd' ->
-                  ( WrappedType (uncontextualizedFromType id nd' theInnerDummy)
-                  , HashMap.singleton (getKey (getUnique (name nd')), functorArgumentPosition nd') nd' )
-                  )
-              substs)
-            nds)
-          thingies
-
-      stuffMap =
-        -- TODO: If things are wonky, we might have to unionWith a function
-        -- that makes the appropriate substitutions.
-        Map.fromListWith HashMap.union stuff
+            concatMap (\nd ->
+              let
+                ndContext = map unwrapType (context nd)
+                Just ndToRepr =
+                  Unify.tcMatchTys (Type.tyVarsOfTypes ndContext) ndContext reprContext
+              in
+              mapMaybe
+                (\subst0 ->
+                  let subst = compose ndToRepr subst0 in
+                  closedSubstNatTransData subst nd >>| \nd' ->
+                    ( WrappedType (uncontextualizedFromType id nd' theInnerDummy)
+                    , HashMap.singleton (getKey (getUnique (name nd')), functorArgumentPosition nd') nd' )
+                    )
+                substs)
+              nds)
+            monomorphizedSubstsForEquivalentContexts
 
   uniqSupp <- liftIO newUniqueSupply
-  let poset = initUs_ uniqSupp (typePoset theInnerDummy stuffMap)
-  liftIO . print $ Map.size poset
+  let poset = initUs_ uniqSupp (typePoset theInnerDummy natTransesByType)
+  return (Map.keys poset, theInnerDummy)
 
+main = return ()
 
 freshTyVarOfKind :: MonadUnique m => Kind -> m Var
 freshTyVarOfKind k = do
@@ -533,9 +517,6 @@ freshTyVarOfKind k = do
       (mkInternalName uniq (mkVarOcc "unifvar") noSrcSpan)
       k
       vanillaIdInfo
-
-freshTyVar :: MonadUnique m => m Var
-freshTyVar = freshTyVarOfKind Kind.liftedTypeKind
 
 {- TODO: Do something like this if efficiency turns out to be an issue
 makeMoreSpecificMonomorphizedSubsts
@@ -551,7 +532,7 @@ moreSpecificMonomorphizedSubsts
   :: InstEnv.InstEnvs
   -> [PredType]
   -> [Type.TvSubst]
-moreSpecificMonomorphizedSubsts instEnvs predTys0 = go' 1 Type.emptyTvSubst predTys0
+moreSpecificMonomorphizedSubsts instEnvs predTys0 = go 1 Type.emptyTvSubst predTys0
   where
   -- Eq just balloons too fast
   acceptableContext = all acceptablePredType
@@ -562,9 +543,9 @@ moreSpecificMonomorphizedSubsts instEnvs predTys0 = go' 1 Type.emptyTvSubst pred
     Class.className cls /= PrelNames.eqClassName
     && Class.className cls /= PrelNames.ordClassName
 
-  go' :: Int -> Type.TvSubst -> [PredType] -> [Type.TvSubst]
-  go' 0 _ _ = []
-  go' fuel subst predTys
+  go :: Int -> Type.TvSubst -> [PredType] -> [Type.TvSubst]
+  go 0 _ _ = []
+  go fuel subst predTys
     | acceptableContext predTys =
       case predTys of
         [] ->
@@ -587,9 +568,9 @@ moreSpecificMonomorphizedSubsts instEnvs predTys0 = go' 1 Type.emptyTvSubst pred
           List.concatMap (\(predTys', subst') ->
             let subst'' = compose subst subst' in
             if acceptableSubst subst''
-            then go' (fuel - 1) subst'' predTys'
+            then go (fuel - 1) subst'' predTys'
             else [])
-            contextsAndSubsts
+            keepCooking
     | otherwise =
       []
 
@@ -615,6 +596,7 @@ moreSpecificContexts instEnvs predTys =
         let
           (cls, args) =
             Type.getClassPredTys predTy
+          -- TODO: I think I should use the matches...
           (matches, unifs, _) =
             lookupInstEnv instEnvs cls args
         in
@@ -624,7 +606,7 @@ moreSpecificContexts instEnvs predTys =
   map (first (concatMap instConstraints)) $ go Type.emptyTvSubst substses0
   where
   uniquesToVars :: UniqFM.UniqFM Var
-  uniquesToVars = tyVarsOfTypes predTys
+  uniquesToVars = Type.tyVarsOfTypes predTys
 
   instConstraints :: ClsInst -> [PredType]
   instConstraints inst =
@@ -638,7 +620,7 @@ moreSpecificContexts instEnvs predTys =
     in
     theta
 
-  go :: Type.TvSubst -> [ [(ClsInst, TvSubst)] ]  -> [ ([ClsInst], Type.TvSubst) ]
+  go :: Type.TvSubst -> [ [(ClsInst, Type.TvSubst)] ]  -> [ ([ClsInst], Type.TvSubst) ]
   go commitments [] = [ ([], commitments) ]
   go commitments (substsForCls : substses) =
     concatMap (\(inst1, subst1) ->
@@ -696,7 +678,7 @@ isUndesirableType t0 =
     FunTy t t' ->
       isUndesirableType t || isUndesirableType t'
 
-    ForAllTy v t ->
+    ForAllTy _ t ->
       isUndesirableType t
 
     _ ->
@@ -710,31 +692,6 @@ isUndesirableType t0 =
       _ ->
         any (\case {TyConApp tc _ -> getUnique tc == PrelNames.unitTyConKey; _ -> False})
           args
-
-moreSpecificPredecessors
-  :: InstEnv.InstEnvs
-  -> WrappedType
-  -> [([PredType], TvSubst)]
-moreSpecificPredecessors instEnvs (WrappedType ty0) =
-  let
-    (predTys, ty) = splitPredTys ty0
-
-    {- Too complicated for now.
-    substsByVarSubsts =
-      map
-        (List.foldl'
-          (\m (_inst, subst) ->
-            let substPairs = UniqFM.ufmToList $ Type.getTvSubstEnv subst in
-            _
-            )
-          Map.empty)
-        substses
-    -}
-  in
-          -- (cls, args) = Type.getClassPredTys predTy
-  moreSpecificContexts instEnvs predTys
-
-
 
 -- forall t1 t2 : Type,
 -- let (t, s1, s2) = lub t1 t2 in
@@ -850,9 +807,6 @@ lubGo t1 t2 =
             modify (bimap (addToFiber t1 v) (addToFiber t2 v))
             return (TyVarTy v)
   where
-  funTyList (FunTy s t) = s : funTyList t
-  funTyList t           = [t]
-
   addToFiber t v =
     Map.insertWith Set.union (WrappedType t) (Set.singleton v)
 
@@ -965,7 +919,7 @@ typePoset
 typePoset theInnerDummy natTransesByType = do
   uniqSupply <- getUniqueSupplyM
   let transesList = Map.toList natTransesByType
-      (eltDatas, lubs) = traceShow 0 $ go (Just uniqSupply) m0 Set.empty (pairs transesList)
+      (eltDatas, lubs) = go (Just uniqSupply) m0 Set.empty (pairs transesList)
 
   lubs' <-
     mapM (\(WrappedType l) ->
@@ -979,12 +933,14 @@ typePoset theInnerDummy natTransesByType = do
         (List.foldl' (\m (l,x) -> Map.insert l (x,Map.empty,Map.empty,Map.empty) m) eltDatas lubs')
         Set.empty
         (pairs lubs' ++ liftA2 (,) lubs' transesList)
-    (tysToReprs, reprsToData) = traceShow 2 $ makeCanonicalReprs (Map.empty, Map.empty) eltDatas'
+
+    (tysToReprs, reprsToData) =
+      makeCanonicalReprs (Map.empty, Map.empty) eltDatas'
   return (canonicalize tysToReprs reprsToData)
   where
   compareTypeEv :: Type -> Type -> TypeRelation
   compareTypeEv t1 t2 =
-    case (match t1 t2, match t2 t1) of
+    case (match' t1 t2, match' t2 t1) of
       (Just subst1to2, Just subst2to1) ->
         Equal subst1to2 subst2to1
 
@@ -1013,8 +969,10 @@ typePoset theInnerDummy natTransesByType = do
     Map.mapWithKey (\repr (natTranses, moreGeneral, lessGeneral) ->
       ElementData
       { moreGeneral =
+        -- TODO: Have to correct the substs!
           Map.mapKeys (\t -> fromJust (Map.lookup t tysToReprs)) moreGeneral
       , lessGeneral =
+        -- TODO: Have to correct the substs!
           Map.mapKeys (\t -> fromJust (Map.lookup t tysToReprs)) lessGeneral
       , natTranses = natTranses
       })
@@ -1028,7 +986,7 @@ typePoset theInnerDummy natTransesByType = do
       Just ((ty1, (natTranses, moreGeneral, equal, lessGeneral)), remaining') ->
         let
           (tysToReprs', natTranses') =
-            Map.foldlWithKey' (\(tysToReprs, natTranses1) ty2 (natTranses2, (subst1to2, subst2to1)) ->
+            Map.foldlWithKey' (\(tysToReprs, natTranses1) ty2 (natTranses2, (_subst1to2, subst2to1)) ->
               ( Map.insert ty2 ty1 tysToReprs
               , HashMap.union
                   natTranses1
@@ -1149,7 +1107,7 @@ lookupInstEnv' :: InstEnv.InstEnv          -- InstEnv to look in
                -> InstEnv.VisibleOrphanModules   -- But filter against this
                -> Class -> [Type]  -- What we are looking for
                -> ([InstEnv.InstMatch],    -- Successful matches
-                   [(ClsInst, TvSubst)])     -- These don't match but do unify
+                   [(ClsInst, Type.TvSubst)])     -- These don't match but do unify
 -- The second component of the result pair happens when we look up
 --      Foo [a]
 -- in an InstEnv that has entries for
@@ -1164,7 +1122,7 @@ lookupInstEnv' ie vis_mods cls tys
   = lookup ie
   where
     rough_tcs  = InstEnv.roughMatchTcs tys
-    all_tvs    = all isNothing rough_tcs
+    _all_tvs    = all isNothing rough_tcs
     --------------
     -- No choice but to coerce ClsInstEnv to [ClsInst] since the newtype is
     -- not exposed. Actually can't even write the type.
@@ -1203,7 +1161,7 @@ lookupInstEnv' ie vis_mods cls tys
         tpl_tv_set = VarSet.mkVarSet tpl_tvs
 
     ----------------
-    lookup_tv :: TvSubst -> TyVar -> InstEnv.DFunInstType
+    lookup_tv :: Type.TvSubst -> TyVar -> InstEnv.DFunInstType
         -- See Note [DFunInstType: instantiating types]
     lookup_tv subst tv = case Type.lookupTyVar subst tv of
                                 Just ty -> Just ty
@@ -1214,7 +1172,7 @@ lookupInstEnv' ie vis_mods cls tys
 -- This is the common way to call this function.
 lookupInstEnv :: InstEnv.InstEnvs     -- External and home package inst-env
               -> Class -> [Type]   -- What we are looking for
-              -> ([(ClsInst, [InstEnv.DFunInstType])], [(ClsInst, TvSubst)], Bool)
+              -> ([(ClsInst, [InstEnv.DFunInstType])], [(ClsInst, Type.TvSubst)], Bool)
 -- ^ See Note [Rules for instance lookup]
 lookupInstEnv (InstEnv.InstEnvs { ie_global = pkg_ie, ie_local = home_ie, ie_visible = vis_mods }) cls tys
   = (final_matches, final_unifs, safe_fail)
