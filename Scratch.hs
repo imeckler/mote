@@ -1,4 +1,11 @@
-{-# LANGUAGE LambdaCase, NamedFieldPuns, RecordWildCards, TupleSections, ViewPatterns, FlexibleContexts #-}
+{-# LANGUAGE LambdaCase, 
+             NamedFieldPuns, 
+             RecordWildCards, 
+             TupleSections, 
+             ViewPatterns, 
+             FlexibleContexts,
+             FlexibleInstances,
+             UndecidableInstances #-}
 
 -- module Scratch where
 
@@ -28,6 +35,8 @@ import qualified Search.Types.Word       as Word
 -- import qualified Mote.Search.Poset.ElementData as ElementData
 import qualified Mote.Search.Poset.Pure as PurePoset
 import qualified Mote.LoadFile as LoadFile
+
+import qualified TcSMonad as TcS
 
 import qualified DynFlags
 import HscTypes (hsc_dflags)
@@ -72,8 +81,10 @@ import           Outputable              (Outputable, comma, fsep, ppr, ptext,
                                           punctuate, showSDoc, (<+>), braces)
 import qualified Outputable
 import Cloned.Unify
+
 import Debug.Trace
-import qualified Mote.Debug
+import Mote.Debug
+import Mote.ReadType
 
 -- First we make a poset of the things in scope ordered by their
 -- contextualized from types. This forms the skeleton of our DAG. We then
@@ -968,6 +979,9 @@ moreSpecificPredecessors instEnvs (WrappedType ty0) =
 -- t is the least general type such that there are substitutions takin
 -- t to t1 and t to t2 (and s1 and s2 are such substitutions)
 
+newUniqueSupply :: IO UniqSupply
+newUniqueSupply = UniqSupply.mkSplitUniqSupply 'a'
+
 type SubstFibers = Map.Map WrappedType (Set.Set Var)
 lubGo
   :: (MonadUnique m, MonadState (SubstFibers, SubstFibers) m)
@@ -995,7 +1009,8 @@ lubGo (t1, t2)
                     (appMany f1 args1', f2)
                   Right (reverse -> args2') ->
                     (f1, appMany f2 args2')
-            lubGo t1' t2' <$> mapM lubGo matched
+
+            liftA2 appMany (lubGo (t1', t2')) (mapM lubGo matched)
 
       (TyConApp tc1 args1, TyConApp tc2 args2) ->
         if tc1 == tc2
@@ -1030,12 +1045,12 @@ lubGo (t1, t2)
         mayVar <- commonFiberElt t1 t2
         case mayVar of
           Just v ->
-            return v
+            return (TyVarTy v)
 
           Nothing -> do
             v <- freshTyVar
             modify (bimap (addToFiber t1 v) (addToFiber t2 v))
-            return v
+            return (TyVarTy v)
   where
   addToFiber t v =
     Map.insertWith Set.union (WrappedType t) (Set.singleton v)
@@ -1050,78 +1065,13 @@ lubGo (t1, t2)
       t2Fiber <- Map.lookup (WrappedType t2) fibers2
       peek (Set.intersection t1Fiber t2Fiber)
     where
-    peek s = if Set.empty s then Nothing else Set.findMin s
+    peek s = if Set.null s then Nothing else Just (Set.findMin s)
 
 zipAgainst :: [a] -> [b] -> ([(a,b)], Either [a] [b])
 zipAgainst xs [] = ([], Left xs)
 zipAgainst [] ys = ([], Right ys)
 zipAgainst (x:xs) (y:ys) =
   let (ps, remaining) = zipAgainst xs ys in ((x,y):ps, remaining)
-
-{-
-lub'
-  :: (MonadState Type.TvSubstEnv m, MonadUnique m)
-  => Type -> Type -> m (Type, Type.TvSubst, Type.TvSubst)
-lub' t1 t2 =
-  case (t1, t2) of
-    (TyVarTy v1, _) ->
-      
-      varCase v1 t2
-
-    (_, TyVarTy v2) ->
-      fmap (\(v, s_l, s_r) -> (v, s_r, s_l)) (varCase v2 t1)
-  where
-  varCase v t = do
-    commitments <- get
-    case VarEnv.lookupVarEnv commitments v of
-      Just t' ->
-        let
-          commitments' =
-        do
-        { v' <- freshTyVar
-        ; 
-
-      Nothing ->
-        let
-          commitments' = VarEnv.extendVarEnv commitments v t
-        in
-        do
-        { put commitments'
-        ; return
-          ( TyVarTy v
-          , Type.emptyTvSubst
-          , Type.mkTvSubst VarEnv.emptyInScopeSet (VarEnv.mkVarEnv [(v, t)])
-          )
-        }
--}
-
-lub :: Type -> Type -> (Type, Type.TvSubst, Type.TvSubst)
-lub t1 t2 =
-  case (t1, t2) of
-    (TyVarTy v1, _) ->
-      ( TyVarTy v1
-      , Type.emptyTvSubst
-      , Type.mkTvSubst VarEnv.emptyInScopeSet (VarEnv.mkVarEnv [(v1, t2)])
-      )
-
-    (_, TyVarTy v2) ->
-      ( TyVarTy v2
-      , Type.emptyTvSubst
-      , Type.mkTvSubst VarEnv.emptyInScopeSet (VarEnv.mkVarEnv [(v2, t1)])
-      )
-
-    (TyConApp tc1 args1, TyConApp tc2 args2) ->
-      if tc1 == tc2
-      then _
-      else _
-
-    (AppTy t11 t12, AppTy t21 t22) ->
-      _
-  where
-  zipLub (substA, substB)  ((a, b) : ps) =
-    let (t, subst_a {- t -> a -}, subst_b {- t -> b -}) = lub a b in
-    _
-    
 
 
 --  F [Int] [String] ~ F x x
@@ -1545,3 +1495,8 @@ insert_overlapping new_item (old_item : old_items)
 extendEnv :: Type.TvSubstEnv -> Var -> Type -> Maybe Type.TvSubstEnv
 extendEnv subst v ty =
   Cloned.Unify.tcUnifyTyExtending subst (TyVarTy v) ty -- Unify.tcUnifyTyWithSubst subst (TyVarTy v) ty
+
+instance (Monad (t m), MonadTrans t, MonadUnique m) => MonadUnique (t m) where
+  getUniqueM = lift getUniqueM
+  getUniqueSupplyM = lift getUniqueSupplyM
+  getUniquesM = lift getUniquesM
