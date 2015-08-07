@@ -585,7 +585,7 @@ main = Mote.Debug.runWithTestRef $ runErrorT . x 0
 x i r = do
   LoadFile.loadFile r "Foo.hs"
 
-  v <- lift $ newTyVar
+  theInnerDummy <- lift $ newTyVar
   hsc_env <- lift getSession
 
   typedNames <- fmap catMaybes . mapM (\n -> fmap (n,) <$> nameType n) =<< lift getNamesInScope
@@ -624,13 +624,20 @@ x i r = do
               (\subst0 ->
                 let subst = compose ndToRepr subst0 in
                 closedSubstNatTransData subst nd >>| \nd' ->
-                  ( (uncontextualizedFromType id nd' v), [nd']))
+                  ( WrappedType (uncontextualizedFromType id nd' theInnerDummy)
+                  , HashMap.singleton (getKey (getUnique (name nd')), functorArgumentPosition nd') nd' )
+                  )
               substs)
             nds)
           thingies
 
+      stuffMap =
+        -- TODO: If things are wonky, we might have to unionWith a function
+        -- that makes the appropriate substitutions.
+        Map.fromListWith HashMap.union stuff
+
   uniqSupp <- liftIO newUniqueSupply
-  let poset = _ -- typePoset v uniqSupp stuff
+  let poset = initUs_ uniqSupp (typePoset theInnerDummy stuffMap)
   return poset
   -- lift . output $ (map (second (Map.size . above)) . Map.toList) poset
   -- let (subst, nd0, fromTy, [nd1]) =
@@ -1075,8 +1082,8 @@ lubGo t1 t2 =
               ; fvar <-
                   case mayVar of
                     Nothing -> do
-                      let argKinds = map 
-                      v <- freshTyVar
+                      let argKinds = map Kind.typeKind matchedTys
+                      v <- freshTyVarOfKind (foldr FunTy k1 argKinds)
                       modify (bimap (addToFiber t1' v) (addToFiber t2' v))
                       return v
                     Just v ->
@@ -1091,7 +1098,7 @@ lubGo t1 t2 =
             return (TyVarTy v)
 
           Nothing -> do
-            v <- freshTyVar
+            v <- freshTyVarOfKind k1
             modify (bimap (addToFiber t1 v) (addToFiber t2 v))
             return (TyVarTy v)
   where
@@ -1294,20 +1301,6 @@ transitiveReduction poset0 =
 data Status = Finished | Unfinished
   deriving (Eq, Ord, Show)
 
-compareTypeEv :: Type -> Type -> TypeRelation
-compareTypeEv t1 t2 =
-  case (match t1 t2, match t2 t1) of
-    (Just subst1to2, Just subst2to1) ->
-      Equal subst1to2 subst2to1
-
-    (Just subst1to2, Nothing) ->
-      LeftMoreGeneral subst1to2
-
-    (Nothing, Just subst2to1) ->
-      RightMoreGeneral subst2to1
-
-    (Nothing, Nothing) ->
-      Unrelated
 
 data TypeRelation
   = Equal {- Left to right -} Type.TvSubst {- Right to left -} Type.TvSubst
@@ -1316,7 +1309,7 @@ data TypeRelation
   | Unrelated
 
 renameVars :: MonadUnique m => Type -> m Type
-renameVars ty = runStateT (go VarSet.emptyVarSet ty) VarEnv.emptyVarEnv
+renameVars ty = evalStateT (go VarSet.emptyVarSet ty) VarEnv.emptyVarEnv
   where
   go boundVars ty =
     case ty of
@@ -1337,13 +1330,16 @@ renameVars ty = runStateT (go VarSet.emptyVarSet ty) VarEnv.emptyVarEnv
         AppTy <$> go boundVars t1 <*> go boundVars t2
 
       TyConApp tc args ->
-        TyConApp <$> mapM (go boundVars) args
+        TyConApp tc <$> mapM (go boundVars) args
 
       FunTy t1 t2 ->
         FunTy <$> go boundVars t1 <*> go boundVars t2
 
       ForAllTy v t ->
         ForAllTy v <$> go (VarSet.extendVarSet boundVars v) t
+
+      LitTy _ ->
+        return ty
 
 data ElementData
   = ElementData
@@ -1352,17 +1348,49 @@ data ElementData
   , natTranses :: HashMap.HashMap (Int, Int) (NatTransData () Type)
   }
 
-typePoset natTransesByType = do
+typePoset theInnerDummy natTransesByType = do
   uniqSupply <- getUniqueSupplyM
   let transesList = Map.toList natTransesByType
-      (eltDatas, lubs) = go (Just uniqSupply) m0 Set.empty (pairs transesList)
+      (eltDatas, lubs) = traceShow 0 $ go (Just uniqSupply) m0 Set.empty (pairs transesList)
 
-  lubs' <- mapM renameVars (Set.toList lubs)
+  lubs' <-
+    mapM (\(WrappedType l) ->
+      renameVars l >>| \l' ->
+      (WrappedType l', HashMap.empty))
+      (Set.toList lubs)
   let
-    (eltDatas', _) = go Nothing eltDatas Set.empty (pairs lubs ++ liftA2 (,) lubs transesList)
-    (tysToReprs, reprsToData) = makeCanonicalReprs (Map.empty, Map.empty) eltDatas'
-  return (canonicalize tysToReprs reprsToData)
+    (eltDatas', _) = traceShow 1 $ go Nothing eltDatas Set.empty (pairs lubs' ++ liftA2 (,) lubs' transesList)
+    (tysToReprs, reprsToData) = traceShow 2 $ makeCanonicalReprs (Map.empty, Map.empty) eltDatas'
+  return (reprsToData, tysToReprs, eltDatas', canonicalize tysToReprs reprsToData)
   where
+
+  compareTypeEv :: Type -> Type -> TypeRelation
+  compareTypeEv t1 t2 =
+    case (match t1 t2, match t2 t1) of
+      (Just subst1to2, Just subst2to1) ->
+        Equal subst1to2 subst2to1
+
+      (Just subst1to2, Nothing) ->
+        LeftMoreGeneral subst1to2
+
+      (Nothing, Just subst2to1) ->
+        RightMoreGeneral subst2to1
+
+      (Nothing, Nothing) ->
+        Unrelated
+    where
+    match' :: Type -> Type -> Maybe Type.TvSubst
+    match' t1_0 t2_0 =
+      let
+        t1 = Type.dropForAlls t1_0
+        t2 = Type.dropForAlls t2_0
+      in
+      Unify.tcMatchTy
+        (VarSet.delVarSet (Type.tyVarsOfType t1) theInnerDummy)
+        t1
+        t2
+
+
   canonicalize tysToReprs reprsToData =
     Map.mapWithKey (\repr (natTranses, moreGeneral, lessGeneral) ->
       ElementData
@@ -1388,10 +1416,10 @@ typePoset natTransesByType = do
                   natTranses1
                   (HashMap.map (transportNatTransData subst2to1) natTranses2)
               ))
-              (tysToReprs0, natTranses)
+              (Map.insert ty1 ty1 tysToReprs0, natTranses)
               equal
         in
-        go
+        makeCanonicalReprs
           (tysToReprs', Map.insert ty1 (natTranses', moreGeneral, lessGeneral) reprsToData)
           (Map.difference remaining' equal)
 
@@ -1403,7 +1431,7 @@ typePoset natTransesByType = do
         let
           eltDatas' =
             addEqualElt ty1 ty2 natTranses2 (subst1to2, subst2to1)
-              (addEqualElt ty2 ty1 natTranses1 (subst2to1, subst1to2))
+              (addEqualElt ty2 ty1 natTranses1 (subst2to1, subst1to2) eltDatas)
         in
         go uniqSupplyMay eltDatas' lubs ps
 
@@ -1411,11 +1439,11 @@ typePoset natTransesByType = do
         case uniqSupplyMay of
           Just uniqSupply ->
             let
-              (lub, _lubTo1, _lubTo2) = initUs_ uniqSupply (lub uty1 uty2)
+              (theLub, _lubTo1, _lubTo2) = initUs_ uniqSupply (lub uty1 uty2)
             in
-            go uniqSupplyMay eltDatas (Set.insert (WrappedType lub) lubs)
+            go uniqSupplyMay eltDatas (Set.insert (WrappedType theLub) lubs) ps
           Nothing ->
-            go uniqSupplyMay eltDatas lubs
+            go uniqSupplyMay eltDatas lubs ps
 
       LeftMoreGeneral subst1to2 ->
         let
@@ -1431,7 +1459,7 @@ typePoset natTransesByType = do
             addMoreGeneralElt ty1 ty2 subst2to1
               (addLessGeneralElt ty2 ty1 subst2to1 eltDatas)
         in
-        go uniqSupplyMay eltDatas' lubs
+        go uniqSupplyMay eltDatas' lubs ps
 
   m0 =
     Map.map (\transes -> (transes, Map.empty, Map.empty, Map.empty)) natTransesByType
