@@ -17,6 +17,8 @@ module Cloned.Unify (
         tcUnifyTy, tcUnifyTys, BindFlag(..),
         tcUnifyTyExtending,
 
+        niFixTvSubst,
+
         UnifyResultM(..), UnifyResult, tcUnifyTysFG
 
    ) where

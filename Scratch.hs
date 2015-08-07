@@ -1,4 +1,4 @@
-{-# LANGUAGE LambdaCase, NamedFieldPuns, RecordWildCards, TupleSections, ViewPatterns #-}
+{-# LANGUAGE LambdaCase, NamedFieldPuns, RecordWildCards, TupleSections, ViewPatterns, FlexibleContexts #-}
 
 -- module Scratch where
 
@@ -52,6 +52,7 @@ import qualified InstEnv
 import qualified TcEnv
 import qualified VarSet
 import qualified UniqFM
+import UniqSupply
 import qualified Cloned.Unify
 import qualified Unify
 import qualified BasicTypes
@@ -62,6 +63,7 @@ import qualified Data.HashMap.Strict as HashMap
 import qualified PrelNames
 import qualified Class
 import qualified TyCon
+import Control.Monad.State
 
 import qualified Unsafe.Coerce
 
@@ -667,6 +669,16 @@ x i r = do
   lift $ output $ (someInterp, moreSpecificContexts instEnvs (map unwrapType (context someInterp))) -}
 
 
+freshTyVar :: MonadUnique m => m Var
+freshTyVar = do
+  uniq <- getUniqueM
+  return $
+    mkGlobalVar
+      VanillaId
+      (mkInternalName uniq (mkVarOcc "yadummy") noSrcSpan)
+      liftedTypeKind
+        vanillaIdInfo
+
 newTyVar :: (GhcMonad m) => m Var
 newTyVar = do
   hsc_env <- getSession
@@ -956,6 +968,133 @@ moreSpecificPredecessors instEnvs (WrappedType ty0) =
 -- t is the least general type such that there are substitutions takin
 -- t to t1 and t to t2 (and s1 and s2 are such substitutions)
 
+type SubstFibers = Map.Map WrappedType (Set.Set Var)
+lubGo
+  :: (MonadUnique m, MonadState (SubstFibers, SubstFibers) m)
+  => (Type, Type)
+  -> m Type
+lubGo (t1, t2)
+  | otherwise =
+    case (t1, t2) of
+      (FunTy s1 t1, FunTy s2 t2) ->
+        FunTy <$> lubGo (s1, s2) <*> lubGo (t1, t2)
+
+      -- TODO: FunTy should be able to unify with TyCon
+
+      (AppTy _ _, AppTy _ _) ->
+        let
+          (f1, args1) = splitAppTys t1
+          (f2, args2) = splitAppTys t2
+        in
+        case zipAgainst (reverse args1) (reverse args2) of
+          (reverse -> matched, remainingRevd) -> do
+            let
+              (t1', t2') =
+                case remainingRevd of
+                  Left (reverse -> args1') ->
+                    (appMany f1 args1', f2)
+                  Right (reverse -> args2') ->
+                    (f1, appMany f2 args2')
+            lubGo t1' t2' <$> mapM lubGo matched
+
+      (TyConApp tc1 args1, TyConApp tc2 args2) ->
+        if tc1 == tc2
+        then
+          TyConApp tc1 <$> mapM lubGo (zip args1 args2)
+        else
+          case zipAgainst (reverse args1) (reverse args2) of
+            (reverse -> matched, remainingRevd) ->
+              do
+              { let
+                { (t1', t2') =
+                    case remainingRevd of
+                      Left (reverse -> args1') ->
+                        (TyConApp tc1 args1', TyConApp tc2 [])
+                      Right (reverse -> args2') ->
+                        (TyConApp tc1 [], TyConApp tc2 args2')
+                }
+              ; mayVar <- commonFiberElt t1' t2'
+              ; fvar <-
+                  case mayVar of
+                    Nothing -> do
+                      v <- freshTyVar
+                      modify (bimap (addToFiber t1' v) (addToFiber t2' v))
+                      return v
+                    Just v ->
+                      return v
+              ; matchedTys <- mapM lubGo matched
+              ; return (appMany (TyVarTy fvar) matchedTys)
+              }
+
+      (_, _) -> do
+        mayVar <- commonFiberElt t1 t2
+        case mayVar of
+          Just v ->
+            return v
+
+          Nothing -> do
+            v <- freshTyVar
+            modify (bimap (addToFiber t1 v) (addToFiber t2 v))
+            return v
+  where
+  addToFiber t v =
+    Map.insertWith Set.union (WrappedType t) (Set.singleton v)
+
+  appMany t args =
+    List.foldl' AppTy t args
+
+  commonFiberElt t1 t2 = do
+    (fibers1, fibers2) <- get
+    return $  do
+      t1Fiber <- Map.lookup (WrappedType t1) fibers1
+      t2Fiber <- Map.lookup (WrappedType t2) fibers2
+      peek (Set.intersection t1Fiber t2Fiber)
+    where
+    peek s = if Set.empty s then Nothing else Set.findMin s
+
+zipAgainst :: [a] -> [b] -> ([(a,b)], Either [a] [b])
+zipAgainst xs [] = ([], Left xs)
+zipAgainst [] ys = ([], Right ys)
+zipAgainst (x:xs) (y:ys) =
+  let (ps, remaining) = zipAgainst xs ys in ((x,y):ps, remaining)
+
+{-
+lub'
+  :: (MonadState Type.TvSubstEnv m, MonadUnique m)
+  => Type -> Type -> m (Type, Type.TvSubst, Type.TvSubst)
+lub' t1 t2 =
+  case (t1, t2) of
+    (TyVarTy v1, _) ->
+      
+      varCase v1 t2
+
+    (_, TyVarTy v2) ->
+      fmap (\(v, s_l, s_r) -> (v, s_r, s_l)) (varCase v2 t1)
+  where
+  varCase v t = do
+    commitments <- get
+    case VarEnv.lookupVarEnv commitments v of
+      Just t' ->
+        let
+          commitments' =
+        do
+        { v' <- freshTyVar
+        ; 
+
+      Nothing ->
+        let
+          commitments' = VarEnv.extendVarEnv commitments v t
+        in
+        do
+        { put commitments'
+        ; return
+          ( TyVarTy v
+          , Type.emptyTvSubst
+          , Type.mkTvSubst VarEnv.emptyInScopeSet (VarEnv.mkVarEnv [(v, t)])
+          )
+        }
+-}
+
 lub :: Type -> Type -> (Type, Type.TvSubst, Type.TvSubst)
 lub t1 t2 =
   case (t1, t2) of
@@ -979,10 +1118,19 @@ lub t1 t2 =
     (AppTy t11 t12, AppTy t21 t22) ->
       _
   where
-  resolve :: Type.TvSubst -> (Var, Env) -> Type.TvSubst
+  zipLub (substA, substB)  ((a, b) : ps) =
+    let (t, subst_a {- t -> a -}, subst_b {- t -> b -}) = lub a b in
+    _
+    
 
-zipLinear :: [a] -> [b] -> ([(a, b)], Maybe (Either [a] [b]))
-zipLinear []  = _
+
+--  F [Int] [String] ~ F x x
+--  lubAll (Int, x) (String, x)
+--  (commitments1: x ~ [Int], commitments2: x ~ x)
+--  newCommitments1: x ~ [String], newCommitments2: x ~ x
+--  CONFLICT bw commitments1 and newCommitments1 at x.
+--    lub [Int] [String] = ([y], y ~ Int, y ~ String)
+--  newCommitments1': 
 
 -- Checks if t1 is as general as t2
 match :: Type -> Type -> Maybe Type.TvSubst
