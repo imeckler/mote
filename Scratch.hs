@@ -629,8 +629,7 @@ x i r = do
           thingies
 
   uniqSupp <- liftIO newUniqueSupply
-  let poset = typePoset v uniqSupp stuff
-  lift $ output . Map.keys $ poset
+  let poset = _ -- typePoset v uniqSupp stuff
   return poset
   -- lift . output $ (map (second (Map.size . above)) . Map.toList) poset
   -- let (subst, nd0, fromTy, [nd1]) =
@@ -1244,7 +1243,6 @@ contextualizedFromType (NatTransData {context, from}) innerVar =
               TyConApp tc
                 (args ++ [stitchUp fs' innerTy])
 
-
 {-
 type Map = Map.Map -- TODO: Switch to IntMap for performance
 data ElementData
@@ -1290,169 +1288,229 @@ transitiveReduction poset0 =
       Map.member ty1 abv_i || b)
       False
       abv0
-
 -}
-{-
--- We do two passes
-typePoset
-  :: Var -- A fresh var which we apply the from-type-functors to
-  -> UniqSupply
-  -> [(Type, [ NatTransData () Type ])] -- NatTranses by monomorphized pre-cooked from-type
-  ->
-    Map.Map
-      WrappedType -- monomorphized type
-      ElementData
-typePoset freshVar uniqSupply transesByType =
-  let
-    match' t1_0 t2_0 =
-      let
-        t1 = Type.dropForAlls t1_0
-        t2 = Type.dropForAlls t2_0
-      in
-      Unify.tcMatchTy
-        (VarEnv.delVarEnv (Type.tyVarsOfType t1) freshVar)
-        t1
-        t2
-
-    addAbove tyBottom tyTop substBottomToTop ndsBottom =
-      Map.alter (\case
-        Nothing ->
-          Just
-          (ElementData
-          { above = Map.singleton (WrappedType tyTop) substBottomToTop
-          , natTranses = transMapFromList ndsBottom
-          })
-
-        Just ed ->
-          Just
-          (ed
-          { above = Map.insert (WrappedType tyTop) substBottomToTop (above ed)
-          }))
-        (WrappedType tyBottom)
-  in
-  let
-    m0 =
-      List.foldl' (\m (ty, nds) ->
-        Map.insert
-          (WrappedType ty)
-          (ElementData {above=Map.empty, natTranses=(transMapFromList nds)})
-          m)
-        Map.empty
-        transesByType
-    m1 =
-      List.foldl'
-        (\m ((fromTy1, nds1), (fromTy2, nds2)) ->
-          case (match fromTy1 fromTy2, match fromTy2 fromTy1) of
-            -- The two are unrelated
-            (Nothing, Nothing) ->
-              let (lubTy, lubToTy1, lubToTy2) = initUs_ uniqSupply (lub fromTy1 fromTy2)
-              in
-              addAbove lubTy fromTy1 lubToTy1 [] (addAbove lubTy fromTy2 lubToTy2 [] m)
-
-            -- fromTy1 is strictly more general than fromTy2
-            (Just subst1to2, Nothing) ->
-              addAbove fromTy1 fromTy2 subst1to2 nds1 m
-
-            -- fromTy2 is strictly more general than fromTy1
-            (Nothing, Just subst2to1) ->
-              addAbove fromTy2 fromTy1 subst2to1 nds2 m
-
-            -- TODO: This case is wrong somehow
-            (Just subst1to2, Just subst2to1) ->
-              let
-                defaultData =
-                  ElementData Map.empty HashMap.empty
-              in
-              let
-                ElementData {above=above1, natTranses=natTranses1} =
-                  fromMaybe defaultData (Map.lookup (WrappedType fromTy1) m)
-
-                (fromMaybe defaultData -> ElementData {above=above2,natTranses=natTranses2}, m') = 
-                  Map.updateLookupWithKey (\_ _ -> Nothing) (WrappedType fromTy2) m
-              in
-              Map.insert
-                (WrappedType fromTy1)
-                (ElementData
-                { above = Map.union above1 (Map.map (compose subst1to2) above2)
-                , natTranses = HashMap.union natTranses1 natTranses2 
-                })
-                m')
-        m0
-        (pairs transesByType)
-  in
-  -- The "right" thing to do is probably to complete the lattice but
-  -- I think one iteration is good enough.
-  let
-    (intermediates, reals) =
-      List.partition
-        (\(_, ed) -> HashMap.null (natTranses ed))
-        (Map.toList m1)
-    m2 =
-      List.foldl' (\m ((lubTy1, ed1), (lubTy2, ed2)) ->
-        case trace "yo" (match (unwrapType lubTy1) (unwrapType lubTy2), match (unwrapType lubTy2) (unwrapType lubTy1)) of
-          -- The two are unrelated
-          (Nothing, Nothing) ->
-            m
-
-          -- lubTy1 is strictly more general than fromTy2
-          (Just subst1to2, Nothing) ->
-            Map.insert lubTy1
-              (ed1 { above = Map.insert lubTy2 subst1to2 (above ed1) })
-              m
-
-          -- fromTy2 is strictly more general than fromTy1
-          (Nothing, Just subst2to1) ->
-            Map.insert lubTy2
-              (ed2 { above = Map.insert lubTy1 subst2to1 (above ed2) })
-              m
-
-          -- TODO: This case is wrong somehow
-          (Just subst1to2, Just subst2to1) ->
-            Map.insert
-              lubTy1
-              (ElementData
-              { above = Map.union (above ed1) (Map.map (compose subst1to2) (above ed2))
-              , natTranses = HashMap.empty
-              })
-              (Map.delete lubTy2 m))
-        m1
-        (pairs intermediates)
-  in
-  m1
-  {-
-  List.foldl' (\m ((ty1, ed1), (ty2, ed2)) ->
-    case (Map.lookup ty2 (above ed1), Map.lookup ty1 (above ed2
-    m1
-    (pairs intermediates intermediates ++ liftA2 (,) intermediates reals) -}
-  where
-  transMapFromList =
-    HashMap.fromList . map (\nd -> ((getKey (getUnique (name nd)), functorArgumentPosition nd), nd))
-
-  pairs :: [a] -> [(a, a)]
-  pairs []     = []
-  pairs (x:xs) = map (x,) xs ++ pairs xs
--}
-
-{-
-type posetNode = struct {
-  natTranses : List NatTransData,
-  neighbors : List (*(*posetNode));
-
-data PosetNodeData s =
-  PosetNodeData
-  { natTranses :: HashMap.HashMap (Int, Int) (NatTransData () Type)
-  , above :: Map.Map WrappedType _
-  , below :: Map.Map WrappedType _
-  }
-
-} -}
-type PosetName s = STRef s (ElementData
 
 data Status = Finished | Unfinished
   deriving (Eq, Ord, Show)
 
--- This is all too damn confusing. Going to do something simple.
-typePoset = do
+compareTypeEv :: Type -> Type -> TypeRelation
+compareTypeEv t1 t2 =
+  case (match t1 t2, match t2 t1) of
+    (Just subst1to2, Just subst2to1) ->
+      Equal subst1to2 subst2to1
+
+    (Just subst1to2, Nothing) ->
+      LeftMoreGeneral subst1to2
+
+    (Nothing, Just subst2to1) ->
+      RightMoreGeneral subst2to1
+
+    (Nothing, Nothing) ->
+      Unrelated
+
+data TypeRelation
+  = Equal {- Left to right -} Type.TvSubst {- Right to left -} Type.TvSubst
+  | LeftMoreGeneral {- Left to right -} Type.TvSubst
+  | RightMoreGeneral {- Right to left -} Type.TvSubst
+  | Unrelated
+
+data CanonicalElementData
+  = CanonicalElementData
+  { natTranses :: HashMap.HashMap (Int, Int) (NatTransData () Type)
+  , above :: Map.Map WrappedType Type.TvSubst {- not necessarily canonical types! -}
+  , below :: Map.Map WrappedType Type.TvSubst {- not necessarily canonical types! -}
+--  , equivalenceClass :: Map.Map WrappedType Type.TvSubst
+  }
+
+typePoset natTransesByType = do
+  uniqSupply <- getUniqueSupplyM
+  let transesList = Map.toList natTransesByType
+      (eltDatas, lubs) = go m0 Set.empty (pairs transesList)
+  _
+  where
+  go eltDatas lubs [] = (eltDatas, lubs)
+  go eltDatas lubs ( ((ty1, natTranses1), (ty2, natTranses2)) : ps) =
+    let (uty1, uty2) = (unwrapType t1, unwrapType t2) in
+    case compareTypeEv uty1 uty2 of
+      Equal subst1to2 subst2to1 ->
+        let
+          eltDatas' =
+            addEqualElt t1 t2 (subst1to2, subst2to1)
+              (addEqualElt t2 t1 (subst2to1, subst1to2))
+        in
+        go eltDatas' lubs ps
+
+      Unrelated ->
+        let
+          (lub, _lubTo1, _lubTo2) = initUs_ uniqSupply (lub uty1 uty2)
+        in
+        go eltDatas (Set.insert (WrappedType lub) lubs)
+
+      LeftMoreGeneral subst1to2 ->
+        let
+          eltDatas' =
+            addMoreGeneralElt t2 t1 subst1to2
+              (addLessGeneralElt t1 t2 subst1to2 eltDatas)
+        in
+        go eltDatas' lubs ps
+
+      RightMoreGeneral subst2to1 ->
+        let
+          eltDatas' =
+            addMoreGeneralElt t1 t2 subst2to1
+              (addLessGeneralElt t2 t1 subst2to1 eltDatas)
+        in
+        go eltDatas' lubs
+
+  m0 =
+    Map.map (\transes -> (transes, Map.empty, Map.empty, Map.empty)) natTransesByType
+
+  addEqualElt t1 t2 substs eltDatas =
+    Map.adjust (\(transes, moreGeneral, equal, lessGeneral) ->
+      (transes, moreGeneral, Map.insert t2 substs equal, lessGeneral))
+      t1
+      eltDatas
+
+  addMoreGeneralElt t1 t2 subst2to1 =
+    Map.adjust (\(transes, moreGeneral, equal, lessGeneral) ->
+      (transes, Map.insert t2 subst2to1 moreGeneral, equal, lessGeneral))
+      t1
+
+  addLessGeneralElt t1 t2 subst1to2 =
+    Map.adjust (\(transes, moreGeneral, equal, lessGeneral) ->
+      (transes, moreGeneral, equal, Map.insert t2 subst1to2 lessGeneral))
+      t1
+
+  pairs [] = []
+  pairs (x:xs) = map (x,) xs ++ pairs xs
+-- This is all too damn confusing. Going to do something relatively simple.
+typePoset uniqSupply natTransesByType = do
+  relations <-
+    HashTable.new
+  canonicalRepresentatives <-
+    HashTable.new
+  dataForCanonicalRepresentatives <-
+    HashTable.new
+  lubs <-
+    HashTable.new
+
+  -- TODO: Would be nice to use `pairs` to avoid repeated computation but
+  -- it's too complicated and I don't have time.
+  
+  let
+    go (
+  forM_ natTransesByType $ \(t1, transes1) -> do
+    repr1May <- HashTable.lookup canonicalRepresentatives t1
+    case repr1May of
+      Nothing -> do
+        HashTable.insert canonicalRepresentatives t1 (t1, Type.emptyTvSubst, Type.emptyTvSubst)
+        HashTable.insert dataForCanonicalRepresentatives t1
+          ( CanonicalElementData
+          { natTranses = transes1
+          , above = Map.empty
+          , below = Map.empty
+          })
+
+        forM_ natTransesByType $ \(t2, transes2) ->
+          let (ut1, ut2) = (unwrapType t1, unwrapType t2) in
+          case compareTypeEv ut1 ut2 of
+            Unrelated ->
+              HashTable.lookup lubs (t2, t1) >>= \case 
+                -- Already did it (this check will be unnecessary when we loop over distinct pairs)
+                Just _ -> return ()
+                Nothing ->
+                  HashTable.insert lubs (t1, t2) (initUs_ uniqSupply (lub ut1 ut2))
+
+            -- t1 is the first member of its equivalence class
+            Equal subst1to2 subst2to1 -> do
+              HashTable.insert canonicalRepresentatives t2 (t1, subst1to2, subst2to1)
+              modifyHT dataForCanonicalRepresentatives t1 $ \cData ->
+                cData
+                { natTranses =
+                    HashMap.union 
+                      (natTranses cData)
+                      (HashMap.map (transportNatTransData subst2to1) transes2)
+                }
+
+            LeftMoreGeneral subst1to2 -> do
+              modifyHT dataForCanonicalRepresentatives t1 $ \cData ->
+                cData
+                { above = Map.insert t2 subst1to2 (above cData)
+                }
+
+            RightMoreGeneral subst2to1 ->
+              modifyHT dataForCanonicalRepresentatives t1 $ \cData ->
+                cData
+                { below = Map.insert t2 subst2to1 (below cData)
+                }
+
+      Just repr1 ->
+        return ()
+
+  -- now canonicalize everything
+  -- todo: canonicalize lubs
+
+  canonicalLubs <- HashTable.new
+
+  HashTable.mapM_ (\( (ty1, ty2), (lub, substLubTo1, substLubTo2) )  -> do
+    Just (ty1Repr, _substReprTo1, subst1toRepr) <- HashTable.lookup canonicalRepresentatives ty1
+    Just (ty2Repr, _substReprTo2, subst2toRepr) <- HashTable.lookup canonicalRepresentatives ty2
+    x1 <- HashTable.lookup canonicalLubs (ty1Repr, ty2Repr)
+    x2 <- HashTable.lookup canonicalLubs (ty2Repr, ty1Repr)
+    case (x1, x2) of
+      (Just _, _) ->
+        return ()
+
+      (_, Just _) ->
+        return ()
+
+      (Nothing, Nothing) -> do
+        let substLubToRepr1 = compose substLubTo1 subst1toRepr
+            substLubToRepr2 = compose substLubTo2 subst2toRepr
+        HashTable.insert canonicalLubs (ty1Repr, ty2Repr) ()
+
+        modifyHT dataForCanonicalRepresentatives ty1Repr $ \cData ->
+          cData
+          { above = Map.insert (WrappedType lub) substLubToRepr1 (above cData) }
+
+        modifyHT dataForCanonicalRepresentatives ty2Repr $ \cData ->
+          cData
+          { above = Map.insert (WrappedType lub) substLubToRepr2 (above cData) }
+    )
+    lubs
+
+  HashTable.mapM_ (\(ty0, cData0) -> do
+    above' <-
+      Map.fromList <$> 
+        mapM (\(ty1, subst0to1) -> do
+          Just (repr, _substReprTo1, subst1toRepr) <-  HashTable.lookup canonicalRepresentatives ty1
+          return (repr, compose subst0to1 subst1toRepr))
+          (Map.toList (above cData0))
+    below' <-
+      Map.fromList <$>
+        mapM (\(ty1, subst1to0) -> do
+          Just (repr, substReprTo1, _subst1toRepr) <- HashTable.lookup canonicalRepresentatives ty1
+          return (repr, compose substReprTo1 subst1to0))
+          (Map.toList (below cData0))
+
+    HashTable.insert
+      dataForCanonicalRepresentatives
+      ty0
+      (cData0 { above = above', below = below' }))
+
+    dataForCanonicalRepresentatives
+  return dataForCanonicalRepresentatives
+  where
+  pairs [] = []
+  pairs (x:xs) = map (x,) xs ++ pairs xs
+
+  withTails [] = []
+  withTails (x:xs) = (x, xs) : withTails xs
+
+  modifyHT ht k f =
+    HashTable.lookup ht k >>= \case
+      Just x -> HashTable.insert ht k (f x)
+      Nothing -> error "Impossible happend :("
 
 {-
 typePoset =
