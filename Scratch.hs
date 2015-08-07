@@ -1348,6 +1348,35 @@ data ElementData
   , natTranses :: HashMap.HashMap (Int, Int) (NatTransData () Type)
   }
 
+-- Just processes the "lessGeneral" edges for now
+transitiveReduction
+  :: Map.Map WrappedType ElementData
+  -> Map.Map WrappedType ElementData
+transitiveReduction poset0 =
+  -- I believe this is just a Map.map. Change it to be as such
+  Map.foldlWithKey' (\poset ty1 ed1 ->
+    let
+      lessGeneral' =
+        Map.foldlWithKey' (\lessGen ty2 _subst ->
+          -- remove the edges going to all the guys you can reach from ty2
+          Map.difference lessGen (lessGeneral $ fromJust (Map.lookup ty2 poset0)))
+          (lessGeneral ed1)
+          (lessGeneral ed1)
+    in
+    Map.insert ty1 (ed1 { lessGeneral = lessGeneral' }) poset)
+    poset0
+    poset0
+
+minimalElements
+  :: Map.Map WrappedType ElementData
+  -> [(WrappedType, ElementData)]
+minimalElements = filter (List.null . moreGeneral . snd) . Map.toList
+
+typePoset
+  :: MonadUnique m
+  => Var
+  -> Map.Map WrappedType (HashMap.HashMap (Int, Int) (NatTransData () Type))
+  -> m (Map.Map WrappedType ElementData)
 typePoset theInnerDummy natTransesByType = do
   uniqSupply <- getUniqueSupplyM
   let transesList = Map.toList natTransesByType
@@ -1366,9 +1395,8 @@ typePoset theInnerDummy natTransesByType = do
         Set.empty
         (pairs lubs' ++ liftA2 (,) lubs' transesList)
     (tysToReprs, reprsToData) = traceShow 2 $ makeCanonicalReprs (Map.empty, Map.empty) eltDatas'
-  return (reprsToData, tysToReprs, eltDatas', canonicalize tysToReprs reprsToData)
+  return (canonicalize tysToReprs reprsToData)
   where
-
   compareTypeEv :: Type -> Type -> TypeRelation
   compareTypeEv t1 t2 =
     case (match t1 t2, match t2 t1) of
