@@ -1359,7 +1359,12 @@ typePoset theInnerDummy natTransesByType = do
       (WrappedType l', HashMap.empty))
       (Set.toList lubs)
   let
-    (eltDatas', _) = traceShow 1 $ go Nothing eltDatas Set.empty (pairs lubs' ++ liftA2 (,) lubs' transesList)
+    (eltDatas', _) =
+      go
+        Nothing
+        (List.foldl' (\m (l,x) -> Map.insert l (x,Map.empty,Map.empty,Map.empty) m) eltDatas lubs')
+        Set.empty
+        (pairs lubs' ++ liftA2 (,) lubs' transesList)
     (tysToReprs, reprsToData) = traceShow 2 $ makeCanonicalReprs (Map.empty, Map.empty) eltDatas'
   return (reprsToData, tysToReprs, eltDatas', canonicalize tysToReprs reprsToData)
   where
