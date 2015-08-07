@@ -23,7 +23,6 @@ import Data.Hashable
 import qualified Data.Map as Map
 import qualified Data.Set as Set
 import qualified Data.List as List
-
 import           Mote.GhcUtil            (discardConstraints, addPredTys, splitPredTys)
 import           Mote.Refine             (tcRnExprTc, subTypeEvTc)
 import           Mote.Search.WrappedType
@@ -31,13 +30,9 @@ import           Mote.Types
 import           Mote.Util
 import           Search.Types.Word       (Word (..))
 import qualified Search.Types.Word       as Word
--- import qualified Mote.Search.Poset as Poset
--- import qualified Mote.Search.Poset.ElementData as ElementData
 import qualified Mote.Search.Poset.Pure as PurePoset
 import qualified Mote.LoadFile as LoadFile
-
 import qualified TcSMonad as TcS
-
 import qualified DynFlags
 import HscTypes (hsc_dflags)
 import           GHC
@@ -47,7 +42,7 @@ import qualified Name
 import           RdrName                 (RdrName (Exact))
 import           Type                    (splitAppTys, splitFunTys, mkForAllTys, TvSubst)
 import qualified Type
-import Kind (liftedTypeKind)
+import qualified Kind
 import           TypeRep                 (Type (..), tyVarsOfTypes, tyVarsOfType)
 import Unique (getUnique, getKey)
 import           UniqSet                 (elementOfUniqSet)
@@ -65,7 +60,7 @@ import UniqSupply
 import qualified Cloned.Unify
 import qualified Unify
 import qualified BasicTypes
-import qualified Data.HashTable.IO as HashTable
+import qualified Data.HashTable.ST.Basic as HashTable
 import qualified TcType
 import qualified Id
 import qualified Data.HashMap.Strict as HashMap
@@ -73,12 +68,11 @@ import qualified PrelNames
 import qualified Class
 import qualified TyCon
 import Control.Monad.State
-
 import qualified Unsafe.Coerce
-
 import           FastString              (sLit)
 import           Outputable              (Outputable, comma, fsep, ppr, ptext,
                                           punctuate, showSDoc, (<+>), braces)
+-- import Data.STRef
 import qualified Outputable
 import Cloned.Unify
 
@@ -511,6 +505,12 @@ splitLast xs = Just (splitLast' xs)
   splitLast' (x:xs) = first (x:) (splitLast' xs)
   splitLast' _      = error "Mote.Search.splitLast': Impossible"
 
+transportNatTransData
+  :: Type.TvSubst -- This should be an equivalence
+  -> NatTransData () Type
+  -> NatTransData () Type
+transportNatTransData subst nd = _
+
 closedSubstNatTransData
   :: Type.TvSubst
   -> NatTransData context Type
@@ -627,8 +627,12 @@ x i r = do
               substs)
             nds)
           thingies
-  lift . output $ (map (second (Map.size . above)) . Map.toList) (typePoset v stuff)
-  return stuff
+
+  uniqSupp <- liftIO newUniqueSupply
+  let poset = typePoset v uniqSupp stuff
+  lift $ output . Map.keys $ poset
+  return poset
+  -- lift . output $ (map (second (Map.size . above)) . Map.toList) poset
   -- let (subst, nd0, fromTy, [nd1]) =
 
 
@@ -680,15 +684,18 @@ x i r = do
   lift $ output $ (someInterp, moreSpecificContexts instEnvs (map unwrapType (context someInterp))) -}
 
 
-freshTyVar :: MonadUnique m => m Var
-freshTyVar = do
+freshTyVarOfKind :: MonadUnique m => Kind -> m Var
+freshTyVarOfKind k = do
   uniq <- getUniqueM
   return $
     mkGlobalVar
       VanillaId
-      (mkInternalName uniq (mkVarOcc "yadummy") noSrcSpan)
-      liftedTypeKind
-        vanillaIdInfo
+      (mkInternalName uniq (mkVarOcc "unifvar") noSrcSpan)
+      k
+      vanillaIdInfo
+
+freshTyVar :: MonadUnique m => m Var
+freshTyVar = freshTyVarOfKind Kind.liftedTypeKind
 
 newTyVar :: (GhcMonad m) => m Var
 newTyVar = do
@@ -699,7 +706,7 @@ newTyVar = do
       mkGlobalVar
         VanillaId
         (mkInternalName uniq (mkVarOcc "yadummy") noSrcSpan)
-        liftedTypeKind
+        Kind.liftedTypeKind
           vanillaIdInfo
 
 compareFromTypes
@@ -983,15 +990,50 @@ newUniqueSupply :: IO UniqSupply
 newUniqueSupply = UniqSupply.mkSplitUniqSupply 'a'
 
 type SubstFibers = Map.Map WrappedType (Set.Set Var)
+
+lub
+  :: (MonadUnique m)
+  => Type -> Type
+  -> m (Type, Type.TvSubst, Type.TvSubst)
+lub t1 t2 =
+  fmap (\(t,(f1,f2)) -> (t, fibersToSubst f1, fibersToSubst f2))
+    (runStateT (lubGo t1 t2) (Map.empty, Map.empty))
+  where
+  fibersToSubst fibers =
+    let
+      substEnv =
+        List.foldl' (\e (WrappedType ty, vars) ->
+          List.foldl'
+            (\e' v -> VarEnv.extendVarEnv e' v ty)
+            e
+            vars)
+          VarEnv.emptyVarEnv
+          (Map.toList fibers)
+    in
+    niFixTvSubst substEnv
+
+-- TODO: Shouldn't commonFiberElt always be called at the top???
 lubGo
   :: (MonadUnique m, MonadState (SubstFibers, SubstFibers) m)
-  => (Type, Type)
+  => Type -> Type
   -> m Type
-lubGo (t1, t2)
-  | otherwise =
+lubGo t1 t2 =
+  let (k1, k2) = (Kind.typeKind t1, Kind.typeKind t2)
+  in
+  if k1 /= k2
+  then do
+    mayVar <- commonFiberElt t1 t2
+    case mayVar of
+      Just v ->
+        return (TyVarTy v)
+      Nothing -> do
+        something <- freshTyVarOfKind Kind.anyKind
+        modify (bimap (addToFiber t1 something) (addToFiber t2 something))
+        return (TyVarTy something)
+  else
     case (t1, t2) of
       (FunTy s1 t1, FunTy s2 t2) ->
-        FunTy <$> lubGo (s1, s2) <*> lubGo (t1, t2)
+        FunTy <$> lubGo s1 s2 <*> lubGo t1 t2
 
       -- TODO: FunTy should be able to unify with TyCon
 
@@ -1010,12 +1052,12 @@ lubGo (t1, t2)
                   Right (reverse -> args2') ->
                     (f1, appMany f2 args2')
 
-            liftA2 appMany (lubGo (t1', t2')) (mapM lubGo matched)
+            liftA2 appMany (lubGo t1' t2') (mapM (uncurry lubGo) matched)
 
       (TyConApp tc1 args1, TyConApp tc2 args2) ->
         if tc1 == tc2
         then
-          TyConApp tc1 <$> mapM lubGo (zip args1 args2)
+          TyConApp tc1 <$> zipWithM lubGo args1 args2
         else
           case zipAgainst (reverse args1) (reverse args2) of
             (reverse -> matched, remainingRevd) ->
@@ -1029,15 +1071,16 @@ lubGo (t1, t2)
                         (TyConApp tc1 [], TyConApp tc2 args2')
                 }
               ; mayVar <- commonFiberElt t1' t2'
+              ; matchedTys <- mapM (uncurry lubGo) matched
               ; fvar <-
                   case mayVar of
                     Nothing -> do
+                      let argKinds = map 
                       v <- freshTyVar
                       modify (bimap (addToFiber t1' v) (addToFiber t2' v))
                       return v
                     Just v ->
                       return v
-              ; matchedTys <- mapM lubGo matched
               ; return (appMany (TyVarTy fvar) matchedTys)
               }
 
@@ -1052,6 +1095,9 @@ lubGo (t1, t2)
             modify (bimap (addToFiber t1 v) (addToFiber t2 v))
             return (TyVarTy v)
   where
+  funTyList (FunTy s t) = s : funTyList t
+  funTyList t           = [t]
+
   addToFiber t v =
     Map.insertWith Set.union (WrappedType t) (Set.singleton v)
 
@@ -1199,6 +1245,7 @@ contextualizedFromType (NatTransData {context, from}) innerVar =
                 (args ++ [stitchUp fs' innerTy])
 
 
+{-
 type Map = Map.Map -- TODO: Switch to IntMap for performance
 data ElementData
   = ElementData
@@ -1207,15 +1254,66 @@ data ElementData
   , natTranses :: HashMap.HashMap (Int, Int) (NatTransData () Type) -- transes keyed by their name and functorArgumentPosition
   }
 
-typePoset ::
-  Var -- A fresh var which we apply the from-type-functors to
+minimalElements
+  :: Map.Map WrappedType ElementData
+  -> Map.Map WrappedType ElementData
+minimalElements poset0 =
+  Map.foldl' (\minsSoFar (ElementData {above}) ->
+    Map.difference minsSoFar above)
+    poset0
+    poset0
+
+transitiveReduction
+  :: Map.Map WrappedType ElementData
+  -> Map.Map WrappedType ElementData
+transitiveReduction poset0 =
+  Map.foldlWithKey' (\poset ty ed ->
+    let
+      above' =
+        Map.foldlWithKey'
+          (\abv ty1 _subst ->
+            if existsSegmentedPath ty ty1 abv poset
+            then Map.delete ty1 abv
+            else abv)
+          (above ed)
+          (above ed)
+    in
+    Map.insert ty (ed { above = above' }) poset)
+    poset0
+    poset0
+  where
+  existsSegmentedPath ty0 ty1 abv0 poset =
+    Map.foldrWithKey (\ty_i _ b ->
+      let
+        Just (ElementData {above=abv_i}) = Map.lookup ty_i poset
+      in
+      Map.member ty1 abv_i || b)
+      False
+      abv0
+
+-}
+{-
+-- We do two passes
+typePoset
+  :: Var -- A fresh var which we apply the from-type-functors to
+  -> UniqSupply
   -> [(Type, [ NatTransData () Type ])] -- NatTranses by monomorphized pre-cooked from-type
   ->
     Map.Map
       WrappedType -- monomorphized type
       ElementData
-typePoset freshVar transesByType =
+typePoset freshVar uniqSupply transesByType =
   let
+    match' t1_0 t2_0 =
+      let
+        t1 = Type.dropForAlls t1_0
+        t2 = Type.dropForAlls t2_0
+      in
+      Unify.tcMatchTy
+        (VarEnv.delVarEnv (Type.tyVarsOfType t1) freshVar)
+        t1
+        t2
+
     addAbove tyBottom tyTop substBottomToTop ndsBottom =
       Map.alter (\case
         Nothing ->
@@ -1232,41 +1330,100 @@ typePoset freshVar transesByType =
           }))
         (WrappedType tyBottom)
   in
-  List.foldl'
-    (\m ((fromTy1, nds1), (fromTy2, nds2)) ->
-      case (match fromTy1 fromTy2, match fromTy2 fromTy1) of
-        -- The two are unrelated
-        (Nothing, Nothing) ->
-          m
+  let
+    m0 =
+      List.foldl' (\m (ty, nds) ->
+        Map.insert
+          (WrappedType ty)
+          (ElementData {above=Map.empty, natTranses=(transMapFromList nds)})
+          m)
+        Map.empty
+        transesByType
+    m1 =
+      List.foldl'
+        (\m ((fromTy1, nds1), (fromTy2, nds2)) ->
+          case (match fromTy1 fromTy2, match fromTy2 fromTy1) of
+            -- The two are unrelated
+            (Nothing, Nothing) ->
+              let (lubTy, lubToTy1, lubToTy2) = initUs_ uniqSupply (lub fromTy1 fromTy2)
+              in
+              addAbove lubTy fromTy1 lubToTy1 [] (addAbove lubTy fromTy2 lubToTy2 [] m)
 
-        -- fromTy1 is strictly more general than fromTy2
-        (Just subst1to2, Nothing) ->
-          addAbove fromTy1 fromTy2 subst1to2 nds1 m
+            -- fromTy1 is strictly more general than fromTy2
+            (Just subst1to2, Nothing) ->
+              addAbove fromTy1 fromTy2 subst1to2 nds1 m
 
-        -- fromTy2 is strictly more general than fromTy1
-        (Nothing, Just subst2to1) ->
-          addAbove fromTy2 fromTy1 subst2to1 nds2 m
+            -- fromTy2 is strictly more general than fromTy1
+            (Nothing, Just subst2to1) ->
+              addAbove fromTy2 fromTy1 subst2to1 nds2 m
 
-        (Just subst1to2, Just subst2to1) ->
-          let
-            defaultData =
-              ElementData Map.empty HashMap.empty
-          in
-          let
-            ElementData {above=above1, natTranses=natTranses1} =
-              fromMaybe defaultData (Map.lookup (WrappedType fromTy1) m)
-            (fromMaybe defaultData -> ElementData {above=above2,natTranses=natTranses2}, m') = 
-              Map.updateLookupWithKey (\_ _ -> Nothing) (WrappedType fromTy2) m
-          in
-          Map.insert
-            (WrappedType fromTy1)
-            (ElementData
-            { above = Map.union above1 above2
-            , natTranses = HashMap.union natTranses1 natTranses2 
-            })
-            m')
-    Map.empty
-    (pairs transesByType)
+            -- TODO: This case is wrong somehow
+            (Just subst1to2, Just subst2to1) ->
+              let
+                defaultData =
+                  ElementData Map.empty HashMap.empty
+              in
+              let
+                ElementData {above=above1, natTranses=natTranses1} =
+                  fromMaybe defaultData (Map.lookup (WrappedType fromTy1) m)
+
+                (fromMaybe defaultData -> ElementData {above=above2,natTranses=natTranses2}, m') = 
+                  Map.updateLookupWithKey (\_ _ -> Nothing) (WrappedType fromTy2) m
+              in
+              Map.insert
+                (WrappedType fromTy1)
+                (ElementData
+                { above = Map.union above1 (Map.map (compose subst1to2) above2)
+                , natTranses = HashMap.union natTranses1 natTranses2 
+                })
+                m')
+        m0
+        (pairs transesByType)
+  in
+  -- The "right" thing to do is probably to complete the lattice but
+  -- I think one iteration is good enough.
+  let
+    (intermediates, reals) =
+      List.partition
+        (\(_, ed) -> HashMap.null (natTranses ed))
+        (Map.toList m1)
+    m2 =
+      List.foldl' (\m ((lubTy1, ed1), (lubTy2, ed2)) ->
+        case trace "yo" (match (unwrapType lubTy1) (unwrapType lubTy2), match (unwrapType lubTy2) (unwrapType lubTy1)) of
+          -- The two are unrelated
+          (Nothing, Nothing) ->
+            m
+
+          -- lubTy1 is strictly more general than fromTy2
+          (Just subst1to2, Nothing) ->
+            Map.insert lubTy1
+              (ed1 { above = Map.insert lubTy2 subst1to2 (above ed1) })
+              m
+
+          -- fromTy2 is strictly more general than fromTy1
+          (Nothing, Just subst2to1) ->
+            Map.insert lubTy2
+              (ed2 { above = Map.insert lubTy1 subst2to1 (above ed2) })
+              m
+
+          -- TODO: This case is wrong somehow
+          (Just subst1to2, Just subst2to1) ->
+            Map.insert
+              lubTy1
+              (ElementData
+              { above = Map.union (above ed1) (Map.map (compose subst1to2) (above ed2))
+              , natTranses = HashMap.empty
+              })
+              (Map.delete lubTy2 m))
+        m1
+        (pairs intermediates)
+  in
+  m1
+  {-
+  List.foldl' (\m ((ty1, ed1), (ty2, ed2)) ->
+    case (Map.lookup ty2 (above ed1), Map.lookup ty1 (above ed2
+    m1
+    (pairs intermediates intermediates ++ liftA2 (,) intermediates reals) -}
   where
   transMapFromList =
     HashMap.fromList . map (\nd -> ((getKey (getUnique (name nd)), functorArgumentPosition nd), nd))
@@ -1274,6 +1431,79 @@ typePoset freshVar transesByType =
   pairs :: [a] -> [(a, a)]
   pairs []     = []
   pairs (x:xs) = map (x,) xs ++ pairs xs
+-}
+
+{-
+type posetNode = struct {
+  natTranses : List NatTransData,
+  neighbors : List (*(*posetNode));
+
+data PosetNodeData s =
+  PosetNodeData
+  { natTranses :: HashMap.HashMap (Int, Int) (NatTransData () Type)
+  , above :: Map.Map WrappedType _
+  , below :: Map.Map WrappedType _
+  }
+
+} -}
+type PosetName s = STRef s (ElementData
+
+data Status = Finished | Unfinished
+  deriving (Eq, Ord, Show)
+
+-- This is all too damn confusing. Going to do something simple.
+typePoset = do
+
+{-
+typePoset =
+  forM_ (withTails transesByType) $ \( (ty1, transes1), laterOn) -> do
+    (status1, (repr1, subst1toRepr1, loc1)) <- getCreateCanonicalRepresentative ty1 transes1
+    when (status1 == Unfinished) $ do
+      forM_ laterOn $ \(ty2, transes2) -> do
+        (status2, (repr2, subst2toRepr2, loc2)) <- getCreateCanonicalRepresentative ty2 transes2
+        when (status2 == Unfinished) $ do
+
+          case (match repr1 repr2, match repr2 repr1) of
+            (Just _ _, Just _ _) ->
+              return ()
+
+      modify (Map.insert ty1 (Finished, (repr1, subst1toRepr1, loc1)))
+
+  where
+  getCreateCanonicalRepresentative t transes = do
+    canonicalReps <- get
+    case Map.lookup t canonicalReps of
+      -- No canonical representative yet. t gets to be it.
+      Nothing -> do
+        loc <- lift (newSTRef (PosetNodeData { natTranses = transes, above = Set.empty, below = Set.empty }))
+        let tData = (t, Type.emptyTvSubst, loc)
+        return (Unfinished, tData)
+
+      Just (status, tData) ->
+        -- No need to do add the transes since we must have previously
+        -- encounted t and found it to be equivalent to the repr. But
+        -- doesn't that also imply that status == Finished? Verify
+        -- experimentally.
+        return (status, tData)
+-}
+{-
+typePoset :: _
+typePoset transesByType = _
+  go :: [(Type, [NatTransData () Type])] -> _ -> _
+  go [] = _
+  go ((t,transes) : rest) =
+    let
+      (below, matching, above) = _
+    in
+    _
+
+  partition
+    :: Type
+    -> [(Type, x)]
+    -> (Map WrappedType Subst, [NatTransData () Type], Map WrappedType Subst)
+  partition ty0 ((ty1,x) : ps) =
+    case (
+-}
 
 
 uncontextualizedFromType :: (constant -> Type) -> NatTransData context constant -> Var -> Type
