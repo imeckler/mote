@@ -65,8 +65,17 @@ import           Outputable              (Outputable, comma, fsep, ppr, ptext,
                                           punctuate, (<+>), braces)
 import Cloned.Unify
 
+import qualified Search.Types
+import Search.Graph
 import Mote.Debug
 
+-- DEBUG
+import Debug.Trace
+import           System.IO
+import           System.Directory           (getHomeDirectory)
+import           System.FilePath
+import           GHC.Paths
+import qualified Mote.Init
 -- Need to make sure that everyone gets the functions with the empty
 -- context though.
 
@@ -201,15 +210,16 @@ natTransInterpretationsStrict functorClass instEnvs (name, t0) =
     let
       (argSfs, argInner) =
         splitSyntacticFunctors argTy
-      cf =
+      cfMay =
         case argInner of
           TyConApp tc [] ->
-            ConstantFunctorTyCon tc
+            Just (ConstantFunctorTyCon tc)
           TyVarTy v ->
-            ConstantFunctorTyVar v
+            Just (ConstantFunctorTyVar v)
           _ ->
-            error "interp: Impossible"
+            Nothing -- error "interp: Impossible"
     in
+    cfMay >>= \cf ->
     checkSource (argSfs, cf) >>= \from ->
       let
         nd =
@@ -314,6 +324,8 @@ natTransInterpretationsStrict functorClass instEnvs (name, t0) =
         error "natTransInterpretations: AppTy"
       FunTy _t _t' ->
         error "natTransInterpretations: FunTy"
+
+      -- TODO: These two cases are not impossible.
       ForAllTy _v _t ->
         error "natTransInterpretations: ForAllTy"
       LitTy _tl ->
@@ -321,6 +333,32 @@ natTransInterpretationsStrict functorClass instEnvs (name, t0) =
 
   (targSfs, targInner) = splitSyntacticFunctors targ
   nonParametricTypes   = Type.tyVarsOfTypes predTys
+
+splitSyntacticFunctors :: Type -> ([SyntacticFunctor], Type)
+splitSyntacticFunctors t = case t of
+  TyVarTy _v       -> ([], t)
+  ForAllTy _v t    -> splitSyntacticFunctors t
+  LitTy _          -> ([], t)
+
+  FunTy src trg ->
+    let
+      (sfs, inner) = splitSyntacticFunctors trg
+    in
+    ((TypeFunctionTyCon Type.funTyCon, [WrappedType src]):sfs, inner)
+
+  TyConApp tc kots -> case splitLast kots of
+    Nothing          -> ([], t)
+    Just (args, arg) -> first ((TypeFunctionTyCon tc, map WrappedType args) :) (splitSyntacticFunctors arg)
+
+  AppTy _ _ ->
+    let
+      (TyVarTy v, args) = splitAppTys t
+    in
+    case splitLast args of
+      Nothing          -> ([], t)
+      Just (args, arg) -> first ((TypeFunctionTyVar v, map WrappedType args) :) (splitSyntacticFunctors arg)
+
+{-
 splitSyntacticFunctors :: Type -> ([SyntacticFunctor], Type)
 splitSyntacticFunctors t =
   let
@@ -351,7 +389,7 @@ splitSyntacticFunctors t =
     Just (ts', t_last) ->
       let (sfs, tyInner) = splitSyntacticFunctors t_last in
       ((tyFun, map WrappedType (preArgs ++ ts')) : sfs, tyInner)
-
+-}
 equivalentContexts :: [PredType] -> [PredType] -> Bool
 equivalentContexts ctx1 ctx2 =
   case (f ctx1 ctx2, f ctx2 ctx1) of
@@ -502,11 +540,93 @@ inScopePosetAndInnerDummy = do
               nds)
             monomorphizedSubstsForEquivalentContexts
 
+  lift $ output $ Map.keys natTransesByType
   uniqSupp <- liftIO newUniqueSupply
   let poset = initUs_ uniqSupp (typePoset theInnerDummy natTransesByType)
-  return (Map.keys poset, theInnerDummy)
+  return (poset, theInnerDummy)
 
-main = return ()
+natTransDataToTrans :: NatTransData () Type -> Search.Types.Trans SyntacticFunctor Type
+natTransDataToTrans (NatTransData {name,from,to,functorArgumentPosition,numberOfArguments}) =
+  Search.Types.Trans
+  { from = from
+  , to   = to
+  , name = Search.Types.AnnotatedTerm name' (numberOfArguments - 1) 0
+  }
+  where
+  ident = nameToString name
+  name' =
+    if numberOfArguments == 1 
+    then Search.Types.Simple ident 
+    else if functorArgumentPosition == numberOfArguments - 1
+    then Search.Types.Compound (ident ++ " " ++ underscores (numberOfArguments - 1))
+    else Search.Types.Simple ("(\\x -> " ++ ident ++ " " ++ underscores functorArgumentPosition ++ " x " ++ underscores (numberOfArguments - functorArgumentPosition - 1) ++ ")")
+  underscores n = unwords $ replicate n "_"
+
+matches
+  :: Var
+  -> Map.Map WrappedType (ElementData Type (Search.Types.Trans SyntacticFunctor Type))
+  -> Word.View SyntacticFunctor Type
+  -> [(Word SyntacticFunctor Type, Search.Types.Move SyntacticFunctor Type)]
+matches innerVar poset wv =
+  undefined
+  where
+  (focus, newWordAndMove) = case wv of
+    Word.NoO pre foc post ->
+      ( stitchUp (TyVarTy innerVar) foc 
+      -- TODO: Should take subst as argument
+      , \t ->
+        (Word pre Nothing <> to t <> Word post Nothing, Word.Middle pre t (Word post Nothing))
+      )
+
+    -- YesOMid and NoO can be unified with Middle, but it is a bit confusing.
+    Word.YesOMid pre foc post o ->
+      ( stitchUp (TyVarTy innerVar) foc
+      , \t ->
+        (Word pre Nothing <> to t <> Word post (Just o), Word.Middle pre t (Word post (Just o)))
+      )
+
+    Word.YesOEnd pre (foc, o) ->
+      ( stitchUp o foc
+      , \t ->
+        (Word pre Nothing <> to t, Word.End pre t)
+      )
+
+{-
+branchOut
+  :: (Eq f, Hashable f, Eq o, Hashable o)
+  => HashMap.HashMap (Word f o) [Trans f o]
+  -> Word f o
+  -> [(Word f o, Move f o)]
+-}
+main = do
+  home <- getHomeDirectory
+  withFile (home </> ".scratchlog") WriteMode $ \logFile -> do
+    r <- newRef =<< initialState logFile
+    hSetBuffering logFile NoBuffering
+    hSetBuffering stdout NoBuffering
+    runGhc (Just libdir) $ do
+      Mote.Init.initializeWithCabal r >>= \case
+        Left err -> liftIO $ print "I'm sorry"
+        Right () -> return ()
+
+      orErr <- runErrorT $ do
+        LoadFile.loadFile r "Mote.hs"
+        (poset, innerDummy) <- inScopePosetAndInnerDummy
+        lift $ output $ Map.keys poset
+
+      case orErr of
+        Right () -> return ()
+        Left err -> liftIO $ print err
+    where
+    initialState :: Handle -> IO MoteState
+    initialState logFile = mkSplitUniqSupply 'x' >>| \uniq -> MoteState
+      { fileData = Nothing
+      , currentHole = Nothing
+      , argHoles = Set.empty
+      , loadErrors = []
+      , logFile
+      , uniq
+      }
 
 freshTyVarOfKind :: MonadUnique m => Kind -> m Var
 freshTyVarOfKind k = do
@@ -693,9 +813,10 @@ isUndesirableType t0 =
         any (\case {TyConApp tc _ -> getUnique tc == PrelNames.unitTyConKey; _ -> False})
           args
 
+
 -- forall t1 t2 : Type,
 -- let (t, s1, s2) = lub t1 t2 in
--- t is the least general type such that there are substitutions takin
+-- t is the least general type such that there are substitutions taking
 -- t to t1 and t to t2 (and s1 and s2 are such substitutions)
 
 newUniqueSupply :: IO UniqSupply
@@ -879,17 +1000,17 @@ renameVars ty = evalStateT (go VarSet.emptyVarSet ty) VarEnv.emptyVarEnv
       LitTy _ ->
         return ty
 
-data ElementData
+data ElementData key val
   = ElementData
-  { moreGeneral :: Map.Map WrappedType Type.TvSubst
-  , lessGeneral :: Map.Map WrappedType Type.TvSubst
-  , natTranses :: HashMap.HashMap (Int, Int) (NatTransData () Type)
+  { moreGeneral :: Map.Map key Type.TvSubst
+  , lessGeneral :: Map.Map key Type.TvSubst
+  , natTranses :: HashMap.HashMap (Int, Int) val -- (NatTransData () Type)
   }
 
 -- Just processes the "lessGeneral" edges for now
 transitiveReduction
-  :: Map.Map WrappedType ElementData
-  -> Map.Map WrappedType ElementData
+  :: Map.Map WrappedType (ElementData WrappedType val)
+  -> Map.Map WrappedType (ElementData WrappedType val)
 transitiveReduction poset0 =
   -- I believe this is just a Map.map. Change it to be as such
   Map.foldlWithKey' (\poset ty1 ed1 ->
@@ -905,36 +1026,165 @@ transitiveReduction poset0 =
     poset0
     poset0
 
+type ClosedType = Type
+
 minimalElements
-  :: Map.Map WrappedType ElementData
-  -> [(WrappedType, ElementData)]
+  :: Map.Map WrappedType (ElementData k val)
+  -> [(WrappedType, ElementData k val)]
 minimalElements =
   filter (List.null . moreGeneral . snd) . Map.toList
 
+data GroupingTree x
+  = GroupingTree
+  { chooseTyCon :: [(TyCon, Either (ArgsGroupingTree x) x)]
+  , typesNotThuslyGrouped :: [(WrappedType, x)]
+  }
+
+data ArgsGroupingTree x
+  = ArgsGroupingTree
+  { chooseArg :: Map.Map WrappedType (Either (ArgsGroupingTree x) x)
+  , argsNotThuslyGrouped :: Map.Map [WrappedType] x
+  }
+
+groupingTree :: [(WrappedType, x)] -> GroupingTree x
+groupingTree transes =
+  let
+    tcGroups =
+      List.groupBy (quiteSimilar `on` fst) transes
+
+    (chooseTyCon , typesNotThuslyGrouped) =
+      List.foldl' (\(byTyCon, uncategorized) group ->
+        let
+          ((WrappedType ty, x) : _) = group
+        in
+        case ty of
+          TyConApp tc _ ->
+            let
+              byTyCon' =
+                (tc, argsGroupingTree (map (\case { (WrappedType (TyConApp _ args),x) -> (map WrappedType args,x) }) group))
+                : byTyCon
+            in
+            (byTyCon', uncategorized)
+
+          _ ->
+            (byTyCon, group ++ uncategorized))
+      ([], [])
+      tcGroups
+  in
+  GroupingTree { chooseTyCon, typesNotThuslyGrouped }
+  where
+  argsGroupingTree [] = error "argsGroupingTree: Impossible"
+  argsGroupingTree argses@((args0, x0):_) =
+    case args0 of
+      [] ->
+        Right x0
+
+      _ ->
+        let
+          sameArgGroups =
+            List.groupBy ((==) `on` (head . fst)) argses
+          (chooseArg, argsNotThuslyGrouped) =
+            List.foldl' (\(byType, uncategorized) group@((args0,_):_) ->
+              let
+                ty = head args0
+              in
+              if isClosedType (unwrapType ty)
+              then (Map.insert ty (argsGroupingTree (map (first tail) group)) byType, uncategorized)
+              else
+                ( byType
+                , List.foldl' (\uncat (args, x) -> Map.insert args x uncat)
+                    uncategorized 
+                    group
+                ))
+              (Map.empty, Map.empty)
+              sameArgGroups
+        in
+        Left (ArgsGroupingTree { chooseArg, argsNotThuslyGrouped })
+
+
+  quiteSimilar (WrappedType t1) (WrappedType t2) =
+    case (t1, t2) of
+      (TyConApp tc1 _, TyConApp tc2 _) ->
+        tc1 == tc2
+      _ ->
+        False
+
+  isClosedType = go VarSet.emptyVarSet
+    where
+    go boundVars t =
+      case t of
+        TyConApp tc args ->
+          all isClosedType args
+
+        ForAllTy v t' ->
+          go (VarSet.extendVarSet boundVars v) t'
+
+        LitTy _ -> True
+
+        FunTy src trg ->
+          isClosedType src && isClosedType trg
+
+        AppTy t1 t2 ->
+          isClosedType t1 && isClosedType t2
+
+        TyVarTy v ->
+          v `VarEnv.elemVarEnv` boundVars
+
+type ElementData'
+  = ElementData WrappedType (NatTransData () Type)
+
+{-
 typePoset
   :: MonadUnique m
   => Var
   -> Map.Map WrappedType (HashMap.HashMap (Int, Int) (NatTransData () Type))
-  -> m (Map.Map WrappedType ElementData)
+  -> m (
+  Map.Map
+    WrappedType
+    (ElementData', Maybe (ArgsGroupingTree [NatTransData () Type]))
+  ) -}
 typePoset theInnerDummy natTransesByType = do
   uniqSupply <- getUniqueSupplyM
-  let transesList = Map.toList natTransesByType
-      (eltDatas, lubs) = go (Just uniqSupply) m0 Set.empty (pairs transesList)
+  let
+    transesList =
+      Map.toList natTransesByType
+
+    GroupingTree { chooseTyCon, typesNotThuslyGrouped } =
+      groupingTree transesList
+
+    tyConTypes =
+      map (\(tc, ex) ->
+        ( WrappedType (TyConApp tc (map TyVarTy (TyCon.tyConTyVars tc)))
+        , (HashMap.empty, either Just _ ex)
+        )
+       )
+        chooseTyCon
+
+    groupedTranses =
+      map (\(t,m) -> (t, (m, Nothing))) typesNotThuslyGrouped ++ tyConTypes
+
+    m0 =
+      Map.fromList
+        (map (second (\transes -> (transes, Map.empty, Map.empty, Map.empty)))
+          groupedTranses)
+
+    (eltDatas, lubs) =
+      traceShow (length natTransesByType) $ go (Just uniqSupply) m0 Set.empty (pairs groupedTranses)
 
   lubs' <-
     mapM (\(WrappedType l) ->
       renameVars l >>| \l' ->
-      (WrappedType l', HashMap.empty))
+      (WrappedType l', (HashMap.empty, Nothing)))
       (Set.toList lubs)
   let
-    (eltDatas', _) =
+    (eltDatas', _) = traceShow (length lubs') $
       go
         Nothing
         (List.foldl' (\m (l,x) -> Map.insert l (x,Map.empty,Map.empty,Map.empty) m) eltDatas lubs')
         Set.empty
-        (pairs lubs' ++ liftA2 (,) lubs' transesList)
+        (pairs lubs' ++ liftA2 (,) lubs' groupedTranses)
 
-    (tysToReprs, reprsToData) =
+    (tysToReprs, reprsToData) = traceShow "HI" $
       makeCanonicalReprs (Map.empty, Map.empty) eltDatas'
   return (canonicalize tysToReprs reprsToData)
   where
@@ -966,16 +1216,20 @@ typePoset theInnerDummy natTransesByType = do
 
 
   canonicalize tysToReprs reprsToData =
-    Map.mapWithKey (\repr (natTranses, moreGeneral, lessGeneral) ->
-      ElementData
-      { moreGeneral =
-        -- TODO: Have to correct the substs!
-          Map.mapKeys (\t -> fromJust (Map.lookup t tysToReprs)) moreGeneral
-      , lessGeneral =
-        -- TODO: Have to correct the substs!
-          Map.mapKeys (\t -> fromJust (Map.lookup t tysToReprs)) lessGeneral
-      , natTranses = natTranses
-      })
+    Map.mapWithKey (\repr ((natTranses, maybeGroup), moreGeneral, lessGeneral) ->
+      ( ElementData
+        { moreGeneral =
+            Map.intersection moreGeneral reprsToData
+          -- TODO: Have to correct the substs!
+            -- Map.mapKeys (\t -> fromJust (Map.lookup t tysToReprs)) moreGeneral
+        , lessGeneral =
+            Map.intersection lessGeneral reprsToData
+          -- TODO: Have to correct the substs!
+            -- Map.mapKeys (\t -> fromJust (Map.lookup t tysToReprs)) lessGeneral
+        , natTranses = natTranses
+        }
+      , maybeGroup
+      ))
       reprsToData
 
   makeCanonicalReprs acc@(tysToReprs0, reprsToData) remaining =
@@ -983,7 +1237,7 @@ typePoset theInnerDummy natTransesByType = do
       Nothing ->
         acc
 
-      Just ((ty1, (natTranses, moreGeneral, equal, lessGeneral)), remaining') ->
+      Just ((ty1, ((natTranses,maybeGroup), moreGeneral, equal, lessGeneral)), remaining') ->
         let
           (tysToReprs', natTranses') =
             Map.foldlWithKey' (\(tysToReprs, natTranses1) ty2 (natTranses2, (_subst1to2, subst2to1)) ->
@@ -996,7 +1250,7 @@ typePoset theInnerDummy natTransesByType = do
               equal
         in
         makeCanonicalReprs
-          (tysToReprs', Map.insert ty1 (natTranses', moreGeneral, lessGeneral) reprsToData)
+          (tysToReprs', Map.insert ty1 ((natTranses',maybeGroup), moreGeneral, lessGeneral) reprsToData)
           (Map.difference remaining' equal)
 
   go _ eltDatas lubs [] = (eltDatas, lubs)
@@ -1037,9 +1291,6 @@ typePoset theInnerDummy natTransesByType = do
         in
         go uniqSupplyMay eltDatas' lubs ps
 
-  m0 =
-    Map.map (\transes -> (transes, Map.empty, Map.empty, Map.empty)) natTransesByType
-
   -- TODO: Don't even both storing the substs. Just convert transes2 here
   -- using it and it won't get evaluated unless t1 is chosen as canonical.
   addEqualElt t1 t2 transes2 substs eltDatas =
@@ -1064,35 +1315,34 @@ typePoset theInnerDummy natTransesByType = do
 
 uncontextualizedFromType :: (constant -> Type) -> NatTransData context constant -> Var -> Type
 uncontextualizedFromType conv (NatTransData {from = Word fs inner}) freshVar =
-  stitchUp fs 
+  stitchUp innerTy fs 
   where
   innerTy =
     maybe (TyVarTy freshVar) conv inner
 
-  stitchUp fs =
-    case fs of
-      [] ->
-        innerTy
+stitchUp innerTy fs =
+  case fs of
+    [] ->
+      innerTy
 
-      (tyFun, map unwrapType -> args) : fs' ->
-        case tyFun of
-          TypeFunctionTyVar v ->
-            AppTy 
-              (foldl
-                (\r arg -> AppTy r arg)
-                (TyVarTy v)
-                args)
-              (stitchUp fs')
+    (tyFun, map unwrapType -> args) : fs' ->
+      case tyFun of
+        TypeFunctionTyVar v ->
+          AppTy 
+            (foldl
+              (\r arg -> AppTy r arg)
+              (TyVarTy v)
+              args)
+            (stitchUp innerTy fs')
 
-          TypeFunctionTyCon tc ->
-            if isFunTyCon tc
-            then
-              let [arg] = args in
-              FunTy arg (stitchUp fs')
-            else
-              TyConApp tc
-                (args ++ [stitchUp fs'])
-
+        TypeFunctionTyCon tc ->
+          if isFunTyCon tc
+          then
+            let [arg] = args in
+            FunTy arg (stitchUp innerTy fs')
+          else
+            TyConApp tc
+              (args ++ [stitchUp innerTy fs'])
 
 nameType :: Name -> M (Maybe Type)
 nameType n = do

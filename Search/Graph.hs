@@ -460,8 +460,7 @@ sequence ng1 ng2_0 =
 -- TODO: Analyze program graphs
 
 graphsOfSizeAtMost' 
-  :: (Hashable f, Ord f, Hashable o, Ord o
-  ,Show o, Show f) -- TODO: Debug 
+  :: (Hashable f, Ord f, Hashable o, Ord o, Show o, Show f) -- TODO: Debug 
   => [Trans f o]
   -> Int
   -> Word f o
@@ -485,6 +484,20 @@ moveSequencesOfSizeAtMost tsList n start end = go start n
         map (m:) (go b' (k - 1)))
       (branchOut ts b)
 
+moveSequencesOfSizeAtMost'
+  :: (Eq type_, Foldable t)
+  => (type_ -> t (type_, natTrans)) -> Int -> type_ -> type_ -> [] ([] natTrans)
+moveSequencesOfSizeAtMost' branchOut n start end = go start n
+  where
+  go b k =
+    if k == 0
+    then
+      if b == end then [[]] else []
+    else
+      concatMap (\(b', m) ->
+        map (m:) (go b' (k - 1)))
+        (branchOut b)
+
 moveListToGraph = \case
   []   -> NaturalGraph mempty mempty Map.empty Map.empty Set.empty 0 0
   m:ms -> go (moveToGraph m) ms
@@ -493,6 +506,31 @@ moveListToGraph = \case
     case ms of
       [] -> canonicalize acc
       m:ms -> go (acc `sequence` moveToGraph m) ms
+
+moveSequencesOfSizeAtMostMemo' branchOut n start end = HashSet.toList $ runST $ do
+  arr <- newSTArray (0, n) Map.empty
+  go arr n start
+  where 
+  newSTArray :: (Int, Int) -> Map k v -> ST s (STArray s Int (Map k v))
+  newSTArray = newArray
+
+  -- TODO: This is wrong, should allow things to happen after reaching the
+  -- end.
+  go arr n b
+    | b == end  = return (HashSet.singleton [])
+    | n == 0    = return HashSet.empty
+    | otherwise = do
+      memo <- readArray arr n
+      case Map.lookup b memo of
+        Nothing -> do
+          -- let (singSteps, nicerSteps) = List.partition (\(_,m) -> singTrans (moveTrans m)) (branchOut ts b)
+          progs <- fmap HashSet.unions . forM (branchOut b) $ \(b', move) ->
+            fmap (HashSet.map (move :)) (go arr (n - 1) b')
+          let progs' = if b == end then HashSet.insert [] progs else progs
+          writeArray arr n (Map.insert b progs' memo)
+          return progs'
+
+        Just ps -> return ps
 
 moveSequencesOfSizeAtMostMemo
   :: (Hashable f, Ord f, Hashable o, Ord o
@@ -511,7 +549,7 @@ moveSequencesOfSizeAtMostMemo tsList n start end = HashSet.toList $ runST $ do
 
   ts = HashMap.fromListWith (++) (map (\t -> (from t, [t])) tsList)
 
-  -- TODO: This is wrong, should allow shit to happen after reaching the
+  -- TODO: This is wrong, should allow things to happen after reaching the
   -- end.
   go arr n b
     | b == end  = return (HashSet.singleton [])
