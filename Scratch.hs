@@ -540,7 +540,6 @@ inScopePosetAndInnerDummy = do
               nds)
             monomorphizedSubstsForEquivalentContexts
 
-  lift $ output $ Map.keys natTransesByType
   uniqSupp <- liftIO newUniqueSupply
   let poset = initUs_ uniqSupp (typePoset theInnerDummy natTransesByType)
   return (poset, theInnerDummy)
@@ -612,7 +611,7 @@ main = do
       orErr <- runErrorT $ do
         LoadFile.loadFile r "Mote.hs"
         (poset, innerDummy) <- inScopePosetAndInnerDummy
-        lift $ output $ Map.keys poset
+        lift $ output $ Map.keys (transitiveReduction poset)
 
       case orErr of
         Right () -> return ()
@@ -1008,21 +1007,22 @@ data ElementData key val
   }
 
 -- Just processes the "lessGeneral" edges for now
+-- Could use lens here...
 transitiveReduction
-  :: Map.Map WrappedType (ElementData WrappedType val)
-  -> Map.Map WrappedType (ElementData WrappedType val)
+  :: Map.Map WrappedType (ElementData WrappedType val, x)
+  -> Map.Map WrappedType (ElementData WrappedType val, x)
 transitiveReduction poset0 =
   -- I believe this is just a Map.map. Change it to be as such
-  Map.foldlWithKey' (\poset ty1 ed1 ->
+  Map.foldlWithKey' (\poset ty1 (ed1, x) ->
     let
       lessGeneral' =
         Map.foldlWithKey' (\lessGen ty2 _subst ->
           -- remove the edges going to all the guys you can reach from ty2
-          Map.difference lessGen (lessGeneral $ fromJust (Map.lookup ty2 poset0)))
+          Map.difference lessGen (lessGeneral . fst $ fromJust (Map.lookup ty2 poset0)))
           (lessGeneral ed1)
           (lessGeneral ed1)
     in
-    Map.insert ty1 (ed1 { lessGeneral = lessGeneral' }) poset)
+    Map.insert ty1 (ed1 { lessGeneral = lessGeneral' }, x) poset)
     poset0
     poset0
 
@@ -1155,9 +1155,10 @@ typePoset theInnerDummy natTransesByType = do
     tyConTypes =
       map (\(tc, ex) ->
         ( WrappedType (TyConApp tc (map TyVarTy (TyCon.tyConTyVars tc)))
-        , (HashMap.empty, either Just _ ex)
-        )
-       )
+        , case ex of
+            Left group -> (HashMap.empty, Just group)
+            Right hm -> (hm, Nothing)
+        ))
         chooseTyCon
 
     groupedTranses =
@@ -1232,6 +1233,18 @@ typePoset theInnerDummy natTransesByType = do
       ))
       reprsToData
 
+{-
+  makeCanonicalReprs
+    :: ( Map.Map WrappedType WrappedType
+       , Map.Map WrappedType
+          ( (HashMap.HashMap (Int, Int) (NatTransData () Type), Maybe (ArgsGroupingTree _))
+          , Map.Map WrappedType Type.TvSubst, Map.Map WrappedType Type.TvSubst
+          )
+       )
+    -> Map.Map WrappedType _
+    -> ( Map.Map WrappedType WrappedType
+       , Map.Map WrappedType ((HashMap.HashMap (Int, Int) (NatTransData () Type), Maybe _), Map.Map WrappedType Type.TvSubst, Map.Map WrappedType Type.TvSubst)
+       ) -}
   makeCanonicalReprs acc@(tysToReprs0, reprsToData) remaining =
     case Map.minViewWithKey remaining of
       Nothing ->
@@ -1240,7 +1253,7 @@ typePoset theInnerDummy natTransesByType = do
       Just ((ty1, ((natTranses,maybeGroup), moreGeneral, equal, lessGeneral)), remaining') ->
         let
           (tysToReprs', natTranses') =
-            Map.foldlWithKey' (\(tysToReprs, natTranses1) ty2 (natTranses2, (_subst1to2, subst2to1)) ->
+            Map.foldlWithKey' (\(tysToReprs, natTranses1) ty2 ((natTranses2, _maybeGroup2), (_subst1to2, subst2to1)) ->
               ( Map.insert ty2 ty1 tysToReprs
               , HashMap.union
                   natTranses1
@@ -1253,6 +1266,23 @@ typePoset theInnerDummy natTransesByType = do
           (tysToReprs', Map.insert ty1 ((natTranses',maybeGroup), moreGeneral, lessGeneral) reprsToData)
           (Map.difference remaining' equal)
 
+{-
+  go
+    :: Maybe UniqSupply
+    -> Map.Map WrappedType
+         ( (HashMap.HashMap (Int, Int) (NatTransData () Type), Maybe (ArgsGroupingTree _))
+         , Map.Map WrappedType Type.TvSubst
+         , Map.Map WrappedType _
+         , Map.Map WrappedType Type.TvSubst
+         )
+    -> Set.Set WrappedType
+    -> [ ( (WrappedType, (HashMap.HashMap (Int, Int) (NatTransData () Type), Maybe (ArgsGroupingTree _)))
+         , (WrappedType, (HashMap.HashMap (Int, Int) (NatTransData () Type), Maybe (ArgsGroupingTree _)))
+         )
+       ]
+    -> ( Map.Map WrappedType _
+       , Set.Set WrappedType
+       ) -}
   go _ eltDatas lubs [] = (eltDatas, lubs)
   go uniqSupplyMay eltDatas lubs ( ((ty1, natTranses1), (ty2, natTranses2)) : ps) =
     let (uty1, uty2) = (unwrapType ty1, unwrapType ty2) in
