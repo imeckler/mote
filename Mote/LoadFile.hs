@@ -73,7 +73,8 @@ loadFile stRef p = do
             setContext [IIModule . moduleName . ms_mod $ m]
 
             Right <$> GHC.parseModule m
-          Nothing -> error "Could not load module" -- TODO: Throw real error here
+          Nothing ->
+            error "Could not load module" -- TODO: Throw real error here
 
       Failed -> do
         Left . GHCError . unlines . reverse . loadErrors <$> gReadRef stRef
