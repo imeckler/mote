@@ -38,7 +38,7 @@ import           Mote.Refine
 import           Mote.Suggest              (getAndMemoizeSuggestions)
 import           Mote.Types
 import           Mote.Util
-import qualified Mote.Search
+import qualified Scratch
 import qualified Search.Graph
 import qualified Search.Graph.Types
 

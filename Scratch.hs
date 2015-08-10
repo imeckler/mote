@@ -7,7 +7,7 @@
              FlexibleInstances,
              UndecidableInstances #-}
 
--- module Scratch where
+module Scratch where
 
 import           Prelude                 hiding (Word)
 import           Control.Applicative
@@ -55,6 +55,7 @@ import qualified BasicTypes
 import qualified TcType
 import qualified Id
 import qualified Data.HashMap.Strict as HashMap
+import qualified Data.HashSet as HashSet
 import qualified PrelNames
 import qualified Class
 import qualified TyCon
@@ -444,7 +445,6 @@ closedSubstNatTransData subst nd =
     nd { context = (), from = from', to = to' })
     (substWord subst (from nd))
     (substWord subst (to nd))
-  where
     
 substSyntacticFunctor subst (tyFun, args) =
   case tyFun of
@@ -561,33 +561,121 @@ natTransDataToTrans (NatTransData {name,from,to,functorArgumentPosition,numberOf
     else Search.Types.Simple ("(\\x -> " ++ ident ++ " " ++ underscores functorArgumentPosition ++ " x " ++ underscores (numberOfArguments - functorArgumentPosition - 1) ++ ")")
   underscores n = unwords $ replicate n "_"
 
-matches
+{-
+  :: (Eq f, Eq o, Ord k, Hashable f, Hashable o) =>
+     (k -> [(k, Search.Types.Move f o)])
+     -> Int -> k -> k -> [Search.Graph.Types.NaturalGraph f o]
+     -}
+--  -> Map.Map WrappedType (ElementData Type (Search.Types.Trans SyntacticFunctor Type))
+
+-- TODO: Preconvert the HashMap (Int,Int) to []'s
+matchesInView
   :: Var
-  -> Map.Map WrappedType (ElementData Type (Search.Types.Trans SyntacticFunctor Type))
+  -> Map.Map
+          WrappedType
+          (ElementData WrappedType (NatTransData () Type),
+          Maybe
+            (ArgsGroupingTree
+                   (HashMap.HashMap (Int, Int) (NatTransData () Type))))
+  -> WrappedType -- -> (ElementData', Maybe _) -- The minimal element of the poset
   -> Word.View SyntacticFunctor Type
   -> [(Word SyntacticFunctor Type, Search.Types.Move SyntacticFunctor Type)]
-matches innerVar poset wv =
-  undefined
+matchesInView innerVar poset minElt wv = -- lookupFrom _ minEltData
+  let
+    (nds, _) = go HashSet.empty minElt
+  in
+  map
+    (\nd -> newWordAndMove (natTransDataToTrans nd))
+    nds
   where
+  go seen0 currTy =
+    let Just (currTyEltData, currTyArgsTreeMay) = Map.lookup currTy poset in
+    case match (unwrapType currTy) focus of
+      Nothing ->
+        ([], seen0)
+
+      Just subst ->
+        let
+          fromArgsTree =
+            case currTyArgsTreeMay of
+              Nothing ->
+                []
+              Just argsTree ->
+                lookupArgs
+                  (map WrappedType (Type.tyConAppArgs focus))
+                  argsTree
+
+          (rest, seen1) =
+            -- Whether to use foldr or foldl for Map is a matter of
+            -- preference. foldr isn't more productive as with lists.
+            Map.foldlWithKey' (\(nds, seen) nextTy _nextTyData ->
+              if nextTy `HashSet.member` seen
+              then (nds, seen)
+              else
+                let (nds', seen') = go seen nextTy in
+                (nds' ++ nds, seen'))
+              ([], seen0)
+              (lessGeneral currTyEltData)
+        in
+        -- TODO: Note that being productive vs. not here is a judgement
+        -- call since currently we wait and do a monolithic sort later on.
+        -- It would be best to be productive with the most specific transes
+        -- first rather than the most general as we're doing now.
+        ( fromArgsTree
+          ++
+          mapMaybe (closedSubstNatTransData subst)
+            (HashMap.elems (natTranses (currTyEltData)))
+          ++
+          rest
+        , seen1
+        )
+
+  lookupArgs
+    :: [WrappedType]
+    -> ArgsGroupingTree (HashMap.HashMap (Int, Int) (NatTransData () Type))
+    -> [NatTransData () Type]
+  lookupArgs [] _ = []
+  lookupArgs args@(ty:tys) (ArgsGroupingTree {chooseArg, argsNotThuslyGrouped}) =
+    case Map.lookup ty chooseArg of
+      Just (Right nds) ->
+        HashMap.elems nds ++ fromUngrouped
+
+      Just (Left agt') ->
+        fromUngrouped ++ lookupArgs tys agt'
+
+      Nothing ->
+        fromUngrouped
+    where
+    fromUngrouped :: [NatTransData () Type]
+    fromUngrouped =
+      Map.foldlWithKey' (\ndsAcc genTys ndsMap ->
+        case matchTysWithInnerDummy innerVar genTys args of
+          Nothing ->
+            ndsAcc
+          Just subst ->
+            mapMaybe (closedSubstNatTransData subst) (HashMap.elems ndsMap) ++ ndsAcc)
+        []
+        argsNotThuslyGrouped
+
   (focus, newWordAndMove) = case wv of
     Word.NoO pre foc post ->
       ( stitchUp (TyVarTy innerVar) foc 
       -- TODO: Should take subst as argument
       , \t ->
-        (Word pre Nothing <> to t <> Word post Nothing, Word.Middle pre t (Word post Nothing))
+        (Word pre Nothing <> Search.Types.to t <> Word post Nothing, Word.Middle pre t (Word post Nothing))
       )
 
     -- YesOMid and NoO can be unified with Middle, but it is a bit confusing.
     Word.YesOMid pre foc post o ->
       ( stitchUp (TyVarTy innerVar) foc
       , \t ->
-        (Word pre Nothing <> to t <> Word post (Just o), Word.Middle pre t (Word post (Just o)))
+        (Word pre Nothing <> Search.Types.to t <> Word post (Just o), Word.Middle pre t (Word post (Just o)))
       )
 
     Word.YesOEnd pre (foc, o) ->
       ( stitchUp o foc
       , \t ->
-        (Word pre Nothing <> to t, Word.End pre t)
+        (Word pre Nothing <> Search.Types.to t, Word.End pre t)
       )
 
 {-
@@ -960,6 +1048,17 @@ match t1_0 t2_0 =
     t1
     t2
 
+matchTysWithInnerDummy :: Var -> [WrappedType] -> [WrappedType] -> Maybe Type.TvSubst
+matchTysWithInnerDummy v ts1_0 ts2_0 =
+  let
+    ts1 = map (Type.dropForAlls . unwrapType) ts1_0
+    ts2 = map (Type.dropForAlls . unwrapType) ts2_0
+  in
+  Unify.tcMatchTys
+    (VarSet.delVarSet (Type.tyVarsOfTypes ts1) v)
+    ts1
+    ts2
+
 data TypeRelation
   = Equal {- Left to right -} Type.TvSubst {- Right to left -} Type.TvSubst
   | LeftMoreGeneral {- Left to right -} Type.TvSubst
@@ -1133,16 +1232,19 @@ groupingTree transes =
 type ElementData'
   = ElementData WrappedType (NatTransData () Type)
 
-{-
+-- TODO: Make mutually recursive grouping tree and poset
+
 typePoset
   :: MonadUnique m
   => Var
-  -> Map.Map WrappedType (HashMap.HashMap (Int, Int) (NatTransData () Type))
-  -> m (
-  Map.Map
-    WrappedType
-    (ElementData', Maybe (ArgsGroupingTree [NatTransData () Type]))
-  ) -}
+  -> Map.Map
+      WrappedType (HashMap.HashMap (Int, Int) (NatTransData () Type))
+  -> m (Map.Map
+          WrappedType
+          (ElementData WrappedType (NatTransData () Type),
+          Maybe
+            (ArgsGroupingTree
+                   (HashMap.HashMap (Int, Int) (NatTransData () Type)))))
 typePoset theInnerDummy natTransesByType = do
   uniqSupply <- getUniqueSupplyM
   let
