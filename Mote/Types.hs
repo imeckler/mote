@@ -1,16 +1,28 @@
-module Mote.Types (Hole, FileData (..), MoteState (..),
-                    HoleInfo (..), ErrorType (..), AugmentedHoleInfo(..), M, Ref, ScopeMap) where
+module Mote.Types
+  ( Hole
+  , FileData (..)
+  , MoteState (..)
+  , HoleInfo (..)
+  , ErrorType (..)
+  , AugmentedHoleInfo(..)
+  , M
+  , Ref
+  , ScopeMap
+  ) where
 
 import           Control.Concurrent.MVar
 import           Control.Monad.Error
 import           Data.IntervalMap.FingerTree (IntervalMap)
-import qualified Data.Map                    as M
-import qualified Data.Set                    as S
+import qualified Data.Map                    as Map
+import qualified Data.Set                    as Set
 import           Data.Time.Clock
 import           GHC
 import           System.IO
 import           TcRnTypes                   (Ct (..))
 import           UniqSupply
+import Mote.Search.WrappedType
+import Mote.Search.TypePoset
+import Var (Var)
 
 type Hole = SrcSpan
 
@@ -23,8 +35,9 @@ data FileData = FileData
   , modifyTimeAtLastLoad :: UTCTime
   , hsModule             :: HsModule RdrName
   , typecheckedModule    :: TypecheckedModule
-  , holesInfo            :: M.Map SrcSpan AugmentedHoleInfo
+  , holesInfo            :: Map.Map SrcSpan AugmentedHoleInfo
   , scopeMap             :: ScopeMap
+  , inScopePosetData     :: (TypePoset, Var, WrappedType)
   }
 
 data MoteState = MoteState
@@ -32,7 +45,7 @@ data MoteState = MoteState
   , currentHole :: Maybe AugmentedHoleInfo
   , logFile     :: Handle
   , uniq        :: UniqSupply
-  , argHoles    :: S.Set Hole -- holes which are arguments to functions
+  , argHoles    :: Set.Set Hole -- holes which are arguments to functions
   , loadErrors  :: [String]
   }
 
@@ -83,3 +96,4 @@ instance Error ErrorType where
   strMsg = OtherError
 
 type M = ErrorT ErrorType Ghc
+

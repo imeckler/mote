@@ -10,6 +10,8 @@
 module Scratch where
 
 import           Prelude                 hiding (Word)
+import Mote.Search.TypePoset
+import Mote.Search.NatTransData
 import           Control.Applicative
 import           Control.Monad.Error
 import           Data.Bifoldable
@@ -29,7 +31,7 @@ import           Mote.Types
 import           Mote.Util
 import           Search.Types.Word       (Word (..))
 import qualified Search.Types.Word       as Word
-import qualified Mote.LoadFile as LoadFile
+import Mote.ReadType (readType)
 import           GHC
 import OccName (mkVarOcc)
 import Name (mkInternalName)
@@ -61,7 +63,6 @@ import qualified Class
 import qualified TyCon
 import Control.Monad.State
 import qualified Unsafe.Coerce
-import           FastString              (sLit)
 import           Outputable              (Outputable, comma, fsep, ppr, ptext,
                                           punctuate, (<+>), braces)
 import Cloned.Unify
@@ -85,102 +86,6 @@ type WrappedPredType
 
 type NatTransContext
   = [WrappedPredType]
-
-data TypeFunction
-  = TypeFunctionTyCon TyCon
-  | TypeFunctionTyVar Var
-  deriving (Eq)
-
-instance Outputable TypeFunction where
-  ppr = \case
-    TypeFunctionTyCon tc ->
-      ptext (sLit "TypeFunctionTyCon") <+> ppr tc
-
-    TypeFunctionTyVar v ->
-      ptext (sLit "TypeFunctionTyVar") <+> ppr v
-
-data ConstantFunctor
-  = ConstantFunctorTyVar Var
-  | ConstantFunctorTyCon TyCon
-  deriving (Eq)
-
-instance Hashable ConstantFunctor where
-  hashWithSalt s cf =
-    case cf of
-      ConstantFunctorTyVar v ->
-        s `hashWithSalt` (0::Int) `hashWithSalt` getKey (getUnique v)
-
-      ConstantFunctorTyCon tc ->
-        s `hashWithSalt` (1::Int) `hashWithSalt` getKey (getUnique tc)
-
-instance Hashable TypeFunction where
-  hashWithSalt s cf =
-    case cf of
-      TypeFunctionTyVar v ->
-        s `hashWithSalt` (0::Int) `hashWithSalt` getKey (getUnique v)
-
-      TypeFunctionTyCon tc ->
-        s `hashWithSalt` (1::Int) `hashWithSalt` getKey (getUnique tc)
-
-instance Outputable ConstantFunctor where
-  ppr = \case
-    ConstantFunctorTyCon tc ->
-      ptext (sLit "ConstantFunctorTyCon") <+> ppr tc
-
-    ConstantFunctorTyVar v ->
-      ptext (sLit "ConstantFunctorTyVar") <+> ppr v
-
-type SyntacticFunctor
-  = ( TypeFunction, [ WrappedType ] )
-
-data NatTransData context constant
-  = NatTransData
-  { name                    :: Name
-  , context                 :: context
-  , from                    :: Word SyntacticFunctor constant
-  , to                      :: Word SyntacticFunctor constant
-  , functorArgumentPosition :: Int
-  , numberOfArguments       :: Int
-  }
-  deriving (Eq)
-
-instance (Hashable constant, Hashable context) => Hashable (NatTransData context constant) where
-  hashWithSalt s (NatTransData {..}) =
-    s `hashWithSalt`
-    getKey (getUnique name) `hashWithSalt`
-    context `hashWithSalt`
-    from `hashWithSalt`
-    to `hashWithSalt`
-    functorArgumentPosition `hashWithSalt`
-    numberOfArguments
-
-instance (Outputable context, Outputable constant) => Outputable (NatTransData context constant) where
-  ppr (NatTransData {..}) =
-    ptext (sLit "NatTransData") <+>
-      braces
-        (fsep
-          (punctuate comma 
-            [ ptext (sLit "name =") <+> ppr name
-            , ptext (sLit "context =") <+> ppr context
-            , ptext (sLit "from =") <+> ppr from
-            , ptext (sLit "to =") <+> ppr to
-            , ptext (sLit "functorArgumentPosition =") <+> ppr functorArgumentPosition
-            , ptext (sLit "numberOfArguments =") <+> ppr numberOfArguments
-            ]))
-
-instance Bifunctor NatTransData where
-  first f nd = nd { context = f (context nd) }
-  second f nd = nd { from = second f (from nd), to = second f (from nd) }
-
-instance Bifoldable NatTransData where
-  bifoldMap f g (NatTransData {context, from, to}) = f context <> foldMap g (Word.end from) <> foldMap g (Word.end to)
-
-instance Bitraversable NatTransData where
-  bitraverse f g nd =
-    liftA3 (\context' from' to' -> nd { context = context', from = from', to = to' })
-      (f (context nd))
-      (bitraverse pure g (from nd)) -- TODO: Material: Holes were great here
-      (bitraverse pure g (to nd))
 
 isReasonableTrans :: NatTransData context constant -> Bool
 isReasonableTrans nd = numberOfArguments nd < 4
@@ -484,6 +389,7 @@ groupAllBy f xs =
       let (grp, xs'') = List.partition (f x) xs' in
       (x, grp) : groupAllBy f xs''
 
+inScopePosetAndInnerDummy :: GhcMonad m => m (TypePoset, Var)
 inScopePosetAndInnerDummy = do
   theInnerDummy <- liftIO $ do
     uniqSupply <- newUniqueSupply
@@ -496,9 +402,9 @@ inScopePosetAndInnerDummy = do
           Kind.liftedTypeKind
           vanillaIdInfo
 
-  hsc_env <- lift getSession
+  hsc_env <- getSession
 
-  typedNames <- fmap catMaybes . mapM (\n -> fmap (n,) <$> nameType n) =<< lift getNamesInScope
+  typedNames <- fmap catMaybes . mapM (\n -> fmap (n,) <$> nameType n) =<< getNamesInScope
   (_messages, Just instEnvs) <- liftIO (runTcInteractive hsc_env TcEnv.tcGetInstEnvs)
   let
     classes =
@@ -544,11 +450,11 @@ inScopePosetAndInnerDummy = do
   let poset = initUs_ uniqSupp (typePoset theInnerDummy natTransesByType)
   return (poset, theInnerDummy)
 
-natTransDataToTrans :: NatTransData () Type -> Search.Types.Trans SyntacticFunctor Type
+natTransDataToTrans :: NatTransData () Type -> Search.Types.Trans SyntacticFunctor WrappedType
 natTransDataToTrans (NatTransData {name,from,to,functorArgumentPosition,numberOfArguments}) =
   Search.Types.Trans
-  { from = from
-  , to   = to
+  { from = second WrappedType from
+  , to   = second WrappedType to
   , name = Search.Types.AnnotatedTerm name' (numberOfArguments - 1) 0
   }
   where
@@ -561,12 +467,39 @@ natTransDataToTrans (NatTransData {name,from,to,functorArgumentPosition,numberOf
     else Search.Types.Simple ("(\\x -> " ++ ident ++ " " ++ underscores functorArgumentPosition ++ " x " ++ underscores (numberOfArguments - functorArgumentPosition - 1) ++ ")")
   underscores n = unwords $ replicate n "_"
 
-{-
-  :: (Eq f, Eq o, Ord k, Hashable f, Hashable o) =>
-     (k -> [(k, Search.Types.Move f o)])
-     -> Int -> k -> k -> [Search.Graph.Types.NaturalGraph f o]
-     -}
---  -> Map.Map WrappedType (ElementData Type (Search.Types.Trans SyntacticFunctor Type))
+search
+  :: Ref MoteState
+  -> String
+  -> Int
+  -> M [_]
+search stRef tyStr n = do
+  (poset, innerVar, minElt) <- inScopePosetData <$> getFileDataErr stRef
+  (src, trg) <- interpretType =<< readType tyStr
+  let
+    matchesForWord
+      :: Word SyntacticFunctor WrappedType
+      -> [(Word SyntacticFunctor WrappedType, Search.Types.Move SyntacticFunctor WrappedType)]
+    matchesForWord = concatMap (matchesInView innerVar poset minElt) . Word.views
+  return (moveSequencesOfSizeAtMostMemo' matchesForWord n src trg)
+  where
+  interpretType ty0 =
+    let
+      (v:vars, ty) = splitForAllTys ty0
+      -- TODO: Assert kind(v) == *
+      toWord t =
+        case splitSyntacticFunctors t of
+          (sfs, TyVarTy v') ->
+            if v == v'
+            then return (Word sfs Nothing)
+            else throwError (Unsupported "Could not handle input type")
+          (sfs, t') ->
+            return (Word sfs (Just (WrappedType t')))
+    in
+    case ty of
+      FunTy src trg ->
+        liftA2 (,) (toWord src) (toWord trg)
+      _ ->
+        throwError (OtherError "Search expected function type.")
 
 -- TODO: Preconvert the HashMap (Int,Int) to []'s
 matchesInView
@@ -578,8 +511,8 @@ matchesInView
             (ArgsGroupingTree
                    (HashMap.HashMap (Int, Int) (NatTransData () Type))))
   -> WrappedType -- -> (ElementData', Maybe _) -- The minimal element of the poset
-  -> Word.View SyntacticFunctor Type
-  -> [(Word SyntacticFunctor Type, Search.Types.Move SyntacticFunctor Type)]
+  -> Word.View SyntacticFunctor WrappedType
+  -> [(Word SyntacticFunctor WrappedType, Search.Types.Move SyntacticFunctor WrappedType)]
 matchesInView innerVar poset minElt wv = -- lookupFrom _ minEltData
   let
     (nds, _) = go HashSet.empty minElt
@@ -672,7 +605,7 @@ matchesInView innerVar poset minElt wv = -- lookupFrom _ minEltData
         (Word pre Nothing <> Search.Types.to t <> Word post (Just o), Word.Middle pre t (Word post (Just o)))
       )
 
-    Word.YesOEnd pre (foc, o) ->
+    Word.YesOEnd pre (foc, WrappedType o) ->
       ( stitchUp o foc
       , \t ->
         (Word pre Nothing <> Search.Types.to t, Word.End pre t)
@@ -684,7 +617,7 @@ branchOut
   => HashMap.HashMap (Word f o) [Trans f o]
   -> Word f o
   -> [(Word f o, Move f o)]
--}
+
 main = do
   home <- getHomeDirectory
   withFile (home </> ".scratchlog") WriteMode $ \logFile -> do
@@ -714,7 +647,7 @@ main = do
       , logFile
       , uniq
       }
-
+-}
 freshTyVarOfKind :: MonadUnique m => Kind -> m Var
 freshTyVarOfKind k = do
   uniq <- getUniqueM
@@ -1098,13 +1031,6 @@ renameVars ty = evalStateT (go VarSet.emptyVarSet ty) VarEnv.emptyVarEnv
       LitTy _ ->
         return ty
 
-data ElementData key val
-  = ElementData
-  { moreGeneral :: Map.Map key Type.TvSubst
-  , lessGeneral :: Map.Map key Type.TvSubst
-  , natTranses :: HashMap.HashMap (Int, Int) val -- (NatTransData () Type)
-  }
-
 -- Just processes the "lessGeneral" edges for now
 -- Could use lens here...
 transitiveReduction
@@ -1128,21 +1054,15 @@ transitiveReduction poset0 =
 type ClosedType = Type
 
 minimalElements
-  :: Map.Map WrappedType (ElementData k val)
-  -> [(WrappedType, ElementData k val)]
+  :: Map.Map WrappedType (ElementData k val, x)
+  -> [(WrappedType, (ElementData k val, x))]
 minimalElements =
-  filter (List.null . moreGeneral . snd) . Map.toList
+  filter (List.null . moreGeneral . fst . snd) . Map.toList
 
 data GroupingTree x
   = GroupingTree
   { chooseTyCon :: [(TyCon, Either (ArgsGroupingTree x) x)]
   , typesNotThuslyGrouped :: [(WrappedType, x)]
-  }
-
-data ArgsGroupingTree x
-  = ArgsGroupingTree
-  { chooseArg :: Map.Map WrappedType (Either (ArgsGroupingTree x) x)
-  , argsNotThuslyGrouped :: Map.Map [WrappedType] x
   }
 
 groupingTree :: [(WrappedType, x)] -> GroupingTree x
@@ -1228,9 +1148,6 @@ groupingTree transes =
 
         TyVarTy v ->
           v `VarEnv.elemVarEnv` boundVars
-
-type ElementData'
-  = ElementData WrappedType (NatTransData () Type)
 
 -- TODO: Make mutually recursive grouping tree and poset
 
@@ -1476,9 +1393,9 @@ stitchUp innerTy fs =
             TyConApp tc
               (args ++ [stitchUp innerTy fs'])
 
-nameType :: Name -> M (Maybe Type)
+nameType :: GhcMonad m => Name -> m (Maybe Type)
 nameType n = do
-  hsc_env <- lift getSession
+  hsc_env <- getSession
   (_errs, mayTy) <- liftIO $
     runTcInteractive hsc_env . discardConstraints . tcRnExprTc . noLoc . HsVar . Exact $ n
   return $ mayTy

@@ -7,7 +7,6 @@ import           Mote.ReadType
 import           Mote.Refine         (tcRnExprTc)
 import           Mote.Types
 import           Mote.Util
-import qualified Mote.Search.Poset as Poset
 import           Prelude             hiding (Word)
 import           Search.Graph        hiding (sequence)
 import           Search.Graph.Types

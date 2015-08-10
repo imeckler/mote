@@ -39,6 +39,7 @@ import           Mote.Suggest              (getAndMemoizeSuggestions)
 import           Mote.Types
 import           Mote.Util
 import qualified Scratch
+import qualified Mote.Search
 import qualified Search.Graph
 import qualified Search.Graph.Types
 
@@ -222,9 +223,11 @@ respond' stRef = \case
     unqual <- lift getPrintUnqual
     return . SetInfoWindow . showSDocForUser fs unqual $ ppr x
 
-  Search src trg -> do
-    gs <- Mote.Search.search src trg 5
-    return (SetInfoWindow (showResults gs)) 
+  Search tyStr -> do
+    moveSeqs <- Scratch.search stRef tyStr 4
+    return (SetInfoWindow (showResults moveSeqs))
+    -- gs <- Mote.Search.search src trg 5
+    -- return (SetInfoWindow (showResults gs)) 
     where
     -- TODO:uncomment showResults :: [Search.Graph.Types.NaturalGraph f o] -> String
     showResults =
@@ -232,8 +235,12 @@ respond' stRef = \case
       . map (\(_,(t,_)) -> Search.Graph.renderAnnotatedTerm t)
       . take 5
       . List.sortBy (compare `on` fst)
-      . map (\g ->
-        let pr = (Search.Graph.toTerm g, g) in (Mote.Search.score pr, pr))
+      . map (\moveSeq ->
+          let
+            g = Search.Graph.moveListToGraph moveSeq
+            pr = (Search.Graph.toTerm g, g)
+          in
+          (Mote.Search.score pr, pr))
 
 showM :: (GhcMonad m, Outputable a) => a -> m String
 showM = showSDocM . ppr

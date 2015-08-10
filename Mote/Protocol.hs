@@ -74,7 +74,7 @@ data FromClient
   | CaseFurther Var ClientState
   | CaseOn String ClientState
   | SendStop
-  | Search (Word String String) (Word String String)
+  | Search String
   deriving (Show)
 
 instance FromJSON FromClient where
@@ -110,8 +110,8 @@ instance FromJSON FromClient where
       [String "SendStop"] ->
         return SendStop
 
-      [String "Search", src, trg] ->
-        Search <$> parseWord src <*> parseWord trg
+      [String "Search", String tyStr] ->
+        return (Search (T.unpack tyStr))
 
       _ ->
         mzero
@@ -119,10 +119,4 @@ instance FromJSON FromClient where
     _ ->
       mzero
 
-parseWord = \case
-  Object obj ->
-    Word <$> (obj .: "functors") <*> (obj .:? "constant")
-
-  _ ->
-    mzero
 

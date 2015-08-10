@@ -46,8 +46,9 @@ import qualified Search.Graph.ToTerm as ToTerm
 -- TODO: Perhaps add the ability to filter the results by those which
 -- satisfy some test cases.
 
-toTerm :: (Show f, Show o) => NaturalGraph f o -> AnnotatedTerm
+toTerm :: NaturalGraph f o -> AnnotatedTerm
 toTerm = ToTerm.toTerm . compressPaths
+
 
 -- Vert is left ungeneralized for clarity
 -- mapWordVertices :: (forall l. (Vert, l) -> x) -> Word (Vert, f) (Vert, o) -> Word x x
@@ -721,9 +722,8 @@ toTerm = toTerm' . compressPaths
 
 -- TODO: Would be nice to have a "scratch pad" where I can write bits of
 -- expressions to see their types
--- toTerm' :: NaturalGraph f o -> AnnotatedTerm
-toTerm' ng0 =
-  case trace ("YO: " ++ show ng0) (Map.minViewWithKey g) of
+-- toTerm' :: NaturalGraph f o -> /nnotatedTerm
+toTerm' ng0  trace ("YO: " ++ show ng0) (Map.minViewWithKey g) of
     Nothing ->
       AnnotatedTerm Id 0
 

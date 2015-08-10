@@ -42,7 +42,7 @@ data FreeNaturalGraph f =
   }
   deriving (Show)
 
-toTerm :: (Show f, Show o) => G.NaturalGraph f o -> AnnotatedTerm
+toTerm :: G.NaturalGraph f o -> AnnotatedTerm
 toTerm = toTerm' . fromNaturalGraph
 
 -- fromNaturalGraph :: G.NaturalGraph f o -> FreeNaturalGraph (Either f o)
@@ -126,7 +126,7 @@ fromNaturalGraph ng =
         map (\(bv,(e,f)) -> (bv,e,Left f)) fs ++ maybe [] (\(bv,(e,o)) -> [(bv,e,Right o)]) mo
 
 
-toTerm' :: Show f => FreeNaturalGraph f -> AnnotatedTerm
+toTerm' :: FreeNaturalGraph f -> AnnotatedTerm
 toTerm' ng0 = case findGoodVertex ng of
   Nothing -> mempty
   Just (Top, (leftStrands, vGood, vGoodData)) ->
