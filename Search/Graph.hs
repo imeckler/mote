@@ -90,13 +90,13 @@ componentOf v ng = go Set.empty [v]
             next =
               case uv of
                 UReal v ->
-                  let VertexData {incoming, outgoing} = lookupExn v g
+                  let VertexData {incoming, outgoing} = lookupExn' "Graph:93" v g
                   in
                   mapMaybe (disambiguate In) (NeighborList.toList incoming)
                   ++ mapMaybe (disambiguate Out) (NeighborList.toList outgoing)
 
                 UDummy io e ->
-                  let EdgeData {source,sink} = lookupExn e edgeInfo
+                  let EdgeData {source,sink} = lookupExn' "Graph:99" e edgeInfo
                   in
                   case io of
                     In -> mapMaybe (disambiguate Out) [(sink, e)]
@@ -885,18 +885,18 @@ toTerm' ng0  trace ("YO: " ++ show ng0) (Map.minViewWithKey g) of
           let
             unblocked =
               List.filter (\(e_l, e_r) ->
-                (o_1 `Set.member` lookupExn e_l rightnesses)
+                (o_1 `Set.member` lookupExn' "Graph:888" e_l rightnesses)
                 && (e_r `Set.member` rightOfO_n))
                 sameOriginPairs
               |> List.all (\(e_l, e_r) ->
                 (e_l `Set.member` rightOfO_n)
-                || o_1 `Set.member` lookupExn e_r rightnesses)
+                || o_1 `Set.member` lookupExn' "Graph:893" e_r rightnesses)
           in
           if unblocked
           then
             Just
             ( findMap (\(_,e) ->
-                if o_1 `Set.member` lookupExn e rightnesses
+                if o_1 `Set.member` lookupExn' "Graph:899" e rightnesses
                 then Just e
                 else Nothing)
                 (reverse $ NeighborList.toList (top ng))
@@ -910,7 +910,7 @@ toTerm' ng0  trace ("YO: " ++ show ng0) (Map.minViewWithKey g) of
           outlist = NeighborList.toList (outgoing vd)
           (_, o_1) = head outlist
           (_, o_n) = last outlist
-          rightOfO_n = lookupExn o_n rightnesses
+          rightOfO_n = lookupExn' "Graph:913" o_n rightnesses
 
         _ ->
           Nothing
@@ -1107,7 +1107,7 @@ compressPaths ng = go ng startingVertices
         go (compressPath vs ng) next'
 
   slurpBackFrom v g =
-    let vd@(VertexData { incoming }) = lookupExn v g in
+    let vd@(VertexData { incoming }) = lookupExn' "Graph:1110" v g in
     case NeighborList.toList incoming of
       [(Clear (Inner v'), _)] ->
         (v, vd) : slurpBackFrom v' g

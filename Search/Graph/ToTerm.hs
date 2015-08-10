@@ -50,10 +50,10 @@ fromNaturalGraph ng =
   -- traceShow ("yo", (botEdgesToDummy, ng)) $
   FreeNaturalGraph
   { incomingLabels = map (\(_,_,fo) -> fo) toplist
-  , incomingSuccs  = boundaryMap toplist
+  , incomingSuccs  = boundaryMap topEdgesToDummy toplist
     
   , incomingCount  = length toplist
-  , outgoingPreds  = boundaryMap botlist
+  , outgoingPreds  = boundaryMap botEdgesToDummy botlist
   , outgoingCount  = length botlist
   , digraph        = Map.map convertVertexData (G.digraph ng)
   }
@@ -97,13 +97,13 @@ fromNaturalGraph ng =
   toplist = fromNeighborList (G.top ng)
   botlist = fromNeighborList (G.bottom ng)
 
-  boundaryMap =
+  boundaryMap toDummies =
     Map.fromList .
       zipWith (\i (bv,e,_fo) ->
         let
           ve = 
             case bv of
-              Boundary -> Dummy (lookupExn e botEdgesToDummy)
+              Boundary -> Dummy (lookupExn' "ToTerm:106" e toDummies)
               Inner v -> Real v
         in
         (i, ve))
@@ -312,7 +312,7 @@ toTerm' ng0 = case findGoodVertex ng of
 
     -- d is the number of strands strictly to the left of us
     go d r =
-      let vd = lookupExn r g in
+      let vd = lookupExn' "ToTerm:315" r g in
       case next vd of
         [] -> Just (d, r, vd) -- Just (d + 1, r, vd)
         xs -> case scanAcross d xs of
@@ -334,7 +334,7 @@ toTerm' ng0 = case findGoodVertex ng of
         Simple s   -> AnnotatedTerm (Compound ("fmap (" ++ s ++ ")")) x w
         Compound s -> AnnotatedTerm (Compound ("fmap (" ++ s ++ ")")) x w
 
-      (Real r : vs)  -> label (lookupExn r g) <> loop vs
+      (Real r : vs)  -> label (lookupExn' "ToTerm:337" r g) <> loop vs
 
   -- All children of the given vertex are dummys or childless
   makeBottomGoodProgram vd = loop (map fst (outgoing vd)) <> label vd where
@@ -346,7 +346,7 @@ toTerm' ng0 = case findGoodVertex ng of
         Simple s   -> AnnotatedTerm (Compound ("fmap (" ++ s ++ ")")) x w
         Compound s -> AnnotatedTerm (Compound ("fmap (" ++ s ++ ")")) x w
 
-      (Real r : vs) -> loop vs <> label (lookupExn r g)
+      (Real r : vs) -> loop vs <> label (lookupExn' "ToTerm:349" r g)
 
 fmapped n (AnnotatedTerm f x w) = case n of
   0 -> AnnotatedTerm f x w
