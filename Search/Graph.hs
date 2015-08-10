@@ -485,20 +485,6 @@ moveSequencesOfSizeAtMost tsList n start end = go start n
         map (m:) (go b' (k - 1)))
       (branchOut ts b)
 
-moveSequencesOfSizeAtMost'
-  :: (Eq type_, Foldable t)
-  => (type_ -> t (type_, natTrans)) -> Int -> type_ -> type_ -> [] ([] natTrans)
-moveSequencesOfSizeAtMost' branchOut n start end = go start n
-  where
-  go b k =
-    if k == 0
-    then
-      if b == end then [[]] else []
-    else
-      concatMap (\(b', m) ->
-        map (m:) (go b' (k - 1)))
-        (branchOut b)
-
 moveListToGraph = \case
   []   -> NaturalGraph mempty mempty Map.empty Map.empty Set.empty 0 0
   m:ms -> go (moveToGraph m) ms
@@ -507,6 +493,35 @@ moveListToGraph = \case
     case ms of
       [] -> canonicalize acc
       m:ms -> go (acc `sequence` moveToGraph m) ms
+
+moveSequencesOfSizeAtMostMemoNotTooHoley' branchOut n start end = map fst . HashSet.toList $ runST $ do
+  arr <- newSTArray (0, n) Map.empty
+  go arr n start
+  where 
+  newSTArray :: (Int, Int) -> Map k v -> ST s (STArray s Int (Map k v))
+  newSTArray = newArray
+
+  numberOfHoles = snd
+
+  -- TODO: This is wrong, should allow things to happen after reaching the
+  -- end.
+  go arr n b
+    | b == end  = return (HashSet.singleton ([], 0))
+    | n == 0    = return HashSet.empty
+    | otherwise = do
+      memo <- readArray arr n
+      case Map.lookup b memo of
+        Nothing -> do
+          -- let (singSteps, nicerSteps) = List.partition (\(_,m) -> singTrans (moveTrans m)) (branchOut ts b)
+          progs <- fmap (HashSet.filter ((< 3) . numberOfHoles) . HashSet.unions) . forM (branchOut b) $ \(b', move) ->
+            fmap
+              (HashSet.map (\(moves,holes) -> (move : moves, holes + numHoles (name (moveTrans move)))))
+              (go arr (n - 1) b')
+          let progs' = if b == end then HashSet.insert ([], 0) progs else progs
+          writeArray arr n (Map.insert b progs' memo)
+          return progs'
+
+        Just ps -> return ps
 
 moveSequencesOfSizeAtMostMemo' branchOut n start end = HashSet.toList $ runST $ do
   arr <- newSTArray (0, n) Map.empty
@@ -534,8 +549,7 @@ moveSequencesOfSizeAtMostMemo' branchOut n start end = HashSet.toList $ runST $ 
         Just ps -> return ps
 
 moveSequencesOfSizeAtMostMemo
-  :: (Hashable f, Ord f, Hashable o, Ord o
-  ,Show o, Show f) -- TODO: Debug 
+  :: (Hashable f, Ord f, Hashable o, Ord o)
   => [Trans f o]
   -> Int
   -> Word f o
@@ -567,9 +581,41 @@ moveSequencesOfSizeAtMostMemo tsList n start end = HashSet.toList $ runST $ do
           return progs'
 
         Just ps -> return ps
+
+graphsOfSizeAtMostMemo'
+  :: (Hashable f, Ord f, Hashable o, Ord o)
+  => (Word f o -> [(Word f o, Move f o)])
+  -> Int
+  -> Word f o
+  -> Word f o
+  -> [NaturalGraph f o]
+graphsOfSizeAtMostMemo' branchOut n start end = map deleteStrayVertices . HashSet.toList $ runST $ do
+  arr <- newSTArray (0, n) Map.empty
+  go arr n start
+  where 
+  newSTArray :: (Int, Int) -> Map k v -> ST s (STArray s Int (Map k v))
+  newSTArray = newArray
+
+  -- TODO: This is wrong, should allow things to happen after reaching the
+  -- end.
+  go arr n b
+    | b == end  = return (HashSet.singleton (idGraph end))
+    | n == 0    = return HashSet.empty
+    | otherwise = do
+      memo <- readArray arr n
+      case Map.lookup b memo of
+        Nothing -> do
+          -- let (singSteps, nicerSteps) = List.partition (\(_,m) -> singTrans (moveTrans m)) (branchOut ts b)
+          progs <- fmap HashSet.unions . forM (branchOut b) $ \(b', move) ->
+            fmap (HashSet.map (obliterate . sequence (moveToGraph move))) (go arr (n - 1) b')
+          let progs' = if b == end then HashSet.insert (idGraph end) progs else progs
+          writeArray arr n (Map.insert b progs' memo)
+          return progs'
+
+        Just ps -> return ps
+
 graphsOfSizeAtMost
-  :: (Hashable f, Ord f, Hashable o, Ord o
-  ,Show o, Show f) -- TODO: Debug 
+  :: (Hashable f, Ord f, Hashable o, Ord o)
   => [Trans f o]
   -> Int
   -> Word f o
@@ -584,7 +630,7 @@ graphsOfSizeAtMost tsList n start end = map deleteStrayVertices . HashSet.toList
 
   ts = HashMap.fromListWith (++) (map (\t -> (from t, [t])) tsList)
 
-  -- TODO: This is wrong, should allow shit to happen after reaching the
+  -- TODO: This is wrong, should allow things to happen after reaching the
   -- end.
   go arr n b
     | b == end  = return (HashSet.singleton (idGraph end))

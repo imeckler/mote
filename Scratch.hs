@@ -389,7 +389,7 @@ groupAllBy f xs =
       let (grp, xs'') = List.partition (f x) xs' in
       (x, grp) : groupAllBy f xs''
 
-inScopePosetAndInnerDummy :: GhcMonad m => m (TypePoset, Var)
+inScopePosetAndInnerDummy :: GhcMonad m => m (TypeLookupTable, Var)
 inScopePosetAndInnerDummy = do
   theInnerDummy <- liftIO $ do
     uniqSupply <- newUniqueSupply
@@ -481,7 +481,7 @@ search stRef tyStr n = do
       :: Word SyntacticFunctor WrappedType
       -> [(Word SyntacticFunctor WrappedType, Search.Types.Move SyntacticFunctor WrappedType)]
     matchesForWord = concatMap (matchesInView innerVar poset minElt) . Word.views
-  return (moveSequencesOfSizeAtMostMemo' matchesForWord n src trg)
+  return (moveSequencesOfSizeAtMostMemoNotTooHoley' matchesForWord n src trg)
   where
   interpretType ty0 =
     let
@@ -613,43 +613,6 @@ matchesInView innerVar poset minElt wv = -- lookupFrom _ minEltData
         (Word pre Nothing <> Search.Types.to t, Word.End pre t)
       )
 
-{-
-branchOut
-  :: (Eq f, Hashable f, Eq o, Hashable o)
-  => HashMap.HashMap (Word f o) [Trans f o]
-  -> Word f o
-  -> [(Word f o, Move f o)]
-
-main = do
-  home <- getHomeDirectory
-  withFile (home </> ".scratchlog") WriteMode $ \logFile -> do
-    r <- newRef =<< initialState logFile
-    hSetBuffering logFile NoBuffering
-    hSetBuffering stdout NoBuffering
-    runGhc (Just libdir) $ do
-      Mote.Init.initializeWithCabal r >>= \case
-        Left err -> liftIO $ print "I'm sorry"
-        Right () -> return ()
-
-      orErr <- runErrorT $ do
-        LoadFile.loadFile r "Mote.hs"
-        (poset, innerDummy) <- inScopePosetAndInnerDummy
-        lift $ output $ Map.keys (transitiveReduction poset)
-
-      case orErr of
-        Right () -> return ()
-        Left err -> liftIO $ print err
-    where
-    initialState :: Handle -> IO MoteState
-    initialState logFile = mkSplitUniqSupply 'x' >>| \uniq -> MoteState
-      { fileData = Nothing
-      , currentHole = Nothing
-      , argHoles = Set.empty
-      , loadErrors = []
-      , logFile
-      , uniq
-      }
--}
 freshTyVarOfKind :: MonadUnique m => Kind -> m Var
 freshTyVarOfKind k = do
   uniq <- getUniqueM
@@ -1133,48 +1096,51 @@ groupingTree transes =
       _ ->
         False
 
-  isClosedType = go VarSet.emptyVarSet
-    where
-    go boundVars t =
-      case t of
-        TyConApp tc args ->
-          all isClosedType args
+isClosedType :: Type -> Bool
+isClosedType = go VarSet.emptyVarSet
+  where
+  go boundVars t =
+    case t of
+      TyConApp tc args ->
+        all isClosedType args
 
-        ForAllTy v t' ->
-          go (VarSet.extendVarSet boundVars v) t'
+      ForAllTy v t' ->
+        go (VarSet.extendVarSet boundVars v) t'
 
-        LitTy _ -> True
+      LitTy _ -> True
 
-        FunTy src trg ->
-          isClosedType src && isClosedType trg
+      FunTy src trg ->
+        isClosedType src && isClosedType trg
 
-        AppTy t1 t2 ->
-          isClosedType t1 && isClosedType t2
+      AppTy t1 t2 ->
+        isClosedType t1 && isClosedType t2
 
-        TyVarTy v ->
-          v `VarEnv.elemVarEnv` boundVars
+      TyVarTy v ->
+        v `VarEnv.elemVarEnv` boundVars
 
 -- TODO: Make mutually recursive grouping tree and poset
 
-typePoset
+-- TODO: I realied the whole grouping tree business is kind of wrong. Think
+-- about "length : forall a. [a] -> Int". If our functor state is []ABCDE,
+-- it's gonna get probed at []A, []AB, []ABC,etc and these all will unify
+-- eveen though they do the same thing
+typeLookupTable
   :: MonadUnique m
   => Var
   -> Map.Map
       WrappedType (HashMap.HashMap (Int, Int) (NatTransData () Type))
-  -> m (Map.Map
-          WrappedType
-          (ElementData WrappedType (NatTransData () Type),
-          Maybe
-            (ArgsGroupingTree
-                   (HashMap.HashMap (Int, Int) (NatTransData () Type)))))
-typePoset theInnerDummy natTransesByType = do
+  -> m TypeLookupTable
+typeLookupTable theInnerDummy natTransesByType = do
   uniqSupply <- getUniqueSupplyM
   let
     transesList =
       Map.toList natTransesByType
 
+    (closedTransesList, openTransesList) =
+      List.partition (isClosedType . unwrapType . fst) transesList
+
     GroupingTree { chooseTyCon, typesNotThuslyGrouped } =
-      groupingTree transesList
+      groupingTree openTransesList
 
     tyConTypes =
       let
@@ -1217,7 +1183,11 @@ typePoset theInnerDummy natTransesByType = do
 
     (tysToReprs, reprsToData) = traceShow "HI" $
       makeCanonicalReprs (Map.empty, Map.empty) eltDatas'
-  return (canonicalize tysToReprs reprsToData)
+  return $
+    TypeLookupTable
+    { byClosedType = Map.fromListWith HashMap.union closedTransesList
+    , lookupPoset = canonicalize tysToReprs reprsToData
+    }
   where
   compareTypeEv :: Type -> Type -> TypeRelation
   compareTypeEv t1 t2 =

@@ -16,7 +16,7 @@ build-type:          Simple
 cabal-version:       >=1.10
 
 executable scratch
-  main-is: Scratch.hs
+  main-is: ScratchRepl.hs
   build-depends:       base == 4.8.*,
                        containers >= 0.5,
                        random >= 1,

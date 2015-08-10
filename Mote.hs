@@ -225,8 +225,9 @@ respond' stRef = \case
     return . SetInfoWindow . showSDocForUser fs unqual $ ppr x
 
   Search tyStr -> do
-    moveSeqs <- Scratch.search stRef tyStr 3
-    logS stRef ("length moveSeqs = " ++ show (length moveSeqs))
+    moveSeqs <- Scratch.search stRef tyStr 4
+    -- logS stRef ("length moveSeqs = " ++ show (length moveSeqs))
+    -- logS stRef ("# distinct move seqs = " ++ show (HashSet.size (HashSet.fromList moveSeqs)))
     let gs = HashSet.fromList $ map Search.Graph.moveListToGraph moveSeqs
     logS stRef ("size gs = " ++ show (HashSet.size gs))
     return (SetInfoWindow (showResults (HashSet.toList gs)))
@@ -308,10 +309,6 @@ runWithTestRef' x = do
   withFile (home </> "testlog") WriteMode $ \logFile -> do
     r <- newRef =<< initialState logFile
     run $ do { Mote.Init.initializeWithCabal r; x r }
-
-runWithTestRef'' :: a -> IO ()
-runWithTestRef'' x = do
-  print 0
 
 run :: Ghc a -> IO a
 run = runGhc (Just libdir)

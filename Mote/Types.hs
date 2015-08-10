@@ -37,7 +37,7 @@ data FileData = FileData
   , typecheckedModule    :: TypecheckedModule
   , holesInfo            :: Map.Map SrcSpan AugmentedHoleInfo
   , scopeMap             :: ScopeMap
-  , inScopePosetData     :: (TypePoset, Var, WrappedType)
+  , inScopePosetData     :: (TypeLookupTable, Var, WrappedType)
   }
 
 data MoteState = MoteState

@@ -24,6 +24,7 @@ instance Monoid x => Monoid (ArgsGroupingTree x) where
         chooseArg1 chooseArg2)
       (Map.unionWith mappend ungrouped1 ungrouped2)
 
+
 type TypePoset
   = Map.Map WrappedType
       ( ElementData WrappedType (NatTransData () Type)
@@ -33,3 +34,21 @@ type TypePoset
             (Int, Int)
             (NatTransData () Type)))
       )
+
+data TypeLookupTable
+  = TypeLookupTable
+  { byClosedType :: Map.Map WrappedType [HashMap.HashMap (Int, Int) (NatTransData () Type)]
+  , lookupPoset :: TypePoset
+  }
+
+
+data ElementData key val
+  = ElementData
+  { moreGeneral   :: Map.Map key Type.TvSubst
+  , lessGeneral   :: Map.Map key Type.TvSubst
+  , natTranses    :: HashMap.HashMap (Int, Int) val -- (NatTransData () Type)
+  }
+
+type ElementData'
+  = ElementData WrappedType (NatTransData () Type)
+

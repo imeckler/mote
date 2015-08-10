@@ -66,15 +66,6 @@ instance Outputable ConstantFunctor where
 type SyntacticFunctor
   = ( TypeFunction, [ WrappedType ] )
 
-data ElementData key val
-  = ElementData
-  { moreGeneral :: Map.Map key Type.TvSubst
-  , lessGeneral :: Map.Map key Type.TvSubst
-  , natTranses :: HashMap.HashMap (Int, Int) val -- (NatTransData () Type)
-  }
-
-type ElementData'
-  = ElementData WrappedType (NatTransData () Type)
 
 data NatTransData context constant
   = NatTransData
