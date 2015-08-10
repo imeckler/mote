@@ -471,7 +471,7 @@ search
   :: Ref MoteState
   -> String
   -> Int
-  -> M [_]
+  -> M [[Search.Types.Move SyntacticFunctor WrappedType]]
 search stRef tyStr n = do
   (poset, innerVar, minElt) <- inScopePosetData <$> getFileDataErr stRef
   (src, trg) <- interpretType =<< readType tyStr
