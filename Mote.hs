@@ -42,6 +42,7 @@ import qualified Scratch
 import qualified Mote.Search
 import qualified Search.Graph
 import qualified Search.Graph.Types
+import qualified Data.HashSet as HashSet
 
 getEnclosingHole :: Ref MoteState -> (Int, Int) -> M (Maybe AugmentedHoleInfo)
 getEnclosingHole stRef pos =
@@ -224,8 +225,11 @@ respond' stRef = \case
     return . SetInfoWindow . showSDocForUser fs unqual $ ppr x
 
   Search tyStr -> do
-    moveSeqs <- Scratch.search stRef tyStr 4
-    return (SetInfoWindow (showResults moveSeqs))
+    moveSeqs <- Scratch.search stRef tyStr 3
+    logS stRef ("length moveSeqs = " ++ show (length moveSeqs))
+    let gs = HashSet.fromList $ map Search.Graph.moveListToGraph moveSeqs
+    logS stRef ("size gs = " ++ show (HashSet.size gs))
+    return (SetInfoWindow (showResults (HashSet.toList gs)))
     -- gs <- Mote.Search.search src trg 5
     -- return (SetInfoWindow (showResults gs)) 
     where
@@ -234,9 +238,8 @@ respond' stRef = \case
       unlines
       . map (\(_,(t,_)) -> Search.Graph.renderAnnotatedTerm t)
       . List.sortBy (compare `on` fst)
-      . map (\moveSeq ->
+      . map (\g ->
           let
-            g = Search.Graph.moveListToGraph moveSeq
             pr = (Search.Graph.toTerm g, g)
           in
           (Mote.Search.score pr, pr))

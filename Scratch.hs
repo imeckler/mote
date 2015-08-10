@@ -18,7 +18,7 @@ import           Data.Bifoldable
 import           Data.Bifunctor
 import           Data.Bitraversable
 import Data.Function (on)
-import           Data.Maybe              (catMaybes, isJust, isNothing, fromJust, mapMaybe)
+import           Data.Maybe              (catMaybes, isJust, isNothing, fromJust, mapMaybe, listToMaybe)
 import           Data.Monoid
 import Data.Hashable
 import qualified Data.Map as Map
@@ -485,12 +485,13 @@ search stRef tyStr n = do
   where
   interpretType ty0 =
     let
-      (v:vars, ty) = splitForAllTys ty0
+      (vars, ty) = splitForAllTys ty0
+      mv = listToMaybe vars
       -- TODO: Assert kind(v) == *
       toWord t =
         case splitSyntacticFunctors t of
           (sfs, TyVarTy v') ->
-            if v == v'
+            if Just v' == mv
             then return (Word sfs Nothing)
             else throwError (Unsupported "Could not handle input type")
           (sfs, t') ->
