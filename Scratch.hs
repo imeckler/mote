@@ -447,6 +447,7 @@ inScopePosetAndInnerDummy = do
             monomorphizedSubstsForEquivalentContexts
 
   uniqSupp <- liftIO newUniqueSupply
+
   let poset = initUs_ uniqSupp (typePoset theInnerDummy natTransesByType)
   return (poset, theInnerDummy)
 
@@ -1080,7 +1081,10 @@ groupingTree transes =
           TyConApp tc _ ->
             let
               byTyCon' =
-                (tc, argsGroupingTree (map (\case { (WrappedType (TyConApp _ args),x) -> (map WrappedType args,x) }) group))
+                ( tc
+                , argsGroupingTree
+                    (map (\case { (WrappedType (TyConApp _ args),x) -> (map WrappedType args,x) }) group)
+                )
                 : byTyCon
             in
             (byTyCon', uncategorized)
@@ -1172,8 +1176,14 @@ typePoset theInnerDummy natTransesByType = do
       groupingTree transesList
 
     tyConTypes =
+      let
+        tyConTyVars' tc =
+          case splitLast (TyCon.tyConTyVars tc) of
+            Nothing -> []
+            Just (args, _arg) -> args ++ [theInnerDummy]
+      in
       map (\(tc, ex) ->
-        ( WrappedType (TyConApp tc (map TyVarTy (TyCon.tyConTyVars tc)))
+        ( WrappedType (TyConApp tc (map TyVarTy (tyConTyVars' tc)))
         , case ex of
             Left group -> (HashMap.empty, Just group)
             Right hm -> (hm, Nothing)
@@ -1184,7 +1194,7 @@ typePoset theInnerDummy natTransesByType = do
       map (\(t,m) -> (t, (m, Nothing))) typesNotThuslyGrouped ++ tyConTypes
 
     m0 =
-      Map.fromList
+      Map.fromListWith (<>)
         (map (second (\transes -> (transes, Map.empty, Map.empty, Map.empty)))
           groupedTranses)
 

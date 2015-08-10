@@ -233,7 +233,6 @@ respond' stRef = \case
     showResults =
       unlines
       . map (\(_,(t,_)) -> Search.Graph.renderAnnotatedTerm t)
-      . take 5
       . List.sortBy (compare `on` fst)
       . map (\moveSeq ->
           let
