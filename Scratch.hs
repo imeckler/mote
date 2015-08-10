@@ -64,7 +64,7 @@ import qualified TyCon
 import Control.Monad.State
 import qualified Unsafe.Coerce
 import           Outputable              (Outputable, comma, fsep, ppr, ptext,
-                                          punctuate, (<+>), braces)
+                                          punctuate, (<+>), braces, showPpr)
 import Cloned.Unify
 
 import qualified Search.Types
@@ -448,8 +448,8 @@ inScopePosetAndInnerDummy = do
 
   uniqSupp <- liftIO newUniqueSupply
 
-  let poset = initUs_ uniqSupp (typePoset theInnerDummy natTransesByType)
-  return (poset, theInnerDummy)
+  let lookupTable = initUs_ uniqSupp (typeLookupTable theInnerDummy natTransesByType)
+  return (lookupTable, theInnerDummy)
 
 natTransDataToTrans :: NatTransData () Type -> Search.Types.Trans SyntacticFunctor WrappedType
 natTransDataToTrans (NatTransData {name,from,to,functorArgumentPosition,numberOfArguments}) =
@@ -474,57 +474,56 @@ search
   -> Int
   -> M [[Search.Types.Move SyntacticFunctor WrappedType]]
 search stRef tyStr n = do
-  (poset, innerVar, minElt) <- inScopePosetData <$> getFileDataErr stRef
+  (lookupTable, innerVar, minElt) <- inScopePosetData <$> getFileDataErr stRef
+  dynFlags <- lift getSessionDynFlags
+  logS stRef $
+    showPpr dynFlags
+      (Map.mapWithKey (\k -> map (\nd -> (k, name nd, from nd, to nd)) . HashMap.elems) (byClosedType lookupTable))
   (src, trg) <- interpretType =<< readType tyStr
   let
     matchesForWord
       :: Word SyntacticFunctor WrappedType
       -> [(Word SyntacticFunctor WrappedType, Search.Types.Move SyntacticFunctor WrappedType)]
-    matchesForWord = concatMap (matchesInView innerVar poset minElt) . Word.views
+    matchesForWord = concatMap (matchesInView innerVar lookupTable minElt) . Word.views
   return (moveSequencesOfSizeAtMostMemoNotTooHoley' matchesForWord n src trg)
-  where
-  interpretType ty0 =
-    let
-      (vars, ty) = splitForAllTys ty0
-      mv = listToMaybe vars
-      -- TODO: Assert kind(v) == *
-      toWord t =
-        case splitSyntacticFunctors t of
-          (sfs, TyVarTy v') ->
-            if Just v' == mv
-            then return (Word sfs Nothing)
-            else throwError (Unsupported "Could not handle input type")
-          (sfs, t') ->
-            return (Word sfs (Just (WrappedType t')))
-    in
-    case ty of
-      FunTy src trg ->
-        liftA2 (,) (toWord src) (toWord trg)
-      _ ->
-        throwError (OtherError "Search expected function type.")
+
+interpretType ty0 =
+  let
+    (vars, ty) = splitForAllTys ty0
+    mv = listToMaybe vars
+    -- TODO: Assert kind(v) == *
+    toWord t =
+      case splitSyntacticFunctors t of
+        (sfs, TyVarTy v') ->
+          if Just v' == mv
+          then return (Word sfs Nothing)
+          else throwError (Unsupported "Could not handle input type")
+        (sfs, t') ->
+          return (Word sfs (Just (WrappedType t')))
+  in
+  case ty of
+    FunTy src trg ->
+      liftA2 (,) (toWord src) (toWord trg)
+    _ ->
+      throwError (OtherError "Search expected function type.")
 
 -- TODO: Preconvert the HashMap (Int,Int) to []'s
 matchesInView
   :: Var
-  -> Map.Map
-          WrappedType
-          (ElementData WrappedType (NatTransData () Type),
-          Maybe
-            (ArgsGroupingTree
-                   (HashMap.HashMap (Int, Int) (NatTransData () Type))))
+  -> TypeLookupTable
   -> WrappedType -- -> (ElementData', Maybe _) -- The minimal element of the poset
   -> Word.View SyntacticFunctor WrappedType
   -> [(Word SyntacticFunctor WrappedType, Search.Types.Move SyntacticFunctor WrappedType)]
-matchesInView innerVar poset minElt wv = -- lookupFrom _ minEltData
+matchesInView innerVar (TypeLookupTable { byClosedType, lookupPoset }) minElt wv = -- lookupFrom _ minEltData
   let
     (nds, _) = go HashSet.empty minElt
   in
   map
     (\nd -> newWordAndMove (natTransDataToTrans nd))
-    nds
+    (maybe [] HashMap.elems (Map.lookup (WrappedType focus) byClosedType) ++ nds)
   where
   go seen0 currTy =
-    let Just (currTyEltData, currTyArgsTreeMay) = Map.lookup currTy poset in
+    let Just (currTyEltData, currTyArgsTreeMay) = Map.lookup currTy lookupPoset in
     case match (unwrapType currTy) focus of
       Nothing ->
         ([], seen0)
@@ -1120,6 +1119,11 @@ isClosedType = go VarSet.emptyVarSet
 
 -- TODO: Make mutually recursive grouping tree and poset
 
+lastMay :: [a] -> Maybe a
+lastMay []     = Nothing
+lastMay [x]    = Just x
+lastMay (_:xs) = lastMay xs
+
 -- TODO: I realied the whole grouping tree business is kind of wrong. Think
 -- about "length : forall a. [a] -> Int". If our functor state is []ABCDE,
 -- it's gonna get probed at []A, []AB, []ABC,etc and these all will unify
@@ -1142,21 +1146,28 @@ typeLookupTable theInnerDummy natTransesByType = do
     GroupingTree { chooseTyCon, typesNotThuslyGrouped } =
       groupingTree openTransesList
 
-    tyConTypes =
-      let
-        tyConTyVars' tc =
-          case splitLast (TyCon.tyConTyVars tc) of
-            Nothing -> []
-            Just (args, _arg) -> args ++ [theInnerDummy]
-      in
-      map (\(tc, ex) ->
-        ( WrappedType (TyConApp tc (map TyVarTy (tyConTyVars' tc)))
+  tyConTypes <-
+    let
+      tyConTyVars' tc =
+        let
+          (argKinds, _) = splitFunTys (TyCon.tyConKind tc)
+        in
+        mapM freshTyVarOfKind argKinds
+        {-
+        case splitLast (TyCon.tyConTyVars tc) of
+          Nothing -> []
+          Just (args, _arg) -> args ++ [theInnerDummy] -}
+    in
+    mapM (\(tc, ex) -> do
+      tvs <- tyConTyVars' tc
+      return 
+        ( WrappedType (TyConApp tc (map TyVarTy tvs))
         , case ex of
             Left group -> (HashMap.empty, Just group)
             Right hm -> (hm, Nothing)
         ))
-        chooseTyCon
-
+      chooseTyCon
+  let
     groupedTranses =
       map (\(t,m) -> (t, (m, Nothing))) typesNotThuslyGrouped ++ tyConTypes
 
@@ -1173,6 +1184,7 @@ typeLookupTable theInnerDummy natTransesByType = do
       renameVars l >>| \l' ->
       (WrappedType l', (HashMap.empty, Nothing)))
       (Set.toList lubs)
+
   let
     (eltDatas', _) = traceShow (length lubs') $
       go

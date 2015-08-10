@@ -37,7 +37,7 @@ type TypePoset
 
 data TypeLookupTable
   = TypeLookupTable
-  { byClosedType :: Map.Map WrappedType [HashMap.HashMap (Int, Int) (NatTransData () Type)]
+  { byClosedType :: Map.Map WrappedType (HashMap.HashMap (Int, Int) (NatTransData () Type))
   , lookupPoset :: TypePoset
   }
 
