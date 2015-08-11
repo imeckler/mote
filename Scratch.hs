@@ -80,6 +80,7 @@ import           System.Directory           (getHomeDirectory)
 import           System.FilePath
 import           GHC.Paths
 import qualified Mote.Init
+import System.IO (stderr)
 -- Need to make sure that everyone gets the functions with the empty
 -- context though.
 
@@ -125,7 +126,7 @@ natTransInterpretationsStrict functorClass instEnvs (name, t0) =
           TyVarTy v ->
             Just (ConstantFunctorTyVar v)
           _ ->
-            traceShow (0, nameToString name) Nothing -- error "interp: Impossible"
+            Nothing -- error "interp: Impossible"
     in
     cfMay >>= \cf ->
     checkSource (argSfs, cf) >>= \from ->
@@ -140,11 +141,12 @@ natTransInterpretationsStrict functorClass instEnvs (name, t0) =
           , numberOfArguments
           }
       in
-      if Word.isEmpty from || from == natTransTo then traceShow (1, nameToString name) Nothing else Just nd
+      if Word.isEmpty from || from == natTransTo then Nothing else Just nd
       -- if hasFunctorialEnds nd then Just nd else Nothing
 
   natTransTo = Word targSfs targEndCap
 
+{-
   hasFunctorialEnds :: NatTransData NatTransContext Type -> Bool
   hasFunctorialEnds (NatTransData {context, from, to}) =
     isFunctorialWord context from && isFunctorialWord context to
@@ -165,7 +167,7 @@ natTransInterpretationsStrict functorClass instEnvs (name, t0) =
         TypeFunctionTyVar v ->
           List.foldl' AppTy (TyVarTy v) args
         TypeFunctionTyCon tc ->
-          TyConApp tc args
+          TyConApp tc args -}
 
   checkSource :: ([SyntacticFunctor], ConstantFunctor) -> Maybe (Word SyntacticFunctor Type)
 
@@ -197,13 +199,13 @@ natTransInterpretationsStrict functorClass instEnvs (name, t0) =
           ( Nothing
           , \(sfs, inner) ->
               if any (\(_f, args) -> targVarOccursInArgs args) sfs
-              then traceShow (2, nameToString name) Nothing
+              then Nothing
               else
                 case inner of
                   ConstantFunctorTyVar v' ->
                     if v' == v
                     then Just (Word sfs Nothing)
-                    else traceShow (3, nameToString name) Nothing
+                    else Nothing
 
                   ConstantFunctorTyCon tc ->
                     Just (Word sfs (Just (TyConApp tc [])))
@@ -218,7 +220,7 @@ natTransInterpretationsStrict functorClass instEnvs (name, t0) =
                   ConstantFunctorTyVar v' ->
                     if v' `VarEnv.elemVarEnv` nonParametricTypes
                     then Just (TyVarTy v')
-                    else traceShow (4, nameToString name) Nothing
+                    else Nothing
                   ConstantFunctorTyCon tc ->
                     Just (TyConApp tc [])
             in
@@ -334,16 +336,15 @@ transportNatTransData subst nd =
     in
     (tf', map (WrappedType . Type.substTy subst . unwrapType) ts)
 
+-- TODO: Maybe remove the closed from the name. Not sure why I wanted the
+-- substs to be closed in the first place.
 closedSubstNatTransData
   :: Type.TvSubst
   -> NatTransData context Type
-  -> Maybe (NatTransData () Type)
+  -> NatTransData () Type
 closedSubstNatTransData subst nd =
-  liftA2 (\from' to' ->
-    nd { context = (), from = from', to = to' })
-    (substWord subst (from nd))
-    (substWord subst (to nd))
-    
+    nd { context = (), from = substWord subst (from nd), to = substWord subst (to nd) }
+
 substSyntacticFunctor subst (tyFun, args) =
   case tyFun of
     TypeFunctionTyCon tc ->
@@ -365,14 +366,11 @@ substSyntacticFunctor subst (tyFun, args) =
 substWord subst (Word sfs inner) =
   case inner of
     Nothing ->
-      Just (Word (map (substSyntacticFunctor subst) sfs) Nothing)
+      Word (map (substSyntacticFunctor subst) sfs) Nothing
+
     Just ty ->
       let (sfs', inner') = splitSyntacticFunctors (Type.substTy subst ty) in
-      case inner' of
-        TyVarTy _ ->
-          Nothing
-        _ ->
-          Just (Word (map (substSyntacticFunctor subst) sfs ++ sfs') (Just inner'))
+      Word (map (substSyntacticFunctor subst) sfs ++ sfs') (Just inner')
     
 groupAllBy :: (a -> a -> Bool) -> [a] -> [(a, [a])]
 groupAllBy f xs =
@@ -408,7 +406,10 @@ inScopeChooseATypeAndInnerDummy = do
     Just functorClass =
       List.find (\cls -> Class.className cls == PrelNames.functorClassName) classes
 
-  let interps = concatMap (natTransInterpretationsStrict functorClass instEnvs) typedNames
+  let
+    interps =
+      concatMap (natTransInterpretationsStrict functorClass instEnvs)
+            typedNames
 
   let monomorphizedSubstsForEquivalentContexts =
         map (\(repr, nds) ->
@@ -427,19 +428,21 @@ inScopeChooseATypeAndInnerDummy = do
             in
             concatMap (\nd ->
               let
-                ndContext = map unwrapType (context nd)
+                ndContext =
+                  map unwrapType (context nd)
                 Just ndToRepr =
                   Unify.tcMatchTys (Type.tyVarsOfTypes ndContext) ndContext reprContext
               in
-              mapMaybe
+              map
                 (\subst0 ->
-                  let subst = compose ndToRepr subst0 in
-                  closedSubstNatTransData subst nd >>| \nd' ->
-                    ( WrappedType (uncontextualizedFromType id nd' theInnerDummy)
-                    , HashMap.singleton (getKey (getUnique (name nd')), functorArgumentPosition nd') nd' )
-                    )
+                  let subst = compose ndToRepr subst0
+                      nd' = closedSubstNatTransData subst nd
+                  in
+                  ( WrappedType (uncontextualizedFromType id nd' theInnerDummy)
+                  , HashMap.singleton (getKey (getUnique (name nd')), functorArgumentPosition nd') nd' 
+                  ))
                 substs)
-              nds)
+              (repr:nds))
             monomorphizedSubstsForEquivalentContexts
 
   return
@@ -448,68 +451,6 @@ inScopeChooseATypeAndInnerDummy = do
         (Map.toList natTransesByType))
     , theInnerDummy
     )
-
-inScopePosetAndInnerDummy :: GhcMonad m => m (TypeLookupTable, Var)
-inScopePosetAndInnerDummy = do
-  theInnerDummy <- liftIO $ do
-    uniqSupply <- newUniqueSupply
-    return . initUs_ uniqSupply $ do
-      uniq <- getUniqueM
-      return $
-        mkGlobalVar
-          VanillaId
-          (mkInternalName uniq (mkVarOcc "innermostdummy") noSrcSpan)
-          Kind.liftedTypeKind
-          vanillaIdInfo
-
-  hsc_env <- getSession
-
-  typedNames <- fmap catMaybes . mapM (\n -> fmap (n,) <$> nameType n) =<< getNamesInScope
-  (_messages, Just instEnvs) <- liftIO (runTcInteractive hsc_env TcEnv.tcGetInstEnvs)
-  let
-    classes =
-      map (\inst -> InstEnv.is_cls inst) (InstEnv.instEnvElts (InstEnv.ie_global instEnvs))
-    Just functorClass =
-      List.find (\cls -> Class.className cls == PrelNames.functorClassName) classes
-
-  let interps = concatMap (natTransInterpretationsStrict functorClass instEnvs) typedNames
-
-  let monomorphizedSubstsForEquivalentContexts =
-        map (\(repr, nds) ->
-          ( repr
-          , nds
-          , moreSpecificMonomorphizedSubsts instEnvs
-              (map unwrapType (context repr))
-          ))
-        . groupAllBy (equivalentContexts `on` (map unwrapType . context)) $ interps
-
-      natTransesByType =
-        Map.fromListWith HashMap.union $
-          concatMap (\(repr, nds, substs) ->
-            let
-              reprContext = map unwrapType (context repr)
-            in
-            concatMap (\nd ->
-              let
-                ndContext = map unwrapType (context nd)
-                Just ndToRepr =
-                  Unify.tcMatchTys (Type.tyVarsOfTypes ndContext) ndContext reprContext
-              in
-              mapMaybe
-                (\subst0 ->
-                  let subst = compose ndToRepr subst0 in
-                  closedSubstNatTransData subst nd >>| \nd' ->
-                    ( WrappedType (uncontextualizedFromType id nd' theInnerDummy)
-                    , HashMap.singleton (getKey (getUnique (name nd')), functorArgumentPosition nd') nd' )
-                    )
-                substs)
-              nds)
-            monomorphizedSubstsForEquivalentContexts
-
-  uniqSupp <- liftIO newUniqueSupply
-
-  let lookupTable = initUs_ uniqSupp (typeLookupTable theInnerDummy natTransesByType)
-  return (lookupTable, theInnerDummy)
 
 natTransDataToTrans :: NatTransData () Type -> Search.Types.Trans SyntacticFunctor WrappedType
 natTransDataToTrans (NatTransData {name,from,to,functorArgumentPosition,numberOfArguments}) =
@@ -584,9 +525,8 @@ matchesInView'
 matchesInView' innerVar chooseAType wv =
   concatMap
     (\(subst, nds) ->
-        mapMaybe
+        map
           (\nd ->
-            fmap
               (newWordAndMove . natTransDataToTrans)
               (closedSubstNatTransData (Type.mkTvSubst VarEnv.emptyInScopeSet subst) nd))
           nds)
@@ -663,7 +603,7 @@ matchesInView innerVar (TypeLookupTable { byClosedType, lookupPoset }) minElt wv
         -- first rather than the most general as we're doing now.
         ( fromArgsTree
           ++
-          mapMaybe (closedSubstNatTransData subst)
+          map (closedSubstNatTransData subst)
             (HashMap.elems (natTranses (currTyEltData)))
           ++
           rest
@@ -693,7 +633,7 @@ matchesInView innerVar (TypeLookupTable { byClosedType, lookupPoset }) minElt wv
           Nothing ->
             ndsAcc
           Just subst ->
-            mapMaybe (closedSubstNatTransData subst) (HashMap.elems ndsMap) ++ ndsAcc)
+            map (closedSubstNatTransData subst) (HashMap.elems ndsMap) ++ ndsAcc)
         []
         argsNotThuslyGrouped
 
@@ -742,6 +682,7 @@ moreSpecificMonomorphizedSubsts
   :: InstEnv.InstEnvs
   -> [PredType]
   -> [Type.TvSubst]
+-- moreSpecificMonomorphizedSubsts _ [] = [Type.emptyTvSubst]
 moreSpecificMonomorphizedSubsts instEnvs predTys0 = go 1 Type.emptyTvSubst predTys0
   where
   -- Eq just balloons too fast
@@ -1299,7 +1240,7 @@ typeLookupTable theInnerDummy natTransesByType = do
         Set.empty
         (pairs lubs' ++ liftA2 (,) lubs' groupedTranses)
 
-    (tysToReprs, reprsToData) = traceShow "HI" $
+    (tysToReprs, reprsToData) =
       makeCanonicalReprs (Map.empty, Map.empty) eltDatas'
   return $
     TypeLookupTable
