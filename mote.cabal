@@ -15,7 +15,7 @@ build-type:          Simple
 -- extra-source-files:  
 cabal-version:       >=1.10
 
-executable scratch
+executable scratchrepl
   main-is: ScratchRepl.hs
   build-depends:       base == 4.8.*,
                        containers >= 0.5,
@@ -36,6 +36,8 @@ executable scratch
                        ghc,
                        Cabal >= 1.18,
                        directory >= 1.2,
+                       parsec >= 3.1.9,
+                       -- readline  >= 1.0.3.0,
                        -- DEBUG
                        time >= 1.4,
                        process >= 1.2,

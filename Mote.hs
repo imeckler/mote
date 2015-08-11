@@ -28,6 +28,8 @@ import           System.Exit                (ExitCode (..), exitWith)
 import           System.FilePath
 import           System.IO
 
+import Mote.ReadType (readType)
+import qualified Mote.Search.ChooseAType as ChooseAType
 import           Mote.Case
 import           Mote.GhcUtil
 import           Mote.Holes
@@ -43,6 +45,9 @@ import qualified Mote.Search
 import qualified Search.Graph
 import qualified Search.Graph.Types
 import qualified Data.HashSet as HashSet
+import qualified Linker
+
+import qualified GHC.IO.Handle
 
 getEnclosingHole :: Ref MoteState -> (Int, Int) -> M (Maybe AugmentedHoleInfo)
 getEnclosingHole stRef pos =
@@ -224,6 +229,11 @@ respond' stRef = \case
     unqual <- lift getPrintUnqual
     return . SetInfoWindow . showSDocForUser fs unqual $ ppr x
 
+  ValuesWithTarget tyStr -> do
+    ty <- readType tyStr
+    (chooseAType, _) <- chooseATypeData <$> getFileDataErr stRef
+    undefined
+
   Search n tyStr -> do
     moveSeqs <- Scratch.search stRef tyStr n
     -- logS stRef ("length moveSeqs = " ++ show (length moveSeqs))
@@ -252,17 +262,23 @@ main :: IO ()
 main = do
   home <- getHomeDirectory
   withFile (home </> ".moteserverlog") WriteMode $ \logFile -> do
+    GHC.IO.Handle.hDuplicateTo logFile stderr
     stRef <- newRef =<< initialState logFile
     hSetBuffering logFile NoBuffering
     hSetBuffering stdout NoBuffering
     hPutStrLn logFile "Testing, testing"
     runGhc (Just libdir) $ do
+      {-
+      dynFlags <- getSessionDynFlags
+      setSessionDynFlags dynFlags
+      liftIO $ Linker.initDynLinker dynFlags -}
       -- ghcInit stRef
       Mote.Init.initializeWithCabal stRef >>= \case
         Left err -> liftIO $ do
           LB8.putStrLn (encode (Error err))
           exitWith (ExitFailure 1)
-        Right () -> return ()
+        Right () ->
+          return ()
 
       logS stRef "init'd"
       forever $ do

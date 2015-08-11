@@ -103,7 +103,7 @@ natTransInterpretationsStrict
   -> (Name, Type)
   -> [NatTransData NatTransContext Type]
 natTransInterpretationsStrict functorClass instEnvs (name, t0) =
-  if Word.isEmpty natTransTo
+  if False -- TODO Word.isEmpty natTransTo
   then []
   else
     filter isReasonableTrans $ catMaybes (zipWith interp [0..] args)
@@ -125,7 +125,7 @@ natTransInterpretationsStrict functorClass instEnvs (name, t0) =
           TyVarTy v ->
             Just (ConstantFunctorTyVar v)
           _ ->
-            Nothing -- error "interp: Impossible"
+            traceShow (0, nameToString name) Nothing -- error "interp: Impossible"
     in
     cfMay >>= \cf ->
     checkSource (argSfs, cf) >>= \from ->
@@ -140,7 +140,7 @@ natTransInterpretationsStrict functorClass instEnvs (name, t0) =
           , numberOfArguments
           }
       in
-      if Word.isEmpty from || from == natTransTo then Nothing else Just nd
+      if Word.isEmpty from || from == natTransTo then traceShow (1, nameToString name) Nothing else Just nd
       -- if hasFunctorialEnds nd then Just nd else Nothing
 
   natTransTo = Word targSfs targEndCap
@@ -187,7 +187,7 @@ natTransInterpretationsStrict functorClass instEnvs (name, t0) =
                     ConstantFunctorTyVar v' ->
                       if v' `VarEnv.elemVarEnv` nonParametricTypes
                       then Just (TyVarTy v')
-                      else Nothing
+                      else Just (TyVarTy v') -- TODO: Nothing
                     ConstantFunctorTyCon tc ->
                       Just (TyConApp tc [])
               in
@@ -197,13 +197,13 @@ natTransInterpretationsStrict functorClass instEnvs (name, t0) =
           ( Nothing
           , \(sfs, inner) ->
               if any (\(_f, args) -> targVarOccursInArgs args) sfs
-              then Nothing
+              then traceShow (2, nameToString name) Nothing
               else
                 case inner of
                   ConstantFunctorTyVar v' ->
                     if v' == v
                     then Just (Word sfs Nothing)
-                    else Nothing
+                    else traceShow (3, nameToString name) Nothing
 
                   ConstantFunctorTyCon tc ->
                     Just (Word sfs (Just (TyConApp tc [])))
@@ -218,7 +218,7 @@ natTransInterpretationsStrict functorClass instEnvs (name, t0) =
                   ConstantFunctorTyVar v' ->
                     if v' `VarEnv.elemVarEnv` nonParametricTypes
                     then Just (TyVarTy v')
-                    else Nothing
+                    else traceShow (4, nameToString name) Nothing
                   ConstantFunctorTyCon tc ->
                     Just (TyConApp tc [])
             in
@@ -1283,7 +1283,7 @@ typeLookupTable theInnerDummy natTransesByType = do
           groupedTranses)
 
     (eltDatas, lubs) =
-      traceShow (length natTransesByType) $ go (Just uniqSupply) m0 Set.empty (pairs groupedTranses)
+      go (Just uniqSupply) m0 Set.empty (pairs groupedTranses)
 
   lubs' <-
     mapM (\(WrappedType l) ->
@@ -1292,7 +1292,7 @@ typeLookupTable theInnerDummy natTransesByType = do
       (Set.toList lubs)
 
   let
-    (eltDatas', _) = traceShow (length lubs') $
+    (eltDatas', _) =
       go
         Nothing
         (List.foldl' (\m (l,x) -> Map.insert l (x,Map.empty,Map.empty,Map.empty) m) eltDatas lubs')

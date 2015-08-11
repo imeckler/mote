@@ -348,6 +348,16 @@ lookupTyConArgs' ctc args subst =
         _ ->
           [] -- TODO: This is actually an error case, but it's happening somehow. Figure out why.
 
+allData :: ChooseAType val -> [val]
+allData (ChooseAType {it'sATyConTy, unifyWithATyVar, it'sAnAppTy = ChooseAppTy capt }) =
+  map snd (VarEnv.varEnvElts unifyWithATyVar)
+  ++ concatMap allDataArgs (UniqFM.eltsUFM it'sATyConTy)
+
+allDataArgs :: ChooseTyConArgs val -> [val]
+allDataArgs ctc = case ctc of
+  AllDone x -> [x]
+  ChooseAnArg carg -> concatMap allDataArgs (allData carg)
+
 unifyResultToMaybe :: Unify.UnifyResultM x -> Maybe x
 unifyResultToMaybe ux =
   case ux of
@@ -365,3 +375,4 @@ splitLast xs = Just (splitLast' xs)
   splitLast' [x]    = ([], x)
   splitLast' (x:xs) = let (xs', xf) = (splitLast' xs) in (x:xs', xf)
   splitLast' _      = error "Mote.Search.splitLast': Impossible"
+

@@ -25,6 +25,8 @@ import Mote.Search.TypePoset
 import qualified Scratch
 -- TODO: Debug imports
 import qualified DynFlags
+import qualified Mote.Search.NatTransData as NatTransData
+import qualified Mote.Search.ChooseAType as ChooseAType
 
 {-
 loadModule' :: [(FilePath, Maybe Phase)] -> Ghc SuccessFlag-- InputT GHCi SuccessFlag
@@ -121,6 +123,8 @@ setStateForData stRef path tcmod hsModule = do
   modifyTimeAtLastLoad <- liftIO $ getModificationTime path
   let argHoles = findArgHoles hsModule
   (chooseAType, innerVar) <- Scratch.inScopeChooseATypeAndInnerDummy
+  dynFlags <- getSessionDynFlags
+  logS stRef (showPpr dynFlags . map (\nd -> (NatTransData.from nd, NatTransData.to nd, NatTransData.name nd)) . concat $ ChooseAType.allData chooseAType)
   -- let ((minimalElt, _) : _) = Scratch.minimalElements (lookupPoset lookupTable)
   gModifyRef stRef (\st -> st
     { fileData    = Just $
