@@ -14,6 +14,7 @@ import qualified UniqFM
 import Control.Monad.Reader
 import Control.Applicative hiding (empty)
 import Data.Maybe (maybeToList, mapMaybe)
+import qualified VarEnv
 
 {-
 data TyConLookupTrie val
@@ -45,7 +46,8 @@ instance Functor ChooseTyConArgs where
 data ChooseAType {- and you'll maybe get a -} val
   = ChooseAType
   { it'sATyConTy    :: UniqFM.UniqFM (ChooseTyConArgs val) -- Think of it as `TyCon -> Maybe (ChooseTyConArgs val)`
-  , unifyWithATyVar :: [Type -> Type.TvSubstEnv -> ChooseM (Maybe (Type.TvSubstEnv, val))] -- [(Type.TyVar, val)]
+  , unifyWithATyVar :: VarEnv.VarEnv (Type.TyVar, val)
+  -- [Type -> Type.TvSubstEnv -> ChooseM (Maybe (Type.TvSubstEnv, val))] -- [(Type.TyVar, val)]
       -- Gonna turn this into [(TyVar, val)]
 -- The Real type      :: Type.TvSubstEnv -> Type -> ChooseM [Maybe (Type.TvSubstEnv, val)] -- [(Type.TyVar, val)]
 --      :: {- Subst so far -} Type.TvSubstEnv -> Type -> ChooseM (Maybe (Type.TvSubstEnv, val))  -- I strongly suspect this should return a list of vals...
@@ -232,7 +234,12 @@ insertTyConArgsWith rules = \f args x ctc ->
       TyVarTy v ->
         cat
         { unifyWithATyVar =
-            map (\f ty subst -> fmap (fmap (fmap (f . Just))) $ f ty subst) (unifyWithATyVar cat)
+            case VarEnv.lookupVarEnv (unifyWithATyVar cat) v of
+              Nothing ->
+                VarEnv.extendVarEnv (unifyWithATyVar cat) v (v, f Nothing)
+
+              Just (_, x) ->
+                VarEnv.extendVarEnv (unifyWithATyVar cat) v (v, f (Just x))
           {-
             map
               (\(v, x) ->
