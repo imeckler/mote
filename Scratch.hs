@@ -543,9 +543,9 @@ search stRef tyStr n = do
       -}
   (src, trg) <- interpretType =<< readType tyStr
   logS stRef . showPpr dynFlags . (src,) . map length $
-    runReader
-      (ChooseAType.lookup (let Word fs t = src in stitchUp (maybe (TyVarTy innerVar) unwrapType t) fs ) chooseAType)
-      (\_ -> BindMe)
+      (ChooseAType.lookup
+        (let Word fs t = src in stitchUp (maybe (TyVarTy innerVar) unwrapType t) fs )
+        chooseAType)
 
   let
     matchesForWord
@@ -590,9 +590,7 @@ matchesInView' innerVar chooseAType wv =
               (newWordAndMove . natTransDataToTrans)
               (closedSubstNatTransData (Type.mkTvSubst VarEnv.emptyInScopeSet subst) nd))
           nds)
-    (runReader (ChooseAType.lookup focus chooseAType) 
-      (\_ -> BindMe))
-      -- (\v -> if v == innerVar then Skolem else BindMe))
+    (ChooseAType.lookup focus chooseAType)
   where
   (focus, newWordAndMove) = case wv of
     Word.NoO pre foc post ->

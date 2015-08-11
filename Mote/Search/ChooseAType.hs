@@ -22,8 +22,6 @@ data TyConLookupTrie val
   | ChooseAnArg (ChooseAType (TyConLookupTrie val))
 -}
 
-type ChooseM = Reader (Type.TyVar -> Unify.BindFlag)
-
 data ChooseTyConArgs {- and you'll maybe get a -} val
   = AllDone val
   | ChooseAnArg (ChooseAType (ChooseTyConArgs val))
@@ -73,17 +71,19 @@ instance Functor ChooseAType where
       (fmap (fmap f) unifyWithATyVar)
       (fmap f it'sAnAppTy)
 
-lookupAppTy' :: ChooseAppTy val -> Type -> Type -> Type.TvSubstEnv -> ChooseM [(Type.TvSubstEnv, val)]
+lookupAppTy' :: ChooseAppTy val -> Type -> Type -> Type.TvSubstEnv -> [(Type.TvSubstEnv, val)]
 lookupAppTy' (ChooseAppTy cat0) t1 t2 subst =
-  lookup' cat0 t1 subst >>= concatMapM (\(subst', cat') -> lookup' cat' t2 subst')
+  concatMap
+    (\(subst', cat') -> lookup' cat' t2 subst')
+    (lookup' cat0 t1 subst)
 
 concatMapM :: Monad m => (a -> m [b]) -> [a] -> m [b]
 concatMapM f = fmap concat . mapM f
 
-lookup :: Type -> ChooseAType val -> ChooseM [(Type.TvSubstEnv, val)]
+lookup :: Type -> ChooseAType val -> [(Type.TvSubstEnv, val)]
 lookup t cat = lookup' cat t Type.emptyTvSubstEnv
 
-lookup' :: ChooseAType val -> Type -> Type.TvSubstEnv -> ChooseM [(Type.TvSubstEnv, val)]
+lookup' :: ChooseAType val -> Type -> Type.TvSubstEnv -> [(Type.TvSubstEnv, val)]
 lookup' (ChooseAType {it'sAnAppTy, it'sATyConTy, unifyWithATyVar}) ty substSoFar =
   case ty of
     TyConApp tc args ->
@@ -91,28 +91,26 @@ lookup' (ChooseAType {it'sAnAppTy, it'sATyConTy, unifyWithATyVar}) ty substSoFar
         appTyCase =
           case splitLast args of
             Nothing ->
-              return []
+              []
 
             Just (args', arg) ->
               lookupAppTy' it'sAnAppTy (TyConApp tc args') arg substSoFar
       in
-      (\c1 c2 c3 -> c1 <> c2 <> c3)
-      <$> tyVarCase
-      <*> (maybe (return []) (\ctc -> lookupTyConArgs' ctc args substSoFar) (UniqFM.lookupUFM it'sATyConTy tc))
-      <*> appTyCase
+         tyVarCase
+      ++ (maybe [] (\ctc -> lookupTyConArgs' ctc args substSoFar) (UniqFM.lookupUFM it'sATyConTy tc))
+      ++ appTyCase
       {-
       fmap (:[]) (unifyWithATyVar ty substSoFar)
       <> (UniqFM.lookupUFM tc it'sATyConTy >>= \ctc -> lookupTyConArgs' ctc args substSoFar)
       <> appTyCase -}
 
     FunTy t1 t2 ->
-      maybe (return []) (\ctc -> lookupTyConArgs' ctc [t1,t2] substSoFar)
+      maybe []
+        (\ctc -> lookupTyConArgs' ctc [t1,t2] substSoFar)
         (UniqFM.lookupUFM it'sATyConTy Type.funTyCon)
 
     AppTy t1 t2 ->
-      liftA2 (<>)
-        tyVarCase
-        (lookupAppTy' it'sAnAppTy t1 t2 substSoFar)
+      tyVarCase ++ lookupAppTy' it'sAnAppTy t1 t2 substSoFar
 
     TyVarTy _ -> tyVarCase
 
@@ -122,15 +120,16 @@ lookup' (ChooseAType {it'sAnAppTy, it'sATyConTy, unifyWithATyVar}) ty substSoFar
       error "TODO"
 
   where
-  tyVarCase = do
-    bindFlags <- ask
-    return $
-      mapMaybe
-        (\(v,x) ->
-          fmap (\subst' -> (subst', x))
-          . unifyResultToMaybe
-          $ Unify.unUM (Unify.uVar substSoFar v ty) bindFlags)
-        (VarEnv.varEnvElts unifyWithATyVar)
+  tyVarCase =
+    let
+      bindFlags _ = Unify.BindMe
+    in
+    mapMaybe
+      (\(v,x) ->
+        fmap (\subst' -> (subst', x))
+        . unifyResultToMaybe
+        $ Unify.unUM (Unify.uVar substSoFar v ty) bindFlags)
+      (VarEnv.varEnvElts unifyWithATyVar)
 
 -- TODO: This is going to be insanely inefficient. Will have to optimize
 -- later.
@@ -334,18 +333,20 @@ insertWith f ty x cat =
     LitTy {} ->
       error "insertWith: LitTy not implemented"
 
-lookupTyConArgs' :: ChooseTyConArgs val -> [Type] -> Type.TvSubstEnv -> ChooseM [(Type.TvSubstEnv, val)]
+lookupTyConArgs' :: ChooseTyConArgs val -> [Type] -> Type.TvSubstEnv -> [(Type.TvSubstEnv, val)]
 lookupTyConArgs' ctc args subst =
   case ctc of
     AllDone x ->
-      return [(subst, x)]
+      [(subst, x)]
 
     ChooseAnArg cat ->
       case args of
         (arg:args') ->
-          lookup' cat arg subst >>= concatMapM (\(subst', cat') -> lookupTyConArgs' cat' args' subst')
+          concatMap
+            (\(subst', cat') -> lookupTyConArgs' cat' args' subst')
+            (lookup' cat arg subst)
         _ ->
-          return [] -- TODO: This is actually an error case, but it's happening somehow. Figure out why.
+          [] -- TODO: This is actually an error case, but it's happening somehow. Figure out why.
 
 unifyResultToMaybe :: Unify.UnifyResultM x -> Maybe x
 unifyResultToMaybe ux =
