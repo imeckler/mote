@@ -542,6 +542,11 @@ search stRef tyStr n = do
       (Map.mapWithKey (\k -> map (\nd -> (k, name nd, from nd, to nd)) . HashMap.elems) (byClosedType lookupTable))
       -}
   (src, trg) <- interpretType =<< readType tyStr
+  logS stRef . showPpr dynFlags . (src,) . map length $
+    runReader
+      (ChooseAType.lookup (let Word fs t = src in stitchUp (maybe (TyVarTy innerVar) unwrapType t) fs ) chooseAType)
+      (\_ -> BindMe)
+
   let
     matchesForWord
       :: Word SyntacticFunctor WrappedType
@@ -578,9 +583,16 @@ matchesInView'
   -> [(Word SyntacticFunctor WrappedType, Search.Types.Move SyntacticFunctor WrappedType)]
 matchesInView' innerVar chooseAType wv =
   concatMap
-    (\(subst, nds) -> map (\nd -> newWordAndMove (natTransDataToTrans nd)) nds)
+    (\(subst, nds) ->
+        mapMaybe
+          (\nd ->
+            fmap
+              (newWordAndMove . natTransDataToTrans)
+              (closedSubstNatTransData (Type.mkTvSubst VarEnv.emptyInScopeSet subst) nd))
+          nds)
     (runReader (ChooseAType.lookup focus chooseAType) 
-      (\v -> if v == innerVar then Skolem else BindMe))
+      (\_ -> BindMe))
+      -- (\v -> if v == innerVar then Skolem else BindMe))
   where
   (focus, newWordAndMove) = case wv of
     Word.NoO pre foc post ->
