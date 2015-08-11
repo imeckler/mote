@@ -28,11 +28,11 @@ data ChooseTyConArgs {- and you'll maybe get a -} val
   deriving (Show)
 
 newtype ChooseAppTy val
-  = ChooseAppTy (ChooseAType (ChooseAType val))
+  = ChooseAppTy (Maybe (ChooseAType (ChooseAType val)))
   deriving (Show)
 
 instance Functor ChooseAppTy where
-  fmap f (ChooseAppTy cat) = ChooseAppTy (fmap (fmap f) cat)
+  fmap f (ChooseAppTy cat) = ChooseAppTy (fmap (fmap (fmap f)) cat)
 
 instance Functor ChooseTyConArgs where
   fmap f ctc =
@@ -72,10 +72,15 @@ instance Functor ChooseAType where
       (fmap f it'sAnAppTy)
 
 lookupAppTy' :: ChooseAppTy val -> Type -> Type -> Type.TvSubstEnv -> [(Type.TvSubstEnv, val)]
-lookupAppTy' (ChooseAppTy cat0) t1 t2 subst =
-  concatMap
-    (\(subst', cat') -> lookup' cat' t2 subst')
-    (lookup' cat0 t1 subst)
+lookupAppTy' (ChooseAppTy cat0May) t1 t2 subst =
+  case cat0May of
+    Nothing ->
+      []
+
+    Just cat0 ->
+      concatMap
+        (\(subst', cat') -> lookup' cat' t2 subst')
+        (lookup' cat0 t1 subst)
 
 concatMapM :: Monad m => (a -> m [b]) -> [a] -> m [b]
 concatMapM f = fmap concat . mapM f
@@ -139,7 +144,7 @@ empty =
   ChooseAType
     UniqFM.emptyUFM
     VarEnv.emptyVarEnv
-    (ChooseAppTy empty)
+    (ChooseAppTy Nothing)
 
 singleton :: Type -> val -> ChooseAType val
 singleton t x =
@@ -148,7 +153,7 @@ singleton t x =
       ChooseAType
       { it'sATyConTy = UniqFM.listToUFM [(tc, singletonTyConArgs args x)]
       , unifyWithATyVar = VarEnv.emptyVarEnv
-      , it'sAnAppTy = ChooseAppTy empty
+      , it'sAnAppTy = ChooseAppTy Nothing
       }
 
     TyVarTy v ->
@@ -160,7 +165,7 @@ singleton t x =
             fmap
               (fmap (,x) . unifyResultToMaybe . Unify.unUM (Unify.uVar subst v ty))
               ask -}
-      , it'sAnAppTy = ChooseAppTy empty
+      , it'sAnAppTy = ChooseAppTy Nothing
       }
 
     AppTy t1 t2 ->
@@ -168,7 +173,7 @@ singleton t x =
       { it'sATyConTy = UniqFM.emptyUFM
       , unifyWithATyVar = VarEnv.emptyVarEnv
       , it'sAnAppTy =
-          ChooseAppTy (singleton t1 (singleton t2 x))
+          ChooseAppTy (Just (singleton t1 (singleton t2 x)))
       }
 
     FunTy t1 t2 ->
@@ -226,11 +231,16 @@ updateAtArgs f args ctc =
           cat)
 
 updateAtAppTy :: (Maybe val -> val) -> Type -> Type -> ChooseAppTy val -> ChooseAppTy val
-updateAtAppTy f t1 t2 (ChooseAppTy capt) =
-  ChooseAppTy
-    (updateAt
-      (maybe (singleton t2 (f Nothing)) (updateAt f t2))
-      t1 capt)
+updateAtAppTy f t1 t2 (ChooseAppTy captMay) =
+  case captMay of
+    Nothing ->
+      ChooseAppTy (Just (singleton t1 (singleton t2 (f Nothing))))
+    Just capt ->
+      ChooseAppTy (Just (updateAt (maybe (singleton t2 (f Nothing)) (updateAt f t2)) t1 capt))
+
+  {-
+    (updateAt (maybe (singleton t2 (f Nothing)) (updateAt f t2))
+      t1 capt) -}
 
 updateAt :: (Maybe val -> val) -> Type -> ChooseAType val -> ChooseAType val
 updateAt f ty0 cat =
@@ -251,14 +261,17 @@ updateAt f ty0 cat =
       }
 
     AppTy t1 t2 ->
-      let ChooseAppTy capt = it'sAnAppTy cat in
+      let
+        ChooseAppTy captMay = it'sAnAppTy cat
+        capt' =
+          case captMay of
+            Nothing ->
+              singleton t1 (singleton t2 (f Nothing))
+            Just capt ->
+              updateAt (maybe (singleton t2 (f Nothing)) (updateAt f t2)) t1 capt
+      in
       cat
-      { it'sAnAppTy =
-          ChooseAppTy $
-            updateAt
-              (maybe (singleton t1 (f Nothing)) (updateAt f t2))
-              t1
-              capt
+      { it'sAnAppTy = ChooseAppTy (Just capt')
       }
 
     FunTy t1 t2 ->
@@ -308,11 +321,17 @@ insertWith f ty x cat =
       }
 
     AppTy t1 t2 ->
-      let ChooseAppTy capt = it'sAnAppTy cat in
+      let
+        ChooseAppTy captMay = it'sAnAppTy cat
+        capt' =
+          case captMay of
+            Nothing ->
+              singleton t1 (singleton t2 x)
+            Just capt ->
+              insertWith (\old _ -> insertWith f t2 x old) t1 (singleton t2 x) capt
+      in
       cat
-      { it'sAnAppTy =
-          ChooseAppTy $
-            insertWith (\old _ -> insertWith f t2 x old) t1 (singleton t2 x) capt
+      { it'sAnAppTy = ChooseAppTy (Just capt')
       }
 
     TyVarTy v ->
