@@ -394,8 +394,6 @@ inScopeChooseATypeAndInnerDummy = do
           vanillaIdInfo
 
 
-  typedNames <- fmap catMaybes . mapM (\n -> fmap (n,) <$> nameType n) =<< getNamesInScope
-
   (_messages, Just instEnvs) <- do
     hsc_env <- getSession
     liftIO (runTcInteractive hsc_env TcEnv.tcGetInstEnvs)
@@ -405,6 +403,11 @@ inScopeChooseATypeAndInnerDummy = do
       map (\inst -> InstEnv.is_cls inst) (InstEnv.instEnvElts (InstEnv.ie_global instEnvs))
     Just functorClass =
       List.find (\cls -> Class.className cls == PrelNames.functorClassName) classes
+
+  typedNames <-
+    fmap catMaybes
+    . mapM (\n -> fmap (n,) <$> nameType n)
+    =<< getNamesInScope
 
   let
     interps =
@@ -526,9 +529,7 @@ matchesInView' innerVar chooseAType wv =
   concatMap
     (\(subst, nds) ->
         map
-          (\nd ->
-              (newWordAndMove . natTransDataToTrans)
-              (closedSubstNatTransData (Type.mkTvSubst VarEnv.emptyInScopeSet subst) nd))
+          (newWordAndMove . natTransDataToTrans . closedSubstNatTransData (Type.mkTvSubst VarEnv.emptyInScopeSet subst))
           nds)
     (ChooseAType.lookup focus chooseAType)
   where
