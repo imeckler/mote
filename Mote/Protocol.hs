@@ -74,7 +74,7 @@ data FromClient
   | CaseFurther Var ClientState
   | CaseOn String ClientState
   | SendStop
-  | Search String
+  | Search Int String
   deriving (Show)
 
 instance FromJSON FromClient where
@@ -110,8 +110,8 @@ instance FromJSON FromClient where
       [String "SendStop"] ->
         return SendStop
 
-      [String "Search", String tyStr] ->
-        return (Search (T.unpack tyStr))
+      [String "Search", int, String tyStr] ->
+        fmap (\n -> Search n (T.unpack tyStr)) (parseJSON int)
 
       _ ->
         mzero

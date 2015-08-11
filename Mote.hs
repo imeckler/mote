@@ -224,8 +224,8 @@ respond' stRef = \case
     unqual <- lift getPrintUnqual
     return . SetInfoWindow . showSDocForUser fs unqual $ ppr x
 
-  Search tyStr -> do
-    moveSeqs <- Scratch.search stRef tyStr 4
+  Search n tyStr -> do
+    moveSeqs <- Scratch.search stRef tyStr n
     -- logS stRef ("length moveSeqs = " ++ show (length moveSeqs))
     -- logS stRef ("# distinct move seqs = " ++ show (HashSet.size (HashSet.fromList moveSeqs)))
     let gs = HashSet.fromList $ map Search.Graph.moveListToGraph moveSeqs
