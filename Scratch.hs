@@ -305,15 +305,6 @@ equivalentContexts ctx1 ctx2 =
   f x y =
     Unify.tcMatchTys (Type.tyVarsOfTypes x) x y
 
-splitLast :: [a] -> Maybe ([a], a)
-splitLast [] = Nothing
-splitLast xs = Just (splitLast' xs)
-  where
-  splitLast' :: [a] -> ([a], a)
-  splitLast' [x]    = ([], x)
-  splitLast' (x:xs) = first (x:) (splitLast' xs)
-  splitLast' _      = error "Mote.Search.splitLast': Impossible"
-
 transportNatTransData
   :: Type.TvSubst -- This should be an equivalence
   -> NatTransData () Type

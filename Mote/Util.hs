@@ -105,3 +105,13 @@ headErr :: MonadError ErrorType m => [a] -> m a
 headErr xs = case xs of
   [] -> throwError $ OtherError "headErr: Empty list"
   x : _ -> return x
+
+splitLast :: [a] -> Maybe ([a], a)
+splitLast [] = Nothing
+splitLast xs = Just (splitLast' xs)
+  where
+  splitLast' :: [a] -> ([a], a)
+  splitLast' [x]    = ([], x)
+  splitLast' (x:xs) = let (xs', xf) = (splitLast' xs) in (x:xs', xf)
+  splitLast' _      = error "Mote.Search.splitLast': Impossible"
+

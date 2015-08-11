@@ -328,15 +328,6 @@ splitSyntancticFuncs t = case t of
     Nothing          -> ([], t)
     Just (args, arg) -> first ((tc, map WrappedType args) :) (splitSyntancticFuncs arg)
 
-splitLast :: [a] -> Maybe ([a], a)
-splitLast [] = Nothing
-splitLast xs = Just (splitLast' xs)
-  where
-  splitLast' :: [a] -> ([a], a)
-  splitLast' [x]    = ([], x)
-  splitLast' (x:xs) = first (x:) (splitLast' xs)
-  splitLast' _      = error "Mote.Search.splitLast': Impossible"
-
 -- TODO: This is, of course, a first approximation since
 -- we assume all TyCons other than (->) are covariant in all
 -- arguments.

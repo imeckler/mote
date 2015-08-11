@@ -18,8 +18,10 @@ module Cloned.Unify (
         tcUnifyTyExtending,
 
         niFixTvSubst,
+        uVar,
 
-        UnifyResultM(..), UnifyResult, tcUnifyTysFG
+        UnifyResultM(..), UnifyResult, tcUnifyTysFG,
+        UM(..)
 
    ) where
 
