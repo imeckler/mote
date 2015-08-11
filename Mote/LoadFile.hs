@@ -123,8 +123,8 @@ setStateForData stRef path tcmod hsModule = do
   modifyTimeAtLastLoad <- liftIO $ getModificationTime path
   let argHoles = findArgHoles hsModule
   (chooseAType, innerVar) <- Scratch.inScopeChooseATypeAndInnerDummy
-  dynFlags <- getSessionDynFlags
-  logS stRef (showPpr dynFlags . map (\nd -> (NatTransData.from nd, NatTransData.to nd, NatTransData.name nd)) . concat $ ChooseAType.allData chooseAType)
+  -- dynFlags <- getSessionDynFlags
+  -- logS stRef (showPpr dynFlags . map (\nd -> (NatTransData.from nd, NatTransData.to nd, NatTransData.name nd)) . concat $ ChooseAType.allData chooseAType)
   -- let ((minimalElt, _) : _) = Scratch.minimalElements (lookupPoset lookupTable)
   gModifyRef stRef (\st -> st
     { fileData    = Just $

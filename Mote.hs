@@ -236,8 +236,8 @@ respond' stRef = \case
 
   Search n tyStr -> do
     moveSeqs <- Scratch.search stRef tyStr n
-    -- logS stRef ("length moveSeqs = " ++ show (length moveSeqs))
-    -- logS stRef ("# distinct move seqs = " ++ show (HashSet.size (HashSet.fromList moveSeqs)))
+    logS stRef ("length moveSeqs = " ++ show (length moveSeqs))
+    logS stRef ("# distinct move seqs = " ++ show (HashSet.size (HashSet.fromList moveSeqs)))
     let gs = HashSet.fromList $ map Search.Graph.moveListToGraph moveSeqs
     logS stRef ("size gs = " ++ show (HashSet.size gs))
     return (SetInfoWindow (showResults (HashSet.toList gs)))
