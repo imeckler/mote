@@ -21,8 +21,9 @@ import           System.IO
 import           TcRnTypes                   (Ct (..))
 import           UniqSupply
 import Mote.Search.WrappedType
-import Mote.Search.TypePoset
 import Var (Var)
+import qualified Mote.Search.ChooseAType as ChooseAType
+import Mote.Search.NatTransData (NatTransData)
 
 type Hole = SrcSpan
 
@@ -37,7 +38,7 @@ data FileData = FileData
   , typecheckedModule    :: TypecheckedModule
   , holesInfo            :: Map.Map SrcSpan AugmentedHoleInfo
   , scopeMap             :: ScopeMap
-  , inScopePosetData     :: (TypeLookupTable, Var, WrappedType)
+  , chooseATypeData      :: (ChooseAType.ChooseAType [NatTransData () Type], Var)
   }
 
 data MoteState = MoteState

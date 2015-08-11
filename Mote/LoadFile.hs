@@ -120,8 +120,8 @@ setStateForData :: GhcMonad m => Ref MoteState -> FilePath -> TypecheckedModule 
 setStateForData stRef path tcmod hsModule = do
   modifyTimeAtLastLoad <- liftIO $ getModificationTime path
   let argHoles = findArgHoles hsModule
-  (lookupTable, innerVar) <- Scratch.inScopePosetAndInnerDummy
-  let ((minimalElt, _) : _) = Scratch.minimalElements (lookupPoset lookupTable)
+  (chooseAType, innerVar) <- Scratch.inScopeChooseATypeAndInnerDummy
+  -- let ((minimalElt, _) : _) = Scratch.minimalElements (lookupPoset lookupTable)
   gModifyRef stRef (\st -> st
     { fileData    = Just $
         FileData
@@ -130,7 +130,7 @@ setStateForData stRef path tcmod hsModule = do
         , modifyTimeAtLastLoad
         , typecheckedModule=tcmod
         , scopeMap = makeScopeMap hsModule
-        , inScopePosetData = (lookupTable, innerVar, minimalElt)
+        , chooseATypeData = (chooseAType, innerVar)
          -- This emptiness is temporary. It gets filled in at the end of
          -- loadFile. I had to separate this since I painted myself into
          -- a bit of a monadic corner. "augment" (necessary for generating

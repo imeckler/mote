@@ -5,7 +5,6 @@ import Prelude hiding (lookup)
 import TypeRep
 import qualified Type
 import Data.Monoid
-import Mote.Util
 import qualified Cloned.Unify as Unify
 import qualified UniqFM
 import Control.Monad.Reader
@@ -334,3 +333,13 @@ unifyResultToMaybe ux =
     Unify.MaybeApart x -> Just x
     Unify.SurelyApart -> Nothing
 
+-- TODO: This is only here to break a dependency cycle on Mote.Util. Modules should be
+-- refactored.
+splitLast :: [a] -> Maybe ([a], a)
+splitLast [] = Nothing
+splitLast xs = Just (splitLast' xs)
+  where
+  splitLast' :: [a] -> ([a], a)
+  splitLast' [x]    = ([], x)
+  splitLast' (x:xs) = let (xs', xf) = (splitLast' xs) in (x:xs', xf)
+  splitLast' _      = error "Mote.Search.splitLast': Impossible"

@@ -65,11 +65,13 @@ import Control.Monad.State
 import qualified Unsafe.Coerce
 import           Outputable              (Outputable, comma, fsep, ppr, ptext,
                                           punctuate, (<+>), braces, showPpr)
+import Control.Monad.Reader
 import Cloned.Unify
 
 import qualified Search.Types
 import Search.Graph
 import Mote.Debug
+import qualified Mote.Search.ChooseAType as ChooseAType
 
 -- DEBUG
 import Debug.Trace
@@ -380,6 +382,73 @@ groupAllBy f xs =
       let (grp, xs'') = List.partition (f x) xs' in
       (x, grp) : groupAllBy f xs''
 
+inScopeChooseATypeAndInnerDummy :: GhcMonad m => m (ChooseAType.ChooseAType [NatTransData () Type], Var)
+inScopeChooseATypeAndInnerDummy = do
+  theInnerDummy <- liftIO $ do
+    uniqSupply <- newUniqueSupply
+    return . initUs_ uniqSupply $ do
+      uniq <- getUniqueM
+      return $
+        mkGlobalVar
+          VanillaId
+          (mkInternalName uniq (mkVarOcc "innermostdummy") noSrcSpan)
+          Kind.liftedTypeKind
+          vanillaIdInfo
+
+
+  typedNames <- fmap catMaybes . mapM (\n -> fmap (n,) <$> nameType n) =<< getNamesInScope
+
+  (_messages, Just instEnvs) <- do
+    hsc_env <- getSession
+    liftIO (runTcInteractive hsc_env TcEnv.tcGetInstEnvs)
+
+  let
+    classes =
+      map (\inst -> InstEnv.is_cls inst) (InstEnv.instEnvElts (InstEnv.ie_global instEnvs))
+    Just functorClass =
+      List.find (\cls -> Class.className cls == PrelNames.functorClassName) classes
+
+  let interps = concatMap (natTransInterpretationsStrict functorClass instEnvs) typedNames
+
+  let monomorphizedSubstsForEquivalentContexts =
+        map (\(repr, nds) ->
+          ( repr
+          , nds
+          , moreSpecificMonomorphizedSubsts instEnvs
+              (map unwrapType (context repr))
+          ))
+        . groupAllBy (equivalentContexts `on` (map unwrapType . context)) $ interps
+
+      natTransesByType =
+        Map.fromListWith HashMap.union $
+          concatMap (\(repr, nds, substs) ->
+            let
+              reprContext = map unwrapType (context repr)
+            in
+            concatMap (\nd ->
+              let
+                ndContext = map unwrapType (context nd)
+                Just ndToRepr =
+                  Unify.tcMatchTys (Type.tyVarsOfTypes ndContext) ndContext reprContext
+              in
+              mapMaybe
+                (\subst0 ->
+                  let subst = compose ndToRepr subst0 in
+                  closedSubstNatTransData subst nd >>| \nd' ->
+                    ( WrappedType (uncontextualizedFromType id nd' theInnerDummy)
+                    , HashMap.singleton (getKey (getUnique (name nd')), functorArgumentPosition nd') nd' )
+                    )
+                substs)
+              nds)
+            monomorphizedSubstsForEquivalentContexts
+
+  return
+    ( ChooseAType.fromListWith (++)
+      (map (\(WrappedType t, hm) -> (t, HashMap.elems hm))
+        (Map.toList natTransesByType))
+    , theInnerDummy
+    )
+
 inScopePosetAndInnerDummy :: GhcMonad m => m (TypeLookupTable, Var)
 inScopePosetAndInnerDummy = do
   theInnerDummy <- liftIO $ do
@@ -465,17 +534,21 @@ search
   -> Int
   -> M [[Search.Types.Move SyntacticFunctor WrappedType]]
 search stRef tyStr n = do
-  (lookupTable, innerVar, minElt) <- inScopePosetData <$> getFileDataErr stRef
+  (chooseAType, innerVar) <- chooseATypeData <$> getFileDataErr stRef
   dynFlags <- lift getSessionDynFlags
+  {-
   logS stRef $
     showPpr dynFlags
       (Map.mapWithKey (\k -> map (\nd -> (k, name nd, from nd, to nd)) . HashMap.elems) (byClosedType lookupTable))
+      -}
   (src, trg) <- interpretType =<< readType tyStr
   let
     matchesForWord
       :: Word SyntacticFunctor WrappedType
       -> [(Word SyntacticFunctor WrappedType, Search.Types.Move SyntacticFunctor WrappedType)]
-    matchesForWord = concatMap (matchesInView innerVar lookupTable minElt) . Word.views
+    matchesForWord =
+      concatMap (matchesInView' innerVar chooseAType) . Word.views
+
   return (moveSequencesOfSizeAtMostMemoNotTooHoley' matchesForWord n src trg)
 
 interpretType ty0 =
@@ -497,6 +570,38 @@ interpretType ty0 =
       liftA2 (,) (toWord src) (toWord trg)
     _ ->
       throwError (OtherError "Search expected function type.")
+
+matchesInView'
+  :: Var
+  -> ChooseAType.ChooseAType [NatTransData () Type]
+  -> Word.View SyntacticFunctor WrappedType
+  -> [(Word SyntacticFunctor WrappedType, Search.Types.Move SyntacticFunctor WrappedType)]
+matchesInView' innerVar chooseAType wv =
+  concatMap
+    (\(subst, nds) -> map (\nd -> newWordAndMove (natTransDataToTrans nd)) nds)
+    (runReader (ChooseAType.lookup focus chooseAType) 
+      (\v -> if v == innerVar then Skolem else BindMe))
+  where
+  (focus, newWordAndMove) = case wv of
+    Word.NoO pre foc post ->
+      ( stitchUp (TyVarTy innerVar) foc 
+      -- TODO: Should take subst as argument
+      , \t ->
+        (Word pre Nothing <> Search.Types.to t <> Word post Nothing, Word.Middle pre t (Word post Nothing))
+      )
+
+    -- YesOMid and NoO can be unified with Middle, but it is a bit confusing.
+    Word.YesOMid pre foc post o ->
+      ( stitchUp (TyVarTy innerVar) foc
+      , \t ->
+        (Word pre Nothing <> Search.Types.to t <> Word post (Just o), Word.Middle pre t (Word post (Just o)))
+      )
+
+    Word.YesOEnd pre (foc, WrappedType o) ->
+      ( stitchUp o foc
+      , \t ->
+        (Word pre Nothing <> Search.Types.to t, Word.End pre t)
+      )
 
 -- TODO: Preconvert the HashMap (Int,Int) to []'s
 matchesInView
