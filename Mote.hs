@@ -234,17 +234,29 @@ respond' stRef = \case
     (chooseAType, _) <- chooseATypeData <$> getFileDataErr stRef
     undefined
 
-  Search n tyStr -> do
-    moveSeqs <- Scratch.search stRef tyStr n
+  Search tyStr (SearchOptions {depthLimit, deduplicate}) -> do
+    gs <- Scratch.search stRef tyStr depthLimit
+    {-
     logS stRef ("length moveSeqs = " ++ show (length moveSeqs))
     logS stRef ("# distinct move seqs = " ++ show (HashSet.size (HashSet.fromList moveSeqs)))
     let gs = HashSet.fromList $ map Search.Graph.moveListToGraph moveSeqs
     logS stRef ("size gs = " ++ show (HashSet.size gs))
-    return (SetInfoWindow (showResults (HashSet.toList gs)))
-    -- gs <- Mote.Search.search src trg 5
-    -- return (SetInfoWindow (showResults gs)) 
+    return $
+      if deduplicate
+      then SetInfoWindow (showResults (HashSet.toList gs))
+      else SetInfoWindow (showResults' moveSeqs) -}
+    return $
+      SetInfoWindow (showResults gs)
     where
     -- TODO:uncomment showResults :: [Search.Graph.Types.NaturalGraph f o] -> String
+    showResults' =
+      unlines
+      . map (\(_, (t, _)) -> Search.Graph.renderAnnotatedTerm t)
+      . List.sortBy (compare `on` fst)
+      . map (\moveSeq ->
+          let pr = (Search.Graph.moveSequenceToAnnotatedTerm moveSeq, moveSeq)
+          in (Mote.Search.moveSequenceScore pr, pr))
+
     showResults =
       unlines
       . map (\(_,(t,_)) -> Search.Graph.renderAnnotatedTerm t)

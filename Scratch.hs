@@ -359,9 +359,25 @@ substSyntacticFunctor subst (tyFun, args) =
         TyConApp tc [] ->
           (TypeFunctionTyCon tc, map WrappedType args' ++ args)
 
-        _ ->
-          error "substSyntacticFunctor: Impossible case"
+        TyConApp tc args'' ->
+          (TypeFunctionTyCon tc, map WrappedType (args'' ++ args') ++ args)
+          {- TODO: I think there's still an error here
+          error $
+            "substSyntacticFunctor: TyConApp had "
+            ++ show (length args)
+            ++ " args (" ++ nameToString (getName tc) ++ ")" -}
 
+        ForAllTy {} ->
+          error "substSyntacticFunctor: ForAllTy not implemented"
+
+        FunTy t1 t2 ->
+          error "substSyntacticFunctor: FunTy not implemented"
+
+        LitTy {} ->
+          error "substSyntacticFunctor: LitTy not implemented"
+
+        AppTy {} ->
+          error "substSyntacticFunctor: AppTy not implemented"
 
 substWord subst (Word sfs inner) =
   case inner of
@@ -472,11 +488,12 @@ natTransDataToTrans (NatTransData {name,from,to,functorArgumentPosition,numberOf
     else Search.Types.Simple ("(\\x -> " ++ ident ++ " " ++ underscores functorArgumentPosition ++ " x " ++ underscores (numberOfArguments - functorArgumentPosition - 1) ++ ")")
   underscores n = unwords $ replicate n "_"
 
+{- TODO uncomment
 search
   :: Ref MoteState
   -> String
   -> Int
-  -> M [[Search.Types.Move SyntacticFunctor WrappedType]]
+  -> M [[Search.Types.Move SyntacticFunctor WrappedType]] -}
 search stRef tyStr n = do
   (chooseAType, innerVar) <- chooseATypeData <$> getFileDataErr stRef
   dynFlags <- lift getSessionDynFlags
@@ -498,7 +515,8 @@ search stRef tyStr n = do
     matchesForWord =
       concatMap (matchesInView' innerVar chooseAType) . Word.views
 
-  return (moveSequencesOfSizeAtMostMemoNotTooHoley' matchesForWord n src trg)
+  return (graphsOfSizeAtMostMemo' matchesForWord n src trg)
+  -- return (moveSequencesOfSizeAtMostMemoNotTooHoley' matchesForWord n src trg)
 
 interpretType ty0 =
   let

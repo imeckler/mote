@@ -288,6 +288,10 @@ def case_on(expr):
 def refine(expr):
   get_mote_process()._send_message(['Refine', expr, get_client_state()])
 
-def search(n, ty):
-  get_mote_process()._send_message(['Search', n, ty])
+def search(ty, n=None, deduplicate=None):
+  opts = {}
+  if n is not None: opts['depthLimit'] = n
+  if deduplicate is not None: opts['deduplicate'] = deduplicate
+
+  get_mote_process()._send_message(['Search', ty, opts])
 

@@ -277,6 +277,9 @@ type Score = (Int, Int, Int)
 score :: (AnnotatedTerm, NaturalGraph f o) -> Score
 score (t, g) = (numHoles t, Map.size (digraph g), length $ connectedComponents g)
 
+moveSequenceScore :: (AnnotatedTerm, [Move f o]) -> (Int, Int)
+moveSequenceScore (t, moves) = (numHoles t, length moves)
+
 transesInScope :: M [Trans SyntacticFunc TyCon]
 transesInScope = do
   namedTys <- fmap catMaybes . mapM (\n -> fmap (n,) <$> nameType n) =<< lift getNamesInScope

@@ -60,8 +60,24 @@ data HoleInfoOptions = HoleInfoOptions
 
 instance FromJSON HoleInfoOptions where
   parseJSON = \case
-    Object v -> HoleInfoOptions <$> v .: "sendOutputAsData" <*> v .: "withSuggestions"
-    _        -> mzero
+    Object v ->
+      HoleInfoOptions <$> v .: "sendOutputAsData" <*> v .: "withSuggestions"
+    _        ->
+      mzero
+
+data SearchOptions =
+  SearchOptions
+  { deduplicate :: Bool
+  , depthLimit :: Int
+  }
+  deriving (Show)
+
+instance FromJSON SearchOptions where
+  parseJSON = \case
+    Object v ->
+      SearchOptions
+      <$> (v .:? "deduplicate" .!= True)
+      <*> (v .:? "depthLimit" .!= 3)
 
 data FromClient
   = Load FilePath
@@ -74,7 +90,7 @@ data FromClient
   | CaseFurther Var ClientState
   | CaseOn String ClientState
   | SendStop
-  | Search Int String
+  | Search String SearchOptions
   | ValuesWithTarget String
   deriving (Show)
 
@@ -111,8 +127,8 @@ instance FromJSON FromClient where
       [String "SendStop"] ->
         return SendStop
 
-      [String "Search", int, String tyStr] ->
-        fmap (\n -> Search n (T.unpack tyStr)) (parseJSON int)
+      [String "Search", String tyStr, options] ->
+        Search (T.unpack tyStr) <$> parseJSON options
 
       [String "ValuesWithTarget", String tyStr] ->
         return (ValuesWithTarget (T.unpack tyStr))

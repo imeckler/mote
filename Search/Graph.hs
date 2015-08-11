@@ -50,6 +50,15 @@ toTerm :: NaturalGraph f o -> AnnotatedTerm
 toTerm = ToTerm.toTerm . compressPaths
 
 
+moveSequenceToAnnotatedTerm :: [Move f o] -> AnnotatedTerm
+moveSequenceToAnnotatedTerm = foldMap moveToTerm
+  where
+  moveToTerm :: Move f o -> AnnotatedTerm
+  moveToTerm mv =
+    case mv of
+      Word.Middle pre t post -> ToTerm.fmapped (length pre) (name t)
+      Word.End pre t -> ToTerm.fmapped (length pre) (name t)
+
 -- Vert is left ungeneralized for clarity
 -- mapWordVertices :: (forall l. (Vert, l) -> x) -> Word (Vert, f) (Vert, o) -> Word x x
 
@@ -518,7 +527,8 @@ moveSequencesOfSizeAtMostMemoNotTooHoley' branchOut n start end = map fst . Hash
               (HashSet.map (\(moves,holes) -> (move : moves, holes + numHoles (name (moveTrans move)))))
               (go arr (n - 1) b')
           let progs' = if b == end then HashSet.insert ([], 0) progs else progs
-          writeArray arr n (Map.insert b progs' memo)
+              memo' = Map.insert b progs' memo
+          memo' `seq` writeArray arr n memo'
           return progs'
 
         Just ps -> return ps
@@ -609,7 +619,8 @@ graphsOfSizeAtMostMemo' branchOut n start end = map deleteStrayVertices . HashSe
           progs <- fmap HashSet.unions . forM (branchOut b) $ \(b', move) ->
             fmap (HashSet.map (obliterate . sequence (moveToGraph move))) (go arr (n - 1) b')
           let progs' = if b == end then HashSet.insert (idGraph end) progs else progs
-          writeArray arr n (Map.insert b progs' memo)
+              memo' = Map.insert b progs' memo
+          memo' `seq` writeArray arr n memo'
           return progs'
 
         Just ps -> return ps
