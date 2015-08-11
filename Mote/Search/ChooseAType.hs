@@ -12,6 +12,9 @@ import Control.Applicative hiding (empty)
 import Data.Maybe (mapMaybe)
 import qualified VarEnv
 import qualified Data.List as List
+import qualified Name
+import qualified OccName
+import qualified FastString
 
 {-
 data TyConLookupTrie val
@@ -24,9 +27,11 @@ type ChooseM = Reader (Type.TyVar -> Unify.BindFlag)
 data ChooseTyConArgs {- and you'll maybe get a -} val
   = AllDone val
   | ChooseAnArg (ChooseAType (ChooseTyConArgs val))
+  deriving (Show)
 
 newtype ChooseAppTy val
   = ChooseAppTy (ChooseAType (ChooseAType val))
+  deriving (Show)
 
 instance Functor ChooseAppTy where
   fmap f (ChooseAppTy cat) = ChooseAppTy (fmap (fmap f) cat)
@@ -50,6 +55,16 @@ data ChooseAType {- and you'll maybe get a -} val
 --      :: {- Subst so far -} Type.TvSubstEnv -> Type -> ChooseM (Maybe (Type.TvSubstEnv, val))  -- I strongly suspect this should return a list of vals...
   , it'sAnAppTy :: ChooseAppTy val
   }
+
+instance Show val => Show (ChooseAType val) where
+  show (ChooseAType {it'sATyConTy, unifyWithATyVar, it'sAnAppTy}) =
+    "ChooseAType { it'sATyConTy = "
+    ++ show (UniqFM.ufmToList it'sATyConTy) ++ ", unifyWithATyVar = "
+    ++ show (map (\(_, (v, x)) -> (varToString v, x)) (UniqFM.ufmToList unifyWithATyVar)) ++ ", it'sAnAppTy = "
+    ++ "..." ++ " }"
+
+    where
+    varToString = FastString.unpackFS . OccName.occNameFS . Name.getOccName
 
 instance Functor ChooseAType where
   fmap f (ChooseAType {it'sATyConTy, unifyWithATyVar, it'sAnAppTy}) =
@@ -122,7 +137,10 @@ lookup' (ChooseAType {it'sAnAppTy, it'sATyConTy, unifyWithATyVar}) ty substSoFar
 
 empty :: ChooseAType val
 empty =
-  ChooseAType UniqFM.emptyUFM VarEnv.emptyVarEnv (ChooseAppTy empty)
+  ChooseAType
+    UniqFM.emptyUFM
+    VarEnv.emptyVarEnv
+    (ChooseAppTy empty)
 
 singleton :: Type -> val -> ChooseAType val
 singleton t x =
@@ -323,8 +341,11 @@ lookupTyConArgs' ctc args subst =
       return [(subst, x)]
 
     ChooseAnArg cat ->
-      let (arg:args') = args in
-      lookup' cat arg subst >>= concatMapM (\(subst', cat') -> lookupTyConArgs' cat' args' subst')
+      case args of
+        (arg:args') ->
+          lookup' cat arg subst >>= concatMapM (\(subst', cat') -> lookupTyConArgs' cat' args' subst')
+        _ ->
+          return [] -- TODO: This is actually an error case, but it's happening somehow. Figure out why.
 
 unifyResultToMaybe :: Unify.UnifyResultM x -> Maybe x
 unifyResultToMaybe ux =
