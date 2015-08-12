@@ -92,6 +92,18 @@ data View f o
   | YesOEnd [f] {- [f] and o are focus -} ([f], o)
   deriving (Eq, Ord, Show, Generic)
 
+instance (Outputable f, Outputable o) => Outputable (View f o) where
+  ppr v =
+    case v of
+      NoO pre foc post ->
+        ptext (sLit "NoO") <+> ppr pre <+> ppr foc <+> ppr post
+
+      YesOMid pre foc postfs posto ->
+        ptext (sLit "YesOMid") <+> ppr pre <+> ppr foc <+> ppr postfs <+> ppr posto
+
+      YesOEnd pre foc ->
+        ptext (sLit "YesOEnd") <+> ppr pre <+> ppr foc
+
 instance (Hashable f, Hashable o, Hashable vmid, Hashable vend) => Hashable (InContext f o vmid vend)
 instance (Hashable f, Hashable o) => Hashable (View f o)
 

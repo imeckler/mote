@@ -139,6 +139,7 @@ natTransInterpretationsStrict functorClass instEnvs (name, t0) =
           , to = natTransTo
           , functorArgumentPosition = i
           , numberOfArguments
+          , toType = targ
           }
       in
       if Word.isEmpty from || from == natTransTo then Nothing else Just nd
@@ -319,6 +320,8 @@ transportNatTransData subst nd =
       bimap transportSyntacticFunctor (Type.substTy subst) (from nd)
   , to =
       bimap transportSyntacticFunctor (Type.substTy subst) (to nd)
+  , toType =
+      Type.substTy subst (toType nd)
   }
   where
   transportSyntacticFunctor (tf, ts) =
@@ -343,7 +346,12 @@ closedSubstNatTransData
   -> NatTransData context Type
   -> NatTransData () Type
 closedSubstNatTransData subst nd =
-    nd { context = (), from = substWord subst (from nd), to = substWord subst (to nd) }
+    nd
+    { context = ()
+    , from = substWord subst (from nd)
+    , to = substWord subst (to nd) 
+    , toType = Type.substTy subst (toType nd)
+    }
 
 substSyntacticFunctor subst (tyFun, args) =
   case tyFun of
@@ -513,6 +521,7 @@ search stRef tyStr n = do
       :: Word SyntacticFunctor WrappedType
       -> [(Word SyntacticFunctor WrappedType, Search.Types.Move SyntacticFunctor WrappedType)]
     matchesForWord =
+      -- TODO: Change to only use suffixes of the word
       concatMap (matchesInView' innerVar chooseAType) . Word.views
 
   return (graphsOfSizeAtMostMemo' matchesForWord n src trg)
@@ -547,7 +556,8 @@ matchesInView' innerVar chooseAType wv =
   concatMap
     (\(subst, nds) ->
         map
-          (newWordAndMove . natTransDataToTrans . closedSubstNatTransData (Type.mkTvSubst VarEnv.emptyInScopeSet subst))
+          ( newWordAndMove
+          . mkTrans subst)
           nds)
     (ChooseAType.lookup focus chooseAType)
   where
@@ -571,6 +581,32 @@ matchesInView' innerVar chooseAType wv =
       , \t ->
         (Word pre Nothing <> Search.Types.to t, Word.End pre t)
       )
+
+  mkTrans subst nd =
+    Search.Types.Trans
+    { from = second WrappedType (from nd) -- I don't think any code will care that it's not subst'd
+    , to =
+        let
+          (sfs', innerTy) =
+            splitSyntacticFunctors
+              (Type.substTy (Type.mkTvSubst VarEnv.emptyInScopeSet subst) (toType nd))
+          inner =
+            case innerTy of
+              TyVarTy v -> if v == innerVar then Nothing else Just (WrappedType innerTy)
+              _ -> Just (WrappedType innerTy)
+        in
+        Word sfs' inner
+    , name = Search.Types.AnnotatedTerm name' (numberOfArguments nd - 1) 0
+    }
+    where
+    ident = nameToString (name nd)
+    name' =
+      if numberOfArguments nd == 1 
+      then Search.Types.Simple ident 
+      else if functorArgumentPosition nd == numberOfArguments nd - 1
+      then Search.Types.Compound (ident ++ " " ++ underscores (numberOfArguments nd - 1))
+      else Search.Types.Simple ("(\\x -> " ++ ident ++ " " ++ underscores (functorArgumentPosition nd) ++ " x " ++ underscores (numberOfArguments nd - functorArgumentPosition nd - 1) ++ ")")
+    underscores n = unwords $ replicate n "_"
 
 -- TODO: Preconvert the HashMap (Int,Int) to []'s
 matchesInView
