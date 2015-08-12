@@ -81,6 +81,7 @@ import           System.FilePath
 import           GHC.Paths
 import qualified Mote.Init
 import System.IO (stderr)
+import System.IO.Unsafe
 -- Need to make sure that everyone gets the functions with the empty
 -- context though.
 
@@ -115,7 +116,7 @@ natTransInterpretationsStrict functorClass instEnvs (name, t0) =
     case targInner of
       TyVarTy v ->
         v `VarSet.elemVarSet` nonParametricTypes
-        || all (\(_, args) -> not (v `VarEnv.elemVarEnv` Type.tyVarsOfType (map unwrapType args))) targSfs
+        || all (\(_, args) -> not (v `VarEnv.elemVarEnv` Type.tyVarsOfTypes (map unwrapType args))) targSfs
       _ ->
         True
 
@@ -202,7 +203,7 @@ natTransInterpretationsStrict functorClass instEnvs (name, t0) =
                       if v' `VarEnv.elemVarEnv` nonParametricTypes
                       then Just (TyVarTy v')
                       -- TODO: This seems wrong.
-                      else Just (TyVarTy v') -- TODO: Nothing
+                      else Nothing -- Just (TyVarTy v') -- TODO: Nothing
                     ConstantFunctorTyCon tc ->
                       Just (TyConApp tc [])
               in
@@ -280,7 +281,7 @@ splitSyntacticFunctors t = case t of
       (TyVarTy v, args) = splitAppTys t
     in
     case splitLast args of
-      Nothing          -> ([], t)
+      Nothing          -> ([], t) -- TODO: This case should be impossible.
       Just (args, arg) -> first ((TypeFunctionTyVar v, map WrappedType args) :) (splitSyntacticFunctors arg)
 
 {-
@@ -360,14 +361,38 @@ transportNatTransData subst nd =
 closedSubstNatTransData
   :: Type.TvSubst
   -> NatTransData context Type
-  -> NatTransData () Type
+  -> Maybe (NatTransData () Type)
 closedSubstNatTransData subst nd =
-    nd
-    { context = ()
-    , from = substWord subst (from nd)
-    , to = substWord subst (to nd) 
-    , toType = Type.substTy subst (toType nd)
-    , fromType = Type.substTy subst (fromType nd)
+    let
+      Word fromFs fromInner' = substWord subst (from nd)
+      Word toFs toInner'     = substWord subst (to nd)
+    in
+    do
+    { (fromInner'', toInner'') <-
+        case (fromInner', toInner') of
+          (Just (TyVarTy v1), Just (TyVarTy v2)) ->
+            if v1 == v2
+            then
+              Just (Nothing, Nothing)
+            else
+              Nothing
+
+          (Just (TyVarTy _), Nothing) ->
+            Nothing
+
+          (Nothing, Just (TyVarTy _)) ->
+            Nothing
+
+          (_, _) ->
+            Just (fromInner', toInner')
+    ; return $
+        nd
+        { context = ()
+        , from = Word fromFs fromInner''
+        , to = Word toFs toInner''
+        , toType = Type.substTy subst (toType nd)
+        , fromType = Type.substTy subst (fromType nd)
+        }
     }
 
 substSyntacticFunctor subst (tyFun, args) =
@@ -480,11 +505,11 @@ inScopeChooseATypeAndInnerDummy = do
                 Just ndToRepr =
                   Unify.tcMatchTys (Type.tyVarsOfTypes ndContext) ndContext reprContext
               in
-              map
+              mapMaybe
                 (\subst0 ->
                   let subst = compose ndToRepr subst0
-                      nd' = closedSubstNatTransData subst nd
                   in
+                  closedSubstNatTransData subst nd >>| \nd' ->
                   ( 
                     -- TODO: Made it so that nds are indexed by their
                     -- actual from types. Might be better to change their
@@ -546,8 +571,10 @@ search stRef tyStr n = do
       :: Word SyntacticFunctor WrappedType
       -> [(Word SyntacticFunctor WrappedType, Search.Types.Move SyntacticFunctor WrappedType)]
     matchesForWord =
-      -- TODO: Change to only use suffixes of the word
-      concatMap (matchesInView' innerVar chooseAType) . Word.suffixViews
+      -- TODO: Don't map like this. Case once rather than 100 times.
+      concatMap (matchesInView' innerVar chooseAType)
+      . either (map Left) (map Right)
+      . Word.suffixViews
 
   return {-
     . HashSet.toList . HashSet.fromList
@@ -575,6 +602,21 @@ interpretType ty0 =
     _ ->
       throwError (OtherError "Search expected function type.")
 
+output' x = runGhc (Just libdir) (getSessionDynFlags >>= setSessionDynFlags >> output x)
+traceOutput x y = unsafePerformIO (output' x >> return y)
+
+substWordAllowingBirthOfPolymorphism subst w =
+  let w'@(Word fs mo) = substWord (Type.mkTvSubst VarEnv.emptyInScopeSet subst) w in
+  case mo of
+    Nothing -> w'
+    -- The idea here is that we have things like "(\x -> repeat x _)"
+    -- which go from Int to something polymorphic. So we should only use
+    -- this when we're rewriting out of something non polymorphic
+    Just (TyVarTy _) -> -- :') the birth of polymorphism...so beautiful...
+      Word fs Nothing
+
+    Just _ ->
+      w'
 matchesInView'
   :: Var
   -> ChooseAType.ChooseAType [NatTransData () Type]
@@ -582,18 +624,103 @@ matchesInView'
   -> [(Word SyntacticFunctor WrappedType, Search.Types.Move SyntacticFunctor WrappedType)]
 matchesInView' innerVar chooseAType wv =
   concatMap
-    (\(subst, nds) ->
-        map
-          ( newWordAndMove
-          . mkTrans innerVar subst)
-          nds)
-    (ChooseAType.lookup focus chooseAType)
+    (\(subst, nds) -> map (newWordAndMove subst) nds)
+    (ChooseAType.lookup apparentFocus chooseAType)
   where
   substTy' subst =
     Type.substTy (Type.mkTvSubst VarEnv.emptyInScopeSet subst) 
 
-  (apparentFocus, newWordAndMove =
+
+  (apparentFocus, newWordAndMove) =
     case wv of
+      Right (pre, (focfs, WrappedType foco)) ->
+        ( stitchUp foco focfs
+        , \subst nd ->
+            let
+              (ndFromFs, ndFromInner) = splitSyntacticFunctors (fromType nd) -- TODO: Why not look at `from nd`?
+            in
+            case ndFromInner of
+              TyConApp tc [] ->
+                let
+                  focusAfterTheMove =
+                    second WrappedType
+                      (substWordAllowingBirthOfPolymorphism subst (to nd))
+
+                  trans =
+                    Search.Types.Trans
+                    { to = focusAfterTheMove
+                    , from =
+                        second WrappedType
+                          -- couldn't have been polymorphic, so we use
+                          -- regular substWord
+                          (substWord (Type.mkTvSubst VarEnv.emptyInScopeSet subst) (from nd))
+                    , name = nameForTrans nd
+                    }
+                in
+                ( Word pre Nothing <> Search.Types.to trans
+                , Word.End pre trans
+                )
+
+          -- TODO: nearly the same as before. Please refactor out.
+              -- A portion of the focus may have unified "more than it should have" so we
+              -- have to correct it (since Move needs to know what things
+              -- the move was actually performed on).
+              TyVarTy ndFromInnerVar ->
+                let
+                  post =
+                    case VarEnv.lookupVarEnv subst ndFromInnerVar of
+                      Nothing ->
+                        error "Scratch 598: Impossible"
+
+                      Just spillTy ->
+                        -- This _inner should be equal to foco
+                        let
+                          (spillSfs, _inner) = splitSyntacticFunctors spillTy
+                        in
+                        Word spillSfs (Just (WrappedType foco))
+
+                  subst' =
+                    VarEnv.delVarEnv subst ndFromInnerVar
+
+                  newWordAtRealFocus =
+                    -- The correctness of this relies on the assumption that
+                    -- ndFromInnerVar appears nowhere else in toType nd, which we checek
+                    -- in natTransInterpretationsStrict. This is really what
+                    -- makes a SyntacticFunctor syntactic. Would be nice to
+                    -- eliminate this constraint in the future.
+                    -- TODO: Ah!!! The ban is being subverted by the
+                    -- typeclass instance proceduce since some instances
+                    -- make things randomly polymorphic again. E.g.,
+                    -- taking m = [a] for Monoid m.
+                    let
+                      -- TODO: This ndToInner0 should be == ndFromInner or
+                      -- a base type given our current ban on
+                      -- transes that map into other poly var types.
+                      (ndToFs0, ndToInner0) =
+                        splitSyntacticFunctors (substTy' subst' (toType nd))
+                      ndToInner =
+                        case ndToInner0 of
+                          TyVarTy v' ->
+                            Nothing -- I think this is right. We had no poly before and now we do.
+                          _ ->
+                            Just (WrappedType ndToInner0)
+                    in
+                    Word ndToFs0 ndToInner
+
+                  trans =
+                    Search.Types.Trans
+                    { from =
+                        second WrappedType
+                          (substWord (Type.mkTvSubst VarEnv.emptyInScopeSet subst') (from nd))
+                    , to = newWordAtRealFocus
+                    , name = nameForTrans nd
+                    }
+                in
+                ( Word pre Nothing <> newWordAtRealFocus <> post
+                , Word.Middle pre trans post
+                )
+        )
+
       Left (pre, foc) ->
         ( stitchUp (TyVarTy innerVar) foc 
         , \subst nd ->
@@ -604,12 +731,15 @@ matchesInView' innerVar chooseAType wv =
               -- A portion of foc may have unified "more than it should have" so we
               -- have to correct it (since Move needs to know what things
               -- the move was actually performed on).
-              TyVarTy v ->
+              TyVarTy ndFromInnerVar ->
                 let
+                  subst' =
+                    VarEnv.delVarEnv subst ndFromInnerVar
+
                   post =
-                    case VarEnv.lookupVarEnv subst v of
+                    case VarEnv.lookupVarEnv subst ndFromInnerVar of
                       Nothing ->
-                        error "Scratch 598: Impossible"
+                        error "Scratch 695: Impossible"
 
                       Just spillTy ->
                         -- This TyVar should be equal to innerVar
@@ -620,63 +750,62 @@ matchesInView' innerVar chooseAType wv =
 
                   newWordAtRealFocus =
                     -- The correctness of this relies on the assumption that
-                    -- v appears nowhere else in toType nd, which we checek
+                    -- ndFromInnerVar appears nowhere else in toType nd, which we checek
                     -- in natTransInterpretationsStrict. This is really what
                     -- makes a SyntacticFunctor syntactic. Would be nice to
                     -- eliminate this constraint in the future.
                     let
                       -- TODO: This ndToInner0 should be == ndFromInner or
-                      -- a base type
-                      (ndToFs0, ndToInner0) = splitSyntacticFunctors (toType nd)
+                      -- a base type given our current ban on
+                      -- transes that map into other poly var types.
+                      (ndToFs0, ndToInner0) =
+                        splitSyntacticFunctors (substTy' subst' (toType nd))
+                      ndToInner =
+                        case ndToInner0 of
+                          TyVarTy v' ->
+                            if v' == ndFromInnerVar then Nothing else Just (WrappedType ndToInner0)
+                          _ ->
+                            Just (WrappedType ndToInner0)
                     in
-                    Word (map (substSyntacticFunctor subst) ndToFs0)
+                    Word ndToFs0 ndToInner
 
-
-                  (focFs, _) = 
-                    splitSyntacticFunctors
-                      (substTy' subst (stitchUp ndFs (TyVarTy innerVar)))
+                  trans =
+                    Search.Types.Trans
+                    { from = second WrappedType (substWord (Type.mkTvSubst VarEnv.emptyInScopeSet subst') (from nd))
+                    , to = newWordAtRealFocus
+                    , name = nameForTrans nd
+                    }
                 in
-                ( Word pre Nothing <> Search.Types.
-                , 
+                ( Word pre Nothing <> newWordAtRealFocus <> post
+                , Word.Middle pre trans post
                 )
 
-      Right (pre, (focfs, foco)) ->
-        stitchUp focfs foco
-  (focus, newWordAndMove) =
-    case wv of
+              _ ->
+                -- If our word has a Left (_, _) focus, then it has
+                -- a Nothing for its inner part. Which means it can't
+                -- possibly unify with anything that doesn't have a TyVar
+                -- as its inner part.
+                error "Scratch 661: Impossible case"
+                                                    {-
+              TyConApp _ [] ->
+                -- No danger of overunifying. If nd worked on this focus,
+                -- then it really wanted the whole suffix (since it
+                -- couldn't unify otherwise).
+                let newWordAtRealFocus = substWord (Type.mkTvSubst VarEnv.emptyInScopeSet subst) (to nd)
+                ( Word pre Nothing <> newWordAtRealFocus <> 
+              LitTy {} ->
+                error "Scratch 662: LitTy not implemented" -}
 
+        )
 
-  (focus, newWordAndMove) = 
-    case wv of
-      Left (pre, foc) 
-  
-  case wv of
-    Word.NoO pre foc post ->
-      ( stitchUp (TyVarTy innerVar) foc 
-      -- TODO: Should take subst as argument
-      , \t ->
-        (Word pre Nothing <> Search.Types.to t <> Word post Nothing, Word.Middle pre t (Word post Nothing))
-      )
-
-    -- YesOMid and NoO can be unified with Middle, but it is a bit confusing.
-    Word.YesOMid pre foc post o ->
-      ( stitchUp (TyVarTy innerVar) foc
-      , \t ->
-        (Word pre Nothing <> Search.Types.to t <> Word post (Just o), Word.Middle pre t (Word post (Just o)))
-      )
-
-    Word.YesOEnd pre (foc, WrappedType o) ->
-      ( stitchUp o foc
-      , \t ->
-        (Word pre Nothing <> Search.Types.to t, Word.End pre t)
-      )
-
+{-
 mkTrans innerVar subst nd =
   Search.Types.Trans
   { from = substToWord innerVar subst (fromType nd)
   , to = substToWord innerVar subst (toType nd)
-  , name = Search.Types.AnnotatedTerm name' (numberOfArguments nd - 1) 0
-  }
+-}
+nameForTrans :: NatTransData c c' -> Search.Types.AnnotatedTerm
+nameForTrans nd = Search.Types.AnnotatedTerm name' (numberOfArguments nd - 1) 0
   where
   ident = nameToString (name nd)
   name' =
@@ -698,111 +827,6 @@ substToWord innerVar subst ty =
         _ -> Just (WrappedType innerTy)
   in
   Word sfs' inner
-
--- TODO: Preconvert the HashMap (Int,Int) to []'s
-matchesInView
-  :: Var
-  -> TypeLookupTable
-  -> WrappedType -- -> (ElementData', Maybe _) -- The minimal element of the poset
-  -> Word.View SyntacticFunctor WrappedType
-  -> [(Word SyntacticFunctor WrappedType, Search.Types.Move SyntacticFunctor WrappedType)]
-matchesInView innerVar (TypeLookupTable { byClosedType, lookupPoset }) minElt wv = -- lookupFrom _ minEltData
-  let
-    (nds, _) = go HashSet.empty minElt
-  in
-  map
-    (\nd -> newWordAndMove (natTransDataToTrans nd))
-    (maybe [] HashMap.elems (Map.lookup (WrappedType focus) byClosedType) ++ nds)
-  where
-  go seen0 currTy =
-    let Just (currTyEltData, currTyArgsTreeMay) = Map.lookup currTy lookupPoset in
-    case match (unwrapType currTy) focus of
-      Nothing ->
-        ([], seen0)
-
-      Just subst ->
-        let
-          fromArgsTree =
-            case currTyArgsTreeMay of
-              Nothing ->
-                []
-              Just argsTree ->
-                lookupArgs
-                  (map WrappedType (Type.tyConAppArgs focus))
-                  argsTree
-
-          (rest, seen1) =
-            -- Whether to use foldr or foldl for Map is a matter of
-            -- preference. foldr isn't more productive as with lists.
-            Map.foldlWithKey' (\(nds, seen) nextTy _nextTyData ->
-              if nextTy `HashSet.member` seen
-              then (nds, seen)
-              else
-                let (nds', seen') = go seen nextTy in
-                (nds' ++ nds, seen'))
-              ([], seen0)
-              (lessGeneral currTyEltData)
-        in
-        -- TODO: Note that being productive vs. not here is a judgement
-        -- call since currently we wait and do a monolithic sort later on.
-        -- It would be best to be productive with the most specific transes
-        -- first rather than the most general as we're doing now.
-        ( fromArgsTree
-          ++
-          map (closedSubstNatTransData subst)
-            (HashMap.elems (natTranses (currTyEltData)))
-          ++
-          rest
-        , seen1
-        )
-
-  lookupArgs
-    :: [WrappedType]
-    -> ArgsGroupingTree (HashMap.HashMap (Int, Int) (NatTransData () Type))
-    -> [NatTransData () Type]
-  lookupArgs [] _ = []
-  lookupArgs args@(ty:tys) (ArgsGroupingTree {chooseArg, argsNotThuslyGrouped}) =
-    case Map.lookup ty chooseArg of
-      Just (Right nds) ->
-        HashMap.elems nds ++ fromUngrouped
-
-      Just (Left agt') ->
-        fromUngrouped ++ lookupArgs tys agt'
-
-      Nothing ->
-        fromUngrouped
-    where
-    fromUngrouped :: [NatTransData () Type]
-    fromUngrouped =
-      Map.foldlWithKey' (\ndsAcc genTys ndsMap ->
-        case matchTysWithInnerDummy innerVar genTys args of
-          Nothing ->
-            ndsAcc
-          Just subst ->
-            map (closedSubstNatTransData subst) (HashMap.elems ndsMap) ++ ndsAcc)
-        []
-        argsNotThuslyGrouped
-
-  (focus, newWordAndMove) = case wv of
-    Word.NoO pre foc post ->
-      ( stitchUp (TyVarTy innerVar) foc 
-      -- TODO: Should take subst as argument
-      , \t ->
-        (Word pre Nothing <> Search.Types.to t <> Word post Nothing, Word.Middle pre t (Word post Nothing))
-      )
-
-    -- YesOMid and NoO can be unified with Middle, but it is a bit confusing.
-    Word.YesOMid pre foc post o ->
-      ( stitchUp (TyVarTy innerVar) foc
-      , \t ->
-        (Word pre Nothing <> Search.Types.to t <> Word post (Just o), Word.Middle pre t (Word post (Just o)))
-      )
-
-    Word.YesOEnd pre (foc, WrappedType o) ->
-      ( stitchUp o foc
-      , \t ->
-        (Word pre Nothing <> Search.Types.to t, Word.End pre t)
-      )
 
 freshTyVarOfKind :: MonadUnique m => Kind -> m Var
 freshTyVarOfKind k = do
