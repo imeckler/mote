@@ -1,155 +1,123 @@
-{-# LANGUAGE RecordWildCards, NamedFieldPuns #-}
-module SearchTest where
+{-# LANGUAGE NamedFieldPuns #-}
+module Main where
 
-import qualified Data.Set as S
-import Data.Maybe
-import qualified Data.Map as M
-import qualified Data.PSQueue as P
+import Prelude hiding (Word)
 
-type Program  = String
-type EdgeName = Program -> Program -- String
-type Name     = Char
-type Vertex   = ([Name], [Name])
+import System.TimeIt
+import Scratch
+import Type
+import Mote.Types
+import Mote.Util
+import Control.Monad.Error
+import GHC
+import Mote.ReadType
+import qualified Search.Types
+import Mote.Search.NatTransData
+import Mote.Search.WrappedType
+import qualified Search.Types.Word as Word
+import Search.Types.Word (Word)
+import Search.Graph
+import qualified Mote.Init
+import System.Directory
+import System.IO
+import System.FilePath
+import           GHC.Paths
+import UniqSupply
+import qualified Mote.LoadFile
+import qualified Data.HashSet as HashSet
+import qualified Mote.Search.ChooseAType as ChooseAType
 
-data Trans = Trans { from :: [Name], to :: [Name], transName :: String }
+data RunInfo
+  = RunInfo
+  { numberOfMoveSequences :: Int
+  , numberOfGraphs :: Int
+  , moveSequencesTime :: Double
+  , graphsTime :: Double
+  , searchType :: String
+  , depth :: Int
+  }
+  deriving (Show)
 
-allNames = "LMTNG"
-isTraversable = (`elem` "LMN")
-isApplicative = (`elem` "LMTG")
+data TestCase
+  = TestCase
+  { source :: Word SyntacticFunctor WrappedType
+  , target :: Word SyntacticFunctor WrappedType
+  , testCaseDepth :: Int
+  }
 
-transes :: [Trans]
-transes = 
-  [ Trans { from = "LM", to = "L", transName = "catMaybes"}
-  , Trans { from = "", to = "L", transName = "\\x -> map (const x) ?" }
-  , Trans { from = "LL", to = "L", transName = "concat" }
-  , Trans { from = "T", to = "G", transName = "inHoleEnv" }
-  , Trans { from = "", to = "N", transName = "\\x -> (?, x)" }
+searchTypes =
+  [ "Either String (IO Int) -> IO (Maybe String)"
   ]
 
-type ListView a = (Int, [a], [a])
+searchDepths = [5]
 
-rewrite :: Trans -> ListView String -> Maybe (String, EdgeName)
-rewrite (Trans {from, to, transName}) (pre, s) =
-  case leftFromRight from s of
-    Just cs -> (Just (reverse pre ++ cs), \p -> transName ++ " . " p)
-    Nothing -> Nothing
-
-successors' :: Vertex -> [(Vertex, EdgeName)]
-successors' (s, t) = _
-  -- naive algorithm for now
-
-listViews :: [a] -> [ListView a]
-listViews = go [] where
-  go pre l@(x:xs) = (pre, l) : listViews (x:pre) xs
-  go pre []       = [(pre, [])]
-
-
--- Really should do something special when they're equal.
-successors :: Vertex -> [(Vertex, EdgeName)]
-successors (s, t) =
-  fmapEdge ++ sequenceREdge ++ sequenceLEdge ++ transEdges
+runWithTestRef' x = do
+  home <- getHomeDirectory
+  withFile (home </> "testlog") WriteMode $ \logFile -> do
+    r <- newRef =<< initialState logFile
+    runGhc (Just libdir) $ do { Mote.Init.initializeWithCabal r; x r }
   where
-  fmapEdge
-    | (cs:s', ct:t') <- (s, t), cs == ct
-    = [((s', t'), \p -> "fmap{" ++ [cs] ++ "}" ++ "(" ++ p ++ ")")]
-    | otherwise = []
+  initialState :: Handle -> IO MoteState
+  initialState logFile = mkSplitUniqSupply 'x' >>| \uniq -> MoteState
+    { fileData = Nothing
+    , currentHole = Nothing
+    , argHoles = mempty
+    , loadErrors = []
+    , logFile
+    , uniq
+    }
 
-  sequenceREdge
-    | ctf:ctt:t' <- t
-    , isApplicative ctf && isTraversable ctt
-    = [((s, ctt:ctf:t'), \p -> "sequenceA . " ++ p)] -- "sequence-right")]
-    | otherwise = []
 
-  sequenceLEdge
-    | cst:csf:s' <- s
-    , isTraversable cst && isApplicative csf
-    = [((csf:cst:s', t), \p -> p ++ ". sequenceA")] -- "sequence-left")]
-    | otherwise = []
+main =
+  runWithTestRef' $ \ref -> do
+    Right () <- runErrorT $ Mote.LoadFile.loadFile ref "Test.hs"
+    Right (chooseAType, innerVar) <- runErrorT (chooseATypeData <$> getFileDataErr ref)
+    -- Just to force chooseAType
+    liftIO . print . length . ChooseAType.allData $ chooseAType
 
-  transEdges =
-    concatMap (\(Trans{..}) ->
-      let rrule =
-            case leftFromRight to t of
-              Just t' -> [((s, from ++ t'), \p -> transName ++ " . " ++ p)] -- transName ++ "-right")]
-              Nothing -> []
-          lrule =
-            case leftFromRight from s of
-              Just s' -> [((to ++ s', t), \p -> p ++ " . " ++ transName)] -- transName ++ "-left")]
-              Nothing -> []
-      in
-      rrule ++ lrule)
-      transes
+    forM_ searchTypes $ \tyStr -> do
+      forM_ searchDepths $ \testCaseDepth -> do
+        Right (source, target) <- runErrorT (interpretType =<< readType tyStr)
 
-leftFromRight :: Eq a => [a] -> [a] -> Maybe [a]
-leftFromRight (x : xs) [] = Nothing
-leftFromRight (x : xs) (y : ys)
-  | x == y    = leftFromRight xs ys
-  | otherwise = Nothing
-leftFromRight [] ys = Just ys
+        (graphsTime, gs) <- liftIO . timeItT $
+          let gs = searchGraphs chooseAType innerVar (TestCase source target testCaseDepth) in
+          gs `seq` return gs
 
-dijkstra
-  :: Vertex -> M.Map Vertex (Int, (Vertex, EdgeName))
-dijkstra init = 
-  let nexts = successors init 
+        (moveSequencesTime, (mss, gsFromMoveSeqs)) <- liftIO . timeItT $
+          let mss = searchMoveSeqs chooseAType innerVar (TestCase source target testCaseDepth)
+              gs = HashSet.toList (HashSet.fromList (map moveListToGraph mss))
+          in
+          gs `seq` return (mss, gs)
+
+        liftIO . print $
+          RunInfo
+          { numberOfMoveSequences = length mss
+          , numberOfGraphs = length gs
+          , moveSequencesTime
+          , graphsTime
+          , searchType = tyStr
+          , depth = testCaseDepth
+          }
+
+
+searchGraphs chooseAType innerVar (TestCase {source, target, testCaseDepth}) =
+  let
+    matchesForWord
+      :: Word SyntacticFunctor WrappedType
+      -> [(Word SyntacticFunctor WrappedType, Search.Types.Move SyntacticFunctor WrappedType)]
+    matchesForWord =
+      concatMap (matchesInView' innerVar chooseAType) . Word.views
   in
-  go M.empty
-    (M.fromList . map (\(v, en) -> (v, (init, en))) $ nexts)
-    (P.fromList . map (\(v, _) -> v P.:-> 1) $ nexts)
-  where
-  maxDist = 8
-  go visited onDeckPreds onDeckDists =
-    case P.minView onDeckDists of
-      Just (u P.:-> dist, onDeckDists') ->
-        let visited' =
-              M.insert u (dist, fromJust $ M.lookup u onDeckPreds) visited
+  graphsOfSizeAtMostMemo' matchesForWord testCaseDepth source target
 
-            nexts = 
-              if dist >= maxDist
-              then []
-              else if let (s, t) = u in length s > 5 || length t > 5
-              then []
-              else
-                filter (\(v, _) -> not (M.member v visited'))
-                $ successors u
+searchMoveSeqs chooseAType innerVar (TestCase {source, target, testCaseDepth}) =
+  let
+    matchesForWord
+      :: Word SyntacticFunctor WrappedType
+      -> [(Word SyntacticFunctor WrappedType, Search.Types.Move SyntacticFunctor WrappedType)]
+    matchesForWord =
+      concatMap (matchesInView' innerVar chooseAType) . Word.views
+  in
+  moveSequencesOfSizeAtMostMemoNotTooHoley' matchesForWord testCaseDepth source target
 
-            (onDeckPreds', onDeckDists'') =
-              foldl (\(ps, ds) (v, en) ->
-                let ds' = P.insertWith min v (dist + 1) ds 
-                    ps' =
-                      if P.lookup v ds' == Just (dist + 1)
-                      then M.insert v (u,en) ps
-                      else ps
-                in (ps', ds'))
-                (onDeckPreds, onDeckDists') nexts
-        in
-        go visited' onDeckPreds' onDeckDists''
-      Nothing             -> visited -- visited
-
-prove :: Vertex -> Program
-prove init = go "id" ("", "") where
-  d        = dijkstra init
-  go acc v =
-    case M.lookup v d of
-      Just (_, (pre, en)) -> go (en acc) pre
-      Nothing             -> acc
-
--- for prove ("TM", "GLN"), got
--- inHoleEnv . fmap{T}(catMaybes . \x -> map (const x) ? . fmap{M}(\x -> (?, x) . id))
--- wanted
--- fmap catMaybes 
--- . sequenceA
--- . (\x -> map (fmap (fmap (cmap ?)) . inHoleEnv . const x) ?)
--- ==
--- fmap catMaybes 
--- . sequenceA
--- . (\x -> map (\_ -> fmap (fmap (cmap ?)) (inHoleEnv x)) ?)
---
--- or possibly
--- inHoleEnv . fmap catMaybes . sequenceA . map (\x -> map (\_ -> (fmap (fmap (\y -> (?,y)))) x) ?)
--- ==
--- inHoleEnv . fmap catMaybes . sequenceA . (\x -> map (fmap (fmap (\y -> (?, y))) . const x) ?)
---
--- want cmaps close to the seed data (so that the data can depend on some
--- stuff)
---
 --TODO: heuristic: never permit > 2 of the same letter in a row
