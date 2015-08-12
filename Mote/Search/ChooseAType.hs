@@ -60,7 +60,6 @@ instance Show val => Show (ChooseAType val) where
     ++ show (UniqFM.ufmToList it'sATyConTy) ++ ", unifyWithATyVar = "
     ++ show (map (\(_, (v, x)) -> (varToString v, x)) (UniqFM.ufmToList unifyWithATyVar)) ++ ", it'sAnAppTy = "
     ++ "..." ++ " }"
-
     where
     varToString = FastString.unpackFS . OccName.occNameFS . Name.getOccName
 
@@ -211,7 +210,7 @@ insertTyConArgsWith = \f args x ctc ->
       let (arg:args') = args in
       ChooseAnArg
         (updateAt
-          (maybe (singletonTyConArgs args' x) (insertTyConArgsWith f args x))
+          (maybe (singletonTyConArgs args' x) (insertTyConArgsWith f args' x))
           arg
           cat)
        -- modifyAt (insertTyConArgsWith f args' x) arg cat)
