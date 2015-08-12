@@ -7,6 +7,8 @@ import Data.Aeson
 import GHC.Generics hiding (from, to)
 import Data.Bifunctor
 import Search.Types.Word
+import Outputable hiding ((<>))
+import FastString (sLit)
 
 -- (fs, t, gs) = fmap_{fs} (t at gs)
 -- It would be more accurate for a move to have a neighbor list
@@ -40,12 +42,18 @@ data Term
   | Compound String
   deriving (Eq, Ord, Show)
 
+instance Outputable Term where
+  ppr t = ptext (sLit (show t))
+
 data AnnotatedTerm = AnnotatedTerm
   { unannotatedTerm :: Term
   , numHoles        :: Int
   , weight          :: Int
   }
   deriving (Eq, Ord, Show)
+
+instance Outputable AnnotatedTerm where
+  ppr t = ptext (sLit (show t))
 
 instance Monoid Term where
   mempty = Id
@@ -87,6 +95,17 @@ data Trans f o =
   , name :: TransName 
   }
   deriving (Show, Eq, Ord, Generic)
+
+instance (Outputable f, Outputable o) => Outputable (Trans f o) where
+  ppr (Trans {from, to, name}) =
+    ptext (sLit "Trans") <+>
+      braces
+        (fsep
+          (punctuate comma 
+            [ ptext (sLit "name =") <+> ppr name
+            , ptext (sLit "from =") <+> ppr from
+            , ptext (sLit "to =") <+> ppr to
+            ]))
 
 instance (Hashable f, Hashable o) => Hashable (Trans f o) where
 
