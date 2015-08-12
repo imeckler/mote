@@ -106,9 +106,19 @@ natTransInterpretationsStrict
 natTransInterpretationsStrict functorClass instEnvs (name, t0) =
   if False -- TODO Word.isEmpty natTransTo
   then []
+  else if not targIsSyntactic
+  then []
   else
     filter isReasonableTrans $ catMaybes (zipWith interp [0..] args)
   where
+  targIsSyntactic =
+    case targInner of
+      TyVarTy v ->
+        v `VarSet.elemVarSet` nonParametricTypes
+        || all (\(_, args) -> not (v `VarEnv.elemVarEnv` Type.tyVarsOfType (map unwrapType args))) targSfs
+      _ ->
+        True
+
   (_polyVars, t1)   = splitForAllTys t0
   (predTys, t)      = splitPredTys t1
   (args, targ)      = splitFunTys t
@@ -536,7 +546,10 @@ search stRef tyStr n = do
       -- TODO: Change to only use suffixes of the word
       concatMap (matchesInView' innerVar chooseAType) . Word.suffixViews
 
-  return (graphsOfSizeAtMostMemo' matchesForWord n src trg)
+  return {-
+    . HashSet.toList . HashSet.fromList
+    . map moveListToGraph -}
+    $ moveSequencesOfSizeAtMostMemoNotTooHoley' matchesForWord n src trg
   -- return (moveSequencesOfSizeAtMostMemoNotTooHoley' matchesForWord n src trg)
 
 interpretType ty0 =
@@ -562,7 +575,7 @@ interpretType ty0 =
 matchesInView'
   :: Var
   -> ChooseAType.ChooseAType [NatTransData () Type]
-  -> Word.View SyntacticFunctor WrappedType
+  -> Word.SuffixView SyntacticFunctor WrappedType
   -> [(Word SyntacticFunctor WrappedType, Search.Types.Move SyntacticFunctor WrappedType)]
 matchesInView' innerVar chooseAType wv =
   concatMap
@@ -573,7 +586,66 @@ matchesInView' innerVar chooseAType wv =
           nds)
     (ChooseAType.lookup focus chooseAType)
   where
-  (focus, newWordAndMove) = case wv of
+  substTy' subst =
+    Type.substTy (Type.mkTvSubst VarEnv.emptyInScopeSet subst) 
+
+  (apparentFocus, newWordAndMove =
+    case wv of
+      Left (pre, foc) ->
+        ( stitchUp (TyVarTy innerVar) foc 
+        , \subst nd ->
+            let
+              (ndFromFs, ndInner) = splitSyntacticFunctors (fromType nd) -- TODO: Why not look at `from nd`?
+            in
+            case ndInner of
+              -- A portion of foc may have unified "more than it should have" so we
+              -- have to correct it (since Move needs to know what things
+              -- the move was actually performed on).
+              TyVarTy v ->
+                let
+                  post =
+                    case VarEnv.lookupVarEnv subst v of
+                      Nothing ->
+                        error "Scratch 598: Impossible"
+
+                      Just spillTy ->
+                        -- This TyVar should be equal to innerVar
+                        let
+                          (spillSfs, TyVarTy _) = splitSyntacticFunctors spillTy
+                        in
+                        Word spillSfs Nothing
+
+                  newWordAtRealFocus =
+                    -- The correctness of this relies on the assumption that
+                    -- v appears nowhere else in toType nd, which we checek
+                    -- in natTransInterpretationsStrict. This is really what
+                    -- makes a SyntacticFunctor syntactic. Would be nice to
+                    -- eliminate this constraint in the future.
+                    let
+                      (ndToFs0, ndToInner0) = splitSyntacticFunctors (toType nd)
+                    in
+                    Word (map substSyntacticFunctor ndToFs0)
+
+
+                  (focFs, _) = 
+                    splitSyntacticFunctors
+                      (substTy' subst (stitchUp ndFs (TyVarTy innerVar)))
+                in
+                ( Word pre Nothing <> Search.Types.
+                , 
+                )
+
+      Right (pre, (focfs, foco)) ->
+        stitchUp focfs foco
+  (focus, newWordAndMove) =
+    case wv of
+
+
+  (focus, newWordAndMove) = 
+    case wv of
+      Left (pre, foc) 
+  
+  case wv of
     Word.NoO pre foc post ->
       ( stitchUp (TyVarTy innerVar) foc 
       -- TODO: Should take subst as argument

@@ -34,6 +34,7 @@ import qualified Search.Graph
 import qualified Mote.Init
 import qualified Data.List as List
 import Data.Function (on)
+import qualified Data.HashSet as HashSet
 
 data Command
   = Load FilePath
@@ -86,6 +87,9 @@ interpretCommand ref cmd =
               pr = (Search.Graph.toTerm g, g)
             in
             (Mote.Search.score pr, pr))
+        . HashSet.toList
+        . HashSet.fromList
+        . map Search.Graph.moveListToGraph
 
     Reduce _ ->
       liftIO (putStrLn "Error. Reduce not implemented")
