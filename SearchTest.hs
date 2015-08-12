@@ -47,8 +47,8 @@ data TestCase
   }
 
 searchTypes =
-  [ "[ErrorT String Ghc (Maybe a)] -> IO [a]"
-  , "Either String (IO Int) -> IO (Maybe String)"
+  [ "Either String (IO Int) -> IO (Maybe String)"
+  , "[ErrorT String Ghc (Maybe a)] -> IO [a]"
   ]
 
 searchDepths = [1..4]
@@ -98,7 +98,7 @@ main =
             liftIO . print $
               RunInfo
               { numberOfMoveSequences = length mss
-              , numberOfGraphs = length gs
+              , numberOfGraphs = length gsFromMoveSeqs
               , deduplicationTime
               , moveSequencesTime
               , graphsTime
