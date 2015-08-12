@@ -10,6 +10,7 @@ import System.FilePath (splitDrive, takeDirectory, takeFileName, pathSeparators,
                         takeExtension, normalise, dropTrailingPathSeparator, joinDrive,
                         splitDirectories, isAbsolute, joinPath, (</>))
 import System.IO.Temp (createTempDirectory)
+import System.Process (readProcess)
 
 import System.IO.Unsafe (unsafePerformIO)
 
@@ -255,7 +256,7 @@ getSandboxDb d = do
     cabalBuildPlatform ++ "-ghc-" ++ cProjectVersion ++ "-packages.conf.d"
 
   cabalBuildPlatform :: String
-  cabalBuildPlatform = unsafePerformIO $ buildPlatform
+  cabalBuildPlatform = unsafePerformIO $ buildPlatform readProcess
 
 -- | Extract the sandbox package db directory from the cabal.sandbox.config file.
 --   Exception is thrown if the sandbox config file is broken.
