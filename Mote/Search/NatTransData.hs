@@ -75,6 +75,12 @@ data NatTransData context constant
   , to                      :: Word.Word SyntacticFunctor constant
   , functorArgumentPosition :: Int
   , numberOfArguments       :: Int
+  -- TODO: I essentially don't use the fact that from or to are Words
+  -- anymore, so they should really both be chnaged to type when I get the
+  -- chance. This "toType" field is a holdover til then. It might be
+  -- slightly more efficient to do substition on words, but I doubt it will
+  -- be mucb more
+  , toType                  :: Type
   }
   deriving (Eq)
 
