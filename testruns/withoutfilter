@@ -1,0 +1,42 @@
+Got: "Either String (IO Int) -> IO (Maybe String)"
+
+eitherToMaybe . sequence . (fmap . fmap) show
+(fmap . fmap) show . eitherToMaybe . sequence
+(fmap . fmap) show . eitherToMaybe . sequenceA
+eitherToMaybe . (fmap . fmap) show . sequenceA
+eitherToMaybe . (fmap . fmap) show . sequence
+eitherToMaybe . sequenceA . (fmap . fmap) show
+eitherToMaybe . sequenceA . (fmap . fmap) (\x -> shows  x _)
+eitherToMaybe . (fmap . fmap) (\x -> shows  x _) . sequence
+eitherToMaybe . (fmap . fmap) (\x -> readsPrec  x _) . sequenceA
+(fmap . fmap) (\x -> readsPrec  x _) . eitherToMaybe . sequence
+(fmap . fmap) (\x -> shows  x _) . eitherToMaybe . sequenceA
+(fmap . fmap) (\x -> shows  x _) . eitherToMaybe . sequence
+eitherToMaybe . (fmap . fmap) (\x -> readsPrec  x _) . sequence
+(fmap . fmap) (\x -> readsPrec  x _) . eitherToMaybe . sequenceA
+eitherToMaybe . sequence . (fmap . fmap) (\x -> shows  x _)
+eitherToMaybe . (fmap . fmap) (\x -> shows  x _) . sequenceA
+eitherToMaybe . (fmap . fmap) (\x -> showsPrec _ x _) . sequence
+eitherToMaybe . (fmap . fmap) (\x -> showsPrec _ x _) . sequenceA
+(fmap . fmap) (\x -> showsPrec _ x _) . eitherToMaybe . sequence
+(fmap . fmap) (\x -> showsPrec  x _ _) . eitherToMaybe . sequenceA
+eitherToMaybe . sequenceA . (fmap . fmap) (\x -> showsPrec _ x _)
+(fmap . fmap) (\x -> showsPrec  x _ _) . eitherToMaybe . sequence
+(fmap . fmap) (\x -> showsPrec _ x _) . eitherToMaybe . sequenceA
+eitherToMaybe . sequence . (fmap . fmap) (\x -> showsPrec  x _ _)
+eitherToMaybe . sequenceA . (fmap . fmap) (\x -> showsPrec  x _ _)
+eitherToMaybe . (fmap . fmap) (\x -> showsPrec  x _ _) . sequenceA
+eitherToMaybe . sequence . (fmap . fmap) (\x -> showsPrec _ x _)
+eitherToMaybe . (fmap . fmap) (\x -> showsPrec  x _ _) . sequence
+
+With filter
+(fmap . fmap) show . sequenceA . eitherToMaybe
+(fmap . fmap) show . sequence . eitherToMaybe
+(fmap . fmap) (\x -> shows  x _) . sequenceA . eitherToMaybe
+(fmap . fmap) (\x -> shows  x _) . sequence . eitherToMaybe
+(fmap . fmap) (\x -> readsPrec  x _) . sequenceA . eitherToMaybe
+(fmap . fmap) (\x -> readsPrec  x _) . sequence . eitherToMaybe
+(fmap . fmap) (\x -> showsPrec  x _ _) . sequenceA . eitherToMaybe
+(fmap . fmap) (\x -> showsPrec  x _ _) . sequence . eitherToMaybe
+(fmap . fmap) (\x -> showsPrec _ x _) . sequenceA . eitherToMaybe
+(fmap . fmap) (\x -> showsPrec _ x _) . sequence . eitherToMaybe
