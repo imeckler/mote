@@ -117,6 +117,15 @@ views (Word fs mo) = case mo of
     fmap (\(pre,mid,post) -> YesOMid pre mid post o) (fineViews fs)
     ++ fmap (\(pre, post) -> YesOEnd pre (post, o)) (splittings fs)
 
+suffixViews :: Word f o -> [View f o]
+suffixViews (Word fs mo) =
+  case mo of
+    Nothing ->
+      List.map (\(pre, suf) -> NoO pre suf []) (splittings fs)
+
+    Just o ->
+      List.map (\(pre, suf) -> YesOEnd pre (suf, o)) (splittings fs)
+    
 {-
 views :: Word f o -> [View f o]
 views w@(Word fs mo) =

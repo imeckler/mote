@@ -140,6 +140,7 @@ natTransInterpretationsStrict functorClass instEnvs (name, t0) =
           , functorArgumentPosition = i
           , numberOfArguments
           , toType = targ
+          , fromType = argTy
           }
       in
       if Word.isEmpty from || from == natTransTo then Nothing else Just nd
@@ -322,6 +323,8 @@ transportNatTransData subst nd =
       bimap transportSyntacticFunctor (Type.substTy subst) (to nd)
   , toType =
       Type.substTy subst (toType nd)
+  , fromType =
+      Type.substTy subst (fromType nd)
   }
   where
   transportSyntacticFunctor (tf, ts) =
@@ -351,6 +354,7 @@ closedSubstNatTransData subst nd =
     , from = substWord subst (from nd)
     , to = substWord subst (to nd) 
     , toType = Type.substTy subst (toType nd)
+    , fromType = Type.substTy subst (fromType nd)
     }
 
 substSyntacticFunctor subst (tyFun, args) =
@@ -431,6 +435,9 @@ inScopeChooseATypeAndInnerDummy = do
   typedNames <-
     fmap catMaybes
     . mapM (\n -> fmap (n,) <$> nameType n)
+    -- TODO: This is a hack. Please fix
+    . filter (\n -> 
+        let s = nameToString n in s /= "sequence" && s /= "void") -- TODO void was showing up where it certainly didn't belong
     =<< getNamesInScope
 
   let
@@ -465,7 +472,12 @@ inScopeChooseATypeAndInnerDummy = do
                   let subst = compose ndToRepr subst0
                       nd' = closedSubstNatTransData subst nd
                   in
-                  ( WrappedType (uncontextualizedFromType id nd' theInnerDummy)
+                  ( 
+                    -- TODO: Made it so that nds are indexed by their
+                    -- actual from types. Might be better to change their
+                    -- fromTypes to replace their own personal innerVars
+                    -- with the global innerVar.
+                    WrappedType $ Type.substTy subst (fromType nd)
                   , HashMap.singleton (getKey (getUnique (name nd')), functorArgumentPosition nd') nd' 
                   ))
                 substs)
@@ -522,7 +534,7 @@ search stRef tyStr n = do
       -> [(Word SyntacticFunctor WrappedType, Search.Types.Move SyntacticFunctor WrappedType)]
     matchesForWord =
       -- TODO: Change to only use suffixes of the word
-      concatMap (matchesInView' innerVar chooseAType) . Word.views
+      concatMap (matchesInView' innerVar chooseAType) . Word.suffixViews
 
   return (graphsOfSizeAtMostMemo' matchesForWord n src trg)
   -- return (moveSequencesOfSizeAtMostMemoNotTooHoley' matchesForWord n src trg)
@@ -557,7 +569,7 @@ matchesInView' innerVar chooseAType wv =
     (\(subst, nds) ->
         map
           ( newWordAndMove
-          . mkTrans subst)
+          . mkTrans innerVar subst)
           nds)
     (ChooseAType.lookup focus chooseAType)
   where
@@ -582,31 +594,33 @@ matchesInView' innerVar chooseAType wv =
         (Word pre Nothing <> Search.Types.to t, Word.End pre t)
       )
 
-  mkTrans subst nd =
-    Search.Types.Trans
-    { from = second WrappedType (from nd) -- I don't think any code will care that it's not subst'd
-    , to =
-        let
-          (sfs', innerTy) =
-            splitSyntacticFunctors
-              (Type.substTy (Type.mkTvSubst VarEnv.emptyInScopeSet subst) (toType nd))
-          inner =
-            case innerTy of
-              TyVarTy v -> if v == innerVar then Nothing else Just (WrappedType innerTy)
-              _ -> Just (WrappedType innerTy)
-        in
-        Word sfs' inner
-    , name = Search.Types.AnnotatedTerm name' (numberOfArguments nd - 1) 0
-    }
-    where
-    ident = nameToString (name nd)
-    name' =
-      if numberOfArguments nd == 1 
-      then Search.Types.Simple ident 
-      else if functorArgumentPosition nd == numberOfArguments nd - 1
-      then Search.Types.Compound (ident ++ " " ++ underscores (numberOfArguments nd - 1))
-      else Search.Types.Simple ("(\\x -> " ++ ident ++ " " ++ underscores (functorArgumentPosition nd) ++ " x " ++ underscores (numberOfArguments nd - functorArgumentPosition nd - 1) ++ ")")
-    underscores n = unwords $ replicate n "_"
+mkTrans innerVar subst nd =
+  Search.Types.Trans
+  { from = substToWord innerVar subst (fromType nd)
+  , to = substToWord innerVar subst (toType nd)
+  , name = Search.Types.AnnotatedTerm name' (numberOfArguments nd - 1) 0
+  }
+  where
+  ident = nameToString (name nd)
+  name' =
+    if numberOfArguments nd == 1 
+    then Search.Types.Simple ident 
+    else if functorArgumentPosition nd == numberOfArguments nd - 1
+    then Search.Types.Compound (ident ++ " " ++ underscores (numberOfArguments nd - 1))
+    else Search.Types.Simple ("(\\x -> " ++ ident ++ " " ++ underscores (functorArgumentPosition nd) ++ " x " ++ underscores (numberOfArguments nd - functorArgumentPosition nd - 1) ++ ")")
+  underscores n = unwords $ replicate n "_"
+
+substToWord innerVar subst ty =
+  let
+    (sfs', innerTy) =
+      splitSyntacticFunctors
+        (Type.substTy (Type.mkTvSubst VarEnv.emptyInScopeSet subst) ty)
+    inner =
+      case innerTy of
+        TyVarTy v -> Nothing
+        _ -> Just (WrappedType innerTy)
+  in
+  Word sfs' inner
 
 -- TODO: Preconvert the HashMap (Int,Int) to []'s
 matchesInView

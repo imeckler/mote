@@ -42,6 +42,7 @@ data RunInfo
   , fileName :: String
   , terms :: [String]
   , moveSeqTerms :: [String]
+  , top20ShrunkSize :: Int
   }
   deriving (Show, Read)
 
@@ -52,25 +53,23 @@ data TestCase
   , testCaseDepth :: Int
   }
 
-searchTypes =
-  [ "Either String (IO Int) -> IO (Maybe String)"
-  , "[ErrorT String Ghc (Maybe a)] -> IO [a]"
-  ]
-
 tests =
   [ ( "testmodules/Easy.hs"
     , [ "Either String (IO Int) -> IO (Maybe String)"
-      , "[FilePath] -> IO String"
+      , "[FakeFilePath] -> IO Data.ByteString.ByteString"
+      , "[Maybe FakeFilePath] -> IO [Data.ByteString.ByteString]"
       , "[Maybe (Either String a)] -> Maybe a"
       , "[Maybe (Either String a)] -> [a]"
       , "[Maybe (ErrorT IO String a)] -> IO (Maybe a)"
+      , "ErrorT String Ghc Int -> IO (Maybe Int)"
       ]
     )
+    {-
   , ( "testmodules/MuchInScope.hs"
     , [ "Either String (IO Int) -> IO (Maybe String)"
       , "[ErrorT String Ghc (Maybe a)] -> IO [a]"
       ]
-    )
+    ) -}
   ]
 
 searchDepths = [1..4]
@@ -95,58 +94,78 @@ runWithTestRef' x = do
 main =
   runWithTestRef' $ \ref -> do
     forM_ tests $ \(fileName, searchTypes) -> do
-      Right () <- runErrorT $ Mote.LoadFile.loadFile ref fileName
-      Right (chooseAType, innerVar) <- runErrorT (chooseATypeData <$> getFileDataErr ref)
-      -- Just to force chooseAType
-      length (ChooseAType.allData chooseAType) `seq` return ()
+      runErrorT (Mote.LoadFile.loadFile ref fileName) >>= \case
+        Left err -> do
+          error (show err)
 
-      forM_ searchTypes $ \tyStr -> do
-        forM_ searchDepths $ \testCaseDepth -> do
-          runErrorT (interpretType =<< readType tyStr) >>= \case
-            Right (source, target) -> do
-              (graphsTime, gs) <- liftIO . timeItT $
-                let gs = searchGraphs chooseAType innerVar (TestCase source target testCaseDepth) in
-                gs `seq` return gs
+        Right () -> do
+          Right (chooseAType, innerVar) <- runErrorT (chooseATypeData <$> getFileDataErr ref)
+          -- Just to force chooseAType
+          length (ChooseAType.allData chooseAType) `seq` return ()
 
-              (moveSequencesTime, (mss, gsFromMoveSeqs)) <- liftIO . timeItT $
-                let mss = searchMoveSeqs chooseAType innerVar (TestCase source target testCaseDepth)
-                    gs = HashSet.toList (HashSet.fromList (map moveListToGraph mss))
-                in
-                gs `seq` return (mss, gs)
+          forM_ searchTypes $ \tyStr -> do
+            forM_ searchDepths $ \testCaseDepth -> do
+              runErrorT (interpretType =<< readType tyStr) >>= \case
+                Right (source, target) -> do
+                  (graphsTime, gs) <- liftIO . timeItT $
+                    let gs = searchGraphs chooseAType innerVar (TestCase source target testCaseDepth) in
+                    gs `seq` return gs
 
-              (deduplicationTime, gs') <- liftIO . timeItT $
-                let gs' = HashSet.toList (HashSet.fromList (map moveListToGraph mss)) in
-                gs' `seq` return gs'
+                  (moveSequencesTime, (mss, gsFromMoveSeqs)) <- liftIO . timeItT $
+                    let mss = searchMoveSeqs chooseAType innerVar (TestCase source target testCaseDepth)
+                        gs = HashSet.toList (HashSet.fromList (map moveListToGraph mss))
+                    in
+                    gs `seq` return (mss, gs)
 
-              liftIO . print $
-                RunInfo
-                { numberOfMoveSequences = length mss
-                , numberOfGraphs = length gsFromMoveSeqs
-                , deduplicationTime
-                , moveSequencesTime
-                , graphsTime
-                , searchType = tyStr
-                , depth = testCaseDepth
-                , fileName
-                , terms = 
-                    map (\(_,(t,_)) -> Search.Graph.renderAnnotatedTerm t)
-                    . List.sortBy (compare `on` fst)
-                    . map (\g ->
-                        let
-                          pr = (Search.Graph.toTerm g, g)
-                        in
-                        (Mote.Search.score pr, pr))
-                    $ gsFromMoveSeqs
-                , moveSeqTerms =
-                    map (\(_, (t, _)) -> Search.Graph.renderAnnotatedTerm t)
-                    . List.sortBy (compare `on` fst)
-                    . map (\moveSeq ->
-                        let pr = (Search.Graph.moveSequenceToAnnotatedTerm moveSeq, moveSeq)
-                        in (Mote.Search.moveSequenceScore pr, pr))
-                    $ mss
-                }
+                  (deduplicationTime, gs') <- liftIO . timeItT $
+                    let gs' = HashSet.toList (HashSet.fromList (map moveListToGraph mss)) in
+                    gs' `seq` return gs'
 
-            Left err -> liftIO (print err)
+                  let
+                    terms = 
+                      take 20
+                      . map (\(_,(t,_)) -> Search.Graph.renderAnnotatedTerm t)
+                      . List.sortBy (compare `on` fst)
+                      . map (\g ->
+                          let
+                            pr = (Search.Graph.toTerm g, g)
+                          in
+                          (Mote.Search.score pr, pr))
+                      $ gsFromMoveSeqs
+
+                    moveSeqTerms =
+                      map (\(_, (t, _)) -> Search.Graph.renderAnnotatedTerm t) moveSeqPairs
+
+                    topMoveSeqs = map (\(_, (_, seq)) -> seq) moveSeqPairs
+
+                    moveSeqPairs =
+                    {-
+                      take 20
+                      . map (\(_, (t, _)) -> Search.Graph.renderAnnotatedTerm t) -}
+                      take 20
+                      . List.sortBy (compare `on` fst)
+                      . map (\moveSeq ->
+                          let pr = (Search.Graph.moveSequenceToAnnotatedTerm moveSeq, moveSeq)
+                          in (Mote.Search.moveSequenceScore pr, pr))
+                      $ mss
+
+                  liftIO . print $
+                    RunInfo
+                    { numberOfMoveSequences = length mss
+                    , numberOfGraphs = length gsFromMoveSeqs
+                    , deduplicationTime
+                    , moveSequencesTime
+                    , graphsTime
+                    , searchType = tyStr
+                    , depth = testCaseDepth
+                    , fileName
+                    , terms
+                    , moveSeqTerms
+                    , top20ShrunkSize =
+                        HashSet.size (HashSet.fromList (map moveListToGraph topMoveSeqs))
+                    }
+
+                Left err -> liftIO (print err)
 
 
 searchGraphs chooseAType innerVar (TestCase {source, target, testCaseDepth}) =

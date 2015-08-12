@@ -1,5 +1,5 @@
-{-# LANGUAGE LambdaCase #-}
-module ScratchRepl where
+{-# LANGUAGE LambdaCase, NamedFieldPuns #-}
+module Main where
 
 import Scratch
 import Mote.LoadFile
@@ -18,29 +18,110 @@ import qualified FastString
 import Search.Types
 import GHC
 import Control.Monad.Error
--- import qualified System.Console.Readline as Readline
+import System.Exit
+import GHC.Paths
+import Mote.Types
+import Mote.Util
+import System.Directory
+import System.IO
+import System.FilePath
+import Data.Maybe
+import qualified System.Console.Readline as Readline
+import qualified Mote.LoadFile as LoadFile
+import UniqSupply
+import qualified Mote.Search
+import qualified Search.Graph
+import qualified Mote.Init
+import qualified Data.List as List
+import Data.Function (on)
 
 data Command
   = Load FilePath
-  | Search Type
+  | Search Int String
   | Reduce (HsExpr RdrName)
+  | Exit
 
 data Expr
   = Simple
   | FMap RdrName
   | Compose [RdrName]
 
-{-
-parseExpr :: Parser Expr
-parseExpr =
-  between (token "(") parseExpr (token ")")
-  <|> try (string "fmap" *> spaces *> fmap FMap parseExpr)
-  <|> _
-  <|> Compose <$> sepBy parseExpr (token ".")
-  where
-  token :: String -> Parser ()
-  token x = fmap (\_ -> ()) (string x *> spaces) -}
+parseCommand cmd =
+  case words cmd of
+    ["load", path] ->
+      return (Just (Load path))
 
+    ("search" : nstr : ":" : _rest) -> do
+      let tyStr = tail (dropWhile (/= ':') cmd)
+      liftIO $ print tyStr
+      return (Just (Search (read nstr) tyStr))
+
+    ws -> do
+      liftIO (print ws)
+      return Nothing
+
+interpretCommand ref cmd =
+  case cmd of
+    Exit ->
+      liftIO exitSuccess
+
+    Load file ->
+      runErrorT (LoadFile.loadFile ref file) >>= \case
+        Right _ -> return ()
+        Left err -> liftIO (print err)
+
+    Search depthLimit tyStr ->
+      runErrorT (Scratch.search ref tyStr depthLimit) >>= \case
+        Left err ->
+          liftIO (print err)
+        Right gs ->
+          liftIO $ putStrLn (showResults gs)
+      where
+      showResults =
+        unlines
+        . map (\(_,(t,_)) -> Search.Graph.renderAnnotatedTerm t)
+        . List.sortBy (compare `on` fst)
+        . map (\g ->
+            let
+              pr = (Search.Graph.toTerm g, g)
+            in
+            (Mote.Search.score pr, pr))
+
+    Reduce _ ->
+      liftIO (putStrLn "Error. Reduce not implemented")
+
+main = runWithTestRef main'
+
+main' :: Ref MoteState -> Ghc ()
+main' ref = do
+  liftIO (Readline.readline "Λ > ") >>= \case
+    Nothing -> do
+      liftIO (putStr "\n")
+      return ()
+
+    Just str -> do
+      liftIO (Readline.addHistory str)
+      parseCommand str >>= \case
+        Nothing -> return ()
+        Just cmd -> interpretCommand ref cmd
+      main' ref
+
+runWithTestRef x = do
+  home <- getHomeDirectory
+  withFile (home </> "testlog") WriteMode $ \logFile -> do
+    r <- newRef =<< initialState logFile
+    runGhc (Just libdir) $ do { Mote.Init.initializeWithCabal r; x r }
+  where
+  initialState :: Handle -> IO MoteState
+  initialState logFile = mkSplitUniqSupply 'x' >>| \uniq -> MoteState
+    { fileData = Nothing
+    , currentHole = Nothing
+    , argHoles = mempty
+    , loadErrors = []
+    , logFile
+    , uniq
+    }
+{-
 hsExprToMoveSequence :: GhcMonad m => HsExpr RdrName -> m [Move () ()]
 hsExprToMoveSequence hsExpr =
   case hsExpr of
@@ -99,4 +180,4 @@ hsExprToMoveSequence hsExpr =
     HsUnboundVar rn -> _
   where
   rdrNameToString = FastString.unpackFS . OccName.occNameFS . Name.getOccName
-
+-}

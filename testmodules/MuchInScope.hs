@@ -1,3 +1,4 @@
+import Prelude hiding (Word)
 import Data.Traversable
 import qualified Data.List as List
 import qualified Data.Maybe as Maybe

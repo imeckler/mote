@@ -81,6 +81,7 @@ data NatTransData context constant
   -- slightly more efficient to do substition on words, but I doubt it will
   -- be mucb more
   , toType                  :: Type
+  , fromType                :: Type
   }
   deriving (Eq)
 
