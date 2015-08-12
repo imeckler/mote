@@ -201,6 +201,7 @@ natTransInterpretationsStrict functorClass instEnvs (name, t0) =
                     ConstantFunctorTyVar v' ->
                       if v' `VarEnv.elemVarEnv` nonParametricTypes
                       then Just (TyVarTy v')
+                      -- TODO: This seems wrong.
                       else Just (TyVarTy v') -- TODO: Nothing
                     ConstantFunctorTyCon tc ->
                       Just (TyConApp tc [])
@@ -217,7 +218,9 @@ natTransInterpretationsStrict functorClass instEnvs (name, t0) =
                   ConstantFunctorTyVar v' ->
                     if v' == v
                     then Just (Word sfs Nothing)
-                    else Nothing
+                    else if v' `VarEnv.elemVarEnv` nonParametricTypes
+                    then Just (Word sfs (Just (TyVarTy v')))
+                    else Nothing -- TODO: For now. I think this really should be allowed though.
 
                   ConstantFunctorTyCon tc ->
                     Just (Word sfs (Just (TyConApp tc [])))
@@ -595,9 +598,9 @@ matchesInView' innerVar chooseAType wv =
         ( stitchUp (TyVarTy innerVar) foc 
         , \subst nd ->
             let
-              (ndFromFs, ndInner) = splitSyntacticFunctors (fromType nd) -- TODO: Why not look at `from nd`?
+              (ndFromFs, ndFromInner) = splitSyntacticFunctors (fromType nd) -- TODO: Why not look at `from nd`?
             in
-            case ndInner of
+            case ndFromInner of
               -- A portion of foc may have unified "more than it should have" so we
               -- have to correct it (since Move needs to know what things
               -- the move was actually performed on).
@@ -622,9 +625,11 @@ matchesInView' innerVar chooseAType wv =
                     -- makes a SyntacticFunctor syntactic. Would be nice to
                     -- eliminate this constraint in the future.
                     let
+                      -- TODO: This ndToInner0 should be == ndFromInner or
+                      -- a base type
                       (ndToFs0, ndToInner0) = splitSyntacticFunctors (toType nd)
                     in
-                    Word (map substSyntacticFunctor ndToFs0)
+                    Word (map (substSyntacticFunctor subst) ndToFs0)
 
 
                   (focFs, _) = 
