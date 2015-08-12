@@ -64,16 +64,18 @@ vagueness (RefineMatch {..}) = go refineWrapper where
 burdensomeness :: RefineMatch -> Int
 burdensomeness (RefineMatch {..}) = length refineArgTys
 
-#if __GLASGOW_HASKELL__ < 710
-packageIdString' _ mod = packageIdString (modulePackageId mod)
-#else
+#if MIN_VERSION_ghc(7, 10, 2)
 packageIdString' dflags mod = packageKeyPackageIdString dflags (modulePackageKey mod)
+#elif MIN_VERSION_ghc(7, 10, 1)
+packageIdString' dflags mod = Just (packageKeyPackageIdString dflags (modulePackageKey mod))
+#else
+packageIdString' _ mod = Just (packageIdString (modulePackageId mod))
 #endif
 
 locality :: DynFlags -> Name -> Locality
 locality dynFlags n = case nameModule_maybe n of
   Just mod -> case packageIdString' dynFlags mod of
-    "main" -> Project
+    Just "main" -> Project
     _      -> External
   Nothing  -> if isInternalName n then Module else External
 
