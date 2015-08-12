@@ -1,4 +1,4 @@
-{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE LambdaCase, CPP #-}
 module Mote.ReadType where
 
 import           CoAxiom             (Role (Nominal))
@@ -62,7 +62,13 @@ readTypeWithTyVarsInScope tvNames str =
 tcGetType rdr_type = do
   hsc_env <- getSession
   liftIO . runTcInteractive hsc_env . setXOptM Opt_PolyKinds $ do
-    (rn_type, _fvs) <- rnLHsType GHCiCtx (noLoc $ mkImplicitHsForAllTy (noLoc []) rdr_type)
+    (rn_type, _fvs) <-
+      rnLHsType GHCiCtx
+#if MIN_VERSION_ghc(7, 10, 2)
+        (noLoc $ mkImplicitHsForAllTy rdr_type)
+#else
+        (noLoc $ mkImplicitHsForAllTy (noLoc []) rdr_type)
+#endif
     ty <- tcHsSigType GhciCtxt rn_type
     fam_envs <- tcGetFamInstEnvs
     let (_, ty') = normaliseType fam_envs Nominal ty

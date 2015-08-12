@@ -102,7 +102,12 @@ findArgHoles = S.fromList . goDecls . hsmodDecls where
 type GHCHole = (CtEvidence, OccName.OccName)
 
 holeSpan :: HoleInfo -> SrcSpan
-holeSpan = ctLocSpan . ctLoc . holeCt
+holeSpan =
+#if MIN_VERSION_ghc(7, 10, 2)
+  RealSrcSpan . ctLocSpan . ctLoc . holeCt
+#else
+  ctLocSpan . ctLoc . holeCt
+#endif
 
 holeType :: HoleInfo -> Type
 holeType = ctEvPred . ctEvidence . holeCt
