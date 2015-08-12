@@ -73,6 +73,15 @@ data InContext f o vmid vend
   | End [f] vend
   deriving (Eq, Ord, Show, Generic)
 
+instance (Outputable f, Outputable o, Outputable m, Outputable e) => Outputable (InContext f o m e) where
+  ppr v =
+    case v of
+      Middle fs x w ->
+        ptext (sLit "Middle") <+> ppr fs <+> ppr x <+> ppr w
+
+      End fs x ->
+        ptext (sLit "End") <+> ppr fs <+> ppr x
+
 isEmpty :: Word f o -> Bool
 isEmpty (Word (_:_) _)    = False
 isEmpty (Word _ (Just _)) = False
@@ -117,14 +126,15 @@ views (Word fs mo) = case mo of
     fmap (\(pre,mid,post) -> YesOMid pre mid post o) (fineViews fs)
     ++ fmap (\(pre, post) -> YesOEnd pre (post, o)) (splittings fs)
 
-suffixViews :: Word f o -> [View f o]
+type SuffixView f o = Either ([f], [f]) ([f], ([f], o))
+suffixViews :: Word f o -> Either [([f], [f])] [([f], ([f], o))]
 suffixViews (Word fs mo) =
   case mo of
     Nothing ->
-      List.map (\(pre, suf) -> NoO pre suf []) (splittings fs)
+      Left (List.map (\(pre, suf) -> (pre, suf)) (splittings fs))
 
     Just o ->
-      List.map (\(pre, suf) -> YesOEnd pre (suf, o)) (splittings fs)
+      Right (List.map (\(pre, suf) -> (pre, (suf, o))) (splittings fs))
     
 {-
 views :: Word f o -> [View f o]
