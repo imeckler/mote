@@ -1,4 +1,4 @@
-{-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE NamedFieldPuns, LambdaCase #-}
 module Main where
 
 import Prelude hiding (Word)
@@ -32,6 +32,7 @@ data RunInfo
   { numberOfMoveSequences :: Int
   , numberOfGraphs :: Int
   , moveSequencesTime :: Double
+  , deduplicationTime :: Double
   , graphsTime :: Double
   , searchType :: String
   , depth :: Int
@@ -46,10 +47,11 @@ data TestCase
   }
 
 searchTypes =
-  [ "Either String (IO Int) -> IO (Maybe String)"
+  [ "[ErrorT String Ghc (Maybe a)] -> IO [a]"
+  , "Either String (IO Int) -> IO (Maybe String)"
   ]
 
-searchDepths = [5]
+searchDepths = [1..4]
 
 runWithTestRef' x = do
   home <- getHomeDirectory
@@ -77,27 +79,34 @@ main =
 
     forM_ searchTypes $ \tyStr -> do
       forM_ searchDepths $ \testCaseDepth -> do
-        Right (source, target) <- runErrorT (interpretType =<< readType tyStr)
+        runErrorT (interpretType =<< readType tyStr) >>= \case
+          Right (source, target) -> do
+            (graphsTime, gs) <- liftIO . timeItT $
+              let gs = searchGraphs chooseAType innerVar (TestCase source target testCaseDepth) in
+              gs `seq` return gs
 
-        (graphsTime, gs) <- liftIO . timeItT $
-          let gs = searchGraphs chooseAType innerVar (TestCase source target testCaseDepth) in
-          gs `seq` return gs
+            (moveSequencesTime, (mss, gsFromMoveSeqs)) <- liftIO . timeItT $
+              let mss = searchMoveSeqs chooseAType innerVar (TestCase source target testCaseDepth)
+                  gs = HashSet.toList (HashSet.fromList (map moveListToGraph mss))
+              in
+              gs `seq` return (mss, gs)
 
-        (moveSequencesTime, (mss, gsFromMoveSeqs)) <- liftIO . timeItT $
-          let mss = searchMoveSeqs chooseAType innerVar (TestCase source target testCaseDepth)
-              gs = HashSet.toList (HashSet.fromList (map moveListToGraph mss))
-          in
-          gs `seq` return (mss, gs)
+            (deduplicationTime, gs') <- liftIO . timeItT $
+              let gs' = HashSet.toList (HashSet.fromList (map moveListToGraph mss)) in
+              gs' `seq` return gs'
 
-        liftIO . print $
-          RunInfo
-          { numberOfMoveSequences = length mss
-          , numberOfGraphs = length gs
-          , moveSequencesTime
-          , graphsTime
-          , searchType = tyStr
-          , depth = testCaseDepth
-          }
+            liftIO . print $
+              RunInfo
+              { numberOfMoveSequences = length mss
+              , numberOfGraphs = length gs
+              , deduplicationTime
+              , moveSequencesTime
+              , graphsTime
+              , searchType = tyStr
+              , depth = testCaseDepth
+              }
+
+          Left err -> liftIO (print err)
 
 
 searchGraphs chooseAType innerVar (TestCase {source, target, testCaseDepth}) =
