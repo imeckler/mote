@@ -560,6 +560,7 @@ search stRef tyStr n = do
     showPpr dynFlags
       (Map.mapWithKey (\k -> map (\nd -> (k, name nd, from nd, to nd)) . HashMap.elems) (byClosedType lookupTable))
       -}
+
   (src, trg) <- interpretType =<< readType tyStr
   logS stRef . showPpr dynFlags . (src,) . map length $
       (ChooseAType.lookup
@@ -587,18 +588,25 @@ interpretType ty0 =
     (vars, ty) = splitForAllTys ty0
     mv = listToMaybe vars
     -- TODO: Assert kind(v) == *
-    toWord t =
+    toWord trgInnerVar t =
       case splitSyntacticFunctors t of
-        (sfs, TyVarTy v') ->
-          if Just v' == mv
-          then return (Word sfs Nothing)
-          else throwError (Unsupported "Could not handle input type")
+        (sfs, t'@(TyVarTy v')) ->
+          if Just v' == trgInnerVar
+          then Word sfs Nothing
+          else Word sfs (Just (WrappedType t'))
+
         (sfs, t') ->
-          return (Word sfs (Just (WrappedType t')))
+          Word sfs (Just (WrappedType t'))
   in
   case ty of
-    FunTy src trg ->
-      liftA2 (,) (toWord src) (toWord trg)
+    FunTy src trg -> return $
+      let (sfs, trgInner) = splitSyntacticFunctors trg in
+      case trgInner of
+        TyVarTy innerVar ->
+          (toWord (Just innerVar) src, Word sfs Nothing)
+        _ ->
+          (toWord Nothing src, Word sfs (Just (WrappedType trgInner)))
+
     _ ->
       throwError (OtherError "Search expected function type.")
 
