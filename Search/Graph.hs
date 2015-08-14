@@ -51,7 +51,7 @@ toTerm = ToTerm.toTerm . compressPaths
 
 
 moveSequenceToAnnotatedTerm :: [Move f o] -> AnnotatedTerm
-moveSequenceToAnnotatedTerm = foldMap moveToTerm
+moveSequenceToAnnotatedTerm = foldMap moveToTerm . reverse
   where
   moveToTerm :: Move f o -> AnnotatedTerm
   moveToTerm mv =
