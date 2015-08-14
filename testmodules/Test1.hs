@@ -5,7 +5,9 @@ import qualified Data.List as List
 import Control.Monad.Error
 import Data.Maybe
 import qualified Data.ByteString
-import GhcMonad
+import GHC
+import TcRnMonad
+import Type
 
 -- TODO: Problems with type aliases...
 data FakeFilePath = FakeFilePath
