@@ -54,14 +54,16 @@ data TestCase
   }
 
 tests =
-  [ ( "testmodules/Easy.hs"
+  [ ( "testmodules/Test1.hs"
     , [ "Either String (IO Int) -> IO (Maybe String)"
       , "[FakeFilePath] -> IO Data.ByteString.ByteString"
       , "[Maybe FakeFilePath] -> IO [Data.ByteString.ByteString]"
       , "[Maybe (Either String a)] -> Maybe a"
       , "[Maybe (Either String a)] -> [a]"
-      , "[Maybe (ErrorT IO String a)] -> IO (Maybe a)"
+      , "[Maybe (ErrorT String IO a)] -> IO (Maybe a)"
       , "ErrorT String Ghc Int -> IO (Maybe Int)"
+      , "(Bool, [Maybe a]) -> [(Bool, a)]"
+      , "TcRn a -> IO a"
       ]
     )
     {-
@@ -72,7 +74,7 @@ tests =
     ) -}
   ]
 
-searchDepths = [1..4]
+searchDepths = [3..5]
 
 runWithTestRef' x = do
   home <- getHomeDirectory
@@ -134,16 +136,27 @@ main =
                       $ gsFromMoveSeqs
 
                     moveSeqTerms =
-                      map (\(_, (t, _)) -> Search.Graph.renderAnnotatedTerm t) moveSeqPairs
+                      map (\(_, (t, _)) -> Search.Graph.renderAnnotatedTerm t) $ take 20 moveSeqPairs
 
                     topMoveSeqs = map (\(_, (_, seq)) -> seq) moveSeqPairs
+
+                    wouldBeTopMoveSeqGraphs =
+                      take 20
+                      . map (\(_,(_,g)) -> g)
+                      . List.sortBy (compare `on` fst)
+                      . map (\g ->
+                          let
+                            pr = (Search.Graph.toTerm g, g)
+                          in
+                          (Mote.Search.score pr, pr))
+                      . map moveListToGraph
+                      $ mss
 
                     moveSeqPairs =
                     {-
                       take 20
                       . map (\(_, (t, _)) -> Search.Graph.renderAnnotatedTerm t) -}
-                      take 20
-                      . List.sortBy (compare `on` fst)
+                      List.sortBy (compare `on` fst)
                       . map (\moveSeq ->
                           let pr = (Search.Graph.moveSequenceToAnnotatedTerm moveSeq, moveSeq)
                           in (Mote.Search.moveSequenceScore pr, pr))
@@ -162,7 +175,8 @@ main =
                     , terms
                     , moveSeqTerms
                     , top20ShrunkSize =
-                        HashSet.size (HashSet.fromList (map moveListToGraph topMoveSeqs))
+                        HashSet.size  (HashSet.fromList wouldBeTopMoveSeqGraphs)
+                        -- HashSet.size (HashSet.fromList (map moveListToGraph topMoveSeqs))
                     }
 
                 Left err -> liftIO (print err)
@@ -174,7 +188,7 @@ searchGraphs chooseAType innerVar (TestCase {source, target, testCaseDepth}) =
       :: Word SyntacticFunctor WrappedType
       -> [(Word SyntacticFunctor WrappedType, Search.Types.Move SyntacticFunctor WrappedType)]
     matchesForWord =
-      concatMap (matchesInView' innerVar chooseAType) . Word.views
+      concatMap (matchesInView' innerVar chooseAType) . either (map Left) (map Right) . Word.suffixViews
   in
   graphsOfSizeAtMostMemo' matchesForWord testCaseDepth source target
 
@@ -184,7 +198,7 @@ searchMoveSeqs chooseAType innerVar (TestCase {source, target, testCaseDepth}) =
       :: Word SyntacticFunctor WrappedType
       -> [(Word SyntacticFunctor WrappedType, Search.Types.Move SyntacticFunctor WrappedType)]
     matchesForWord =
-      concatMap (matchesInView' innerVar chooseAType) . Word.views
+      concatMap (matchesInView' innerVar chooseAType) . either (map Left) (map Right) . Word.suffixViews
   in
   moveSequencesOfSizeAtMostMemoNotTooHoley' matchesForWord testCaseDepth source target
 
