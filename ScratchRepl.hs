@@ -38,8 +38,10 @@ import qualified Data.HashSet as HashSet
 
 data Command
   = Load FilePath
-  | Search Int String
+  | Reload
+  | Search Bool Int String
   | Reduce (HsExpr RdrName)
+  | CountResults Int String
   | Exit
 
 data Expr
@@ -49,13 +51,23 @@ data Expr
 
 parseCommand cmd =
   case words cmd of
+    (":r" : _) ->
+      return (Just Reload)
+
     ["load", path] ->
       return (Just (Load path))
 
     ("search" : nstr : ":" : _rest) -> do
       let tyStr = tail (dropWhile (/= ':') cmd)
-      liftIO $ print tyStr
-      return (Just (Search (read nstr) tyStr))
+      return (Just (Search True (read nstr) tyStr))
+
+    ("seqsearch" : nstr : ":" : _rest) ->
+      let tyStr = tail (dropWhile (/= ':') cmd) in
+      return (Just (Search False (read nstr) tyStr))
+
+    ("count" : nstr : ":" : _rest) ->
+      let tyStr = tail (dropWhile (/= ':') cmd) in
+      return (Just (CountResults (read nstr) tyStr))
 
     ws -> do
       liftIO (print ws)
@@ -66,20 +78,44 @@ interpretCommand ref cmd =
     Exit ->
       liftIO exitSuccess
 
+    Reload -> do
+      MoteState {fileData} <- gReadRef ref
+      case fileData of
+        Nothing -> do
+          liftIO $ putStrLn "I would love to, but you have to *load* a file before you can reload it."
+        Just (FileData {path}) ->
+          interpretCommand ref (Load path)
+
     Load file ->
       runErrorT (LoadFile.loadFile ref file) >>= \case
         Right _ -> return ()
         Left err -> liftIO (print err)
 
-    Search depthLimit tyStr ->
+    CountResults depthLimit tyStr ->
       runErrorT (Scratch.search ref tyStr depthLimit) >>= \case
         Left err ->
           liftIO (print err)
-        Right gs ->
-          liftIO $ putStrLn (showResults gs)
+        Right mss ->
+          let
+            graphCount = HashSet.size (HashSet.fromList (map Search.Graph.moveListToGraph mss))
+            seqCount = length mss
+          in
+          liftIO . putStrLn . unlines $
+            [ "Number of results before deduplication: " ++ show seqCount
+            , "Number of results after deduplication: " ++ show graphCount
+            ]
+
+    Search dedup depthLimit tyStr ->
+      runErrorT (Scratch.search ref tyStr depthLimit) >>= \case
+        Left err ->
+          liftIO (print err)
+        Right mss ->
+          liftIO $ putStr (showResults mss)
       where
-      showResults =
+      showResults = if dedup then showResultsDedup else showSeqResults
+      showResultsDedup =
         unlines
+        . take 10
         . map (\(_,(t,_)) -> Search.Graph.renderAnnotatedTerm t)
         . List.sortBy (compare `on` fst)
         . map (\g ->
@@ -87,28 +123,47 @@ interpretCommand ref cmd =
               pr = (Search.Graph.toTerm g, g)
             in
             (Mote.Search.score pr, pr))
-        . HashSet.toList
-        . HashSet.fromList
+        . HashSet.toList . HashSet.fromList
         . map Search.Graph.moveListToGraph
+
+      showSeqResults =
+        unlines
+        . take 10
+        . map (\(_,t) -> Search.Graph.renderAnnotatedTerm t)
+        . List.sortBy (compare `on` fst)
+        . map (\ms ->
+            let
+              g = Search.Graph.moveListToGraph ms
+              pr = (Search.Graph.toTerm g, g)
+            in
+            (Mote.Search.score pr, Search.Graph.moveSequenceToAnnotatedTerm ms))
 
     Reduce _ ->
       liftIO (putStrLn "Error. Reduce not implemented")
 
-main = runWithTestRef main'
+main = do
+  home <- getHomeDirectory
+  let historyFilePath = home </> ".scratchhistory"
+  mapM_ Readline.addHistory . lines =<< readFile historyFilePath
+  runWithTestRef (main' historyFilePath)
 
-main' :: Ref MoteState -> Ghc ()
-main' ref = do
-  liftIO (Readline.readline "Λ > ") >>= \case
-    Nothing -> do
-      liftIO (putStr "\n")
-      return ()
+main' :: FilePath -> Ref MoteState -> Ghc ()
+main' historyFilePath ref = loop
+  where
+  loop =
+    liftIO (Readline.readline "Λ > ") >>= \case
+      Nothing -> do
+        liftIO (putStr "\n")
+        return ()
 
-    Just str -> do
-      liftIO (Readline.addHistory str)
-      parseCommand str >>= \case
-        Nothing -> return ()
-        Just cmd -> interpretCommand ref cmd
-      main' ref
+      Just str -> do
+        liftIO $ do
+          Readline.addHistory str
+          appendFile historyFilePath (str ++ "\n")
+        parseCommand str >>= \case
+          Nothing -> return ()
+          Just cmd -> interpretCommand ref cmd
+        loop
 
 runWithTestRef x = do
   home <- getHomeDirectory
